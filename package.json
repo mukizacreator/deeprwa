@@ -1,6 +1,6 @@
 {
   "name": "deeprwa",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "DeepRWA — AI assistant specialised in Rwanda",
   "main": "server.js",
   "scripts": {
@@ -13,6 +13,9 @@
     "express": "^4.21.2",
     "cors": "^2.8.5",
     "express-rate-limit": "^7.5.0",
-    "dotenv": "^16.4.7"
+    "dotenv": "^16.4.7",
+    "jsonwebtoken": "^9.0.2",
+    "@supabase/supabase-js": "^2.45.0",
+    "@getbrevo/brevo": "^2.2.0"
   }
 }
