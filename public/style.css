@@ -1,0 +1,80 @@
+:root {
+  --bg: #0a0e1a;
+  --bg-soft: #101728;
+  --surface: #131c31;
+  --border: rgba(255,255,255,0.08);
+  --text: #e8eef7;
+  --text-muted: #8fa3c0;
+  --accent: #4f9dff;
+  --accent-2: #7d5cff;
+  --accent-dim: rgba(79,157,255,0.15);
+  --radius: 14px;
+  --radius-sm: 10px;
+  --radius-lg: 22px;
+  --shadow: 0 10px 40px rgba(0,0,0,0.35);
+  --font: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior-y: none;
+}
+
+body {
+  background:
+    radial-gradient(1200px 600px at 50% -10%, rgba(79,157,255,0.15), transparent 60%),
+    radial-gradient(900px 500px at 90% 110%, rgba(125,92,255,0.12), transparent 60%),
+    var(--bg);
+}
+
+.landing {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 2rem 1.5rem;
+  text-align: center;
+}
+
+.brand-logo {
+  width: clamp(72px, 12vw, 120px);
+  height: auto;
+  border-radius: 22%;
+  box-shadow: var(--shadow);
+  margin-bottom: 0.5rem;
+}
+
+.brand-name {
+  font-size: clamp(2.2rem, 7vw, 4rem);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  background: linear-gradient(100deg, var(--accent), var(--accent-2));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.brand-tag {
+  font-size: clamp(0.95rem, 2.4vw, 1.2rem);
+  color: var(--text-muted);
+  margin-top: 0.25rem;
+}
+
+.status {
+  margin-top: 2.5rem;
+  font-size: 0.9rem;
+  color: var(--accent);
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  background: var(--accent-dim);
+  padding: 0.6rem 1.1rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+}
