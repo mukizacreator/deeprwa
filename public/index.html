@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>DeepRWA — Your AI Guide to Rwanda</title>
+<meta name="description" content="DeepRWA is an AI assistant specialised in everything about Rwanda — history, culture, tourism, news, people, services and more. Ask in any language." />
+<meta name="theme-color" content="#0a0e1a" />
+<meta property="og:title" content="DeepRWA — Your AI Guide to Rwanda" />
+<meta property="og:description" content="Ask anything about Rwanda. Get professional answers in your language." />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://deeprwa.agentdomains.co/" />
+<meta property="og:image" content="https://deeprwa.agentdomains.co/av.png" />
+<link rel="icon" href="/av.png" type="image/png" />
+<link rel="apple-touch-icon" href="/av.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/style.css" />
+<script type="application/ld+json">
+{
+  "@context":"https://schema.org",
+  "@type":"SoftwareApplication",
+  "name":"DeepRWA",
+  "applicationCategory":"AIApplication",
+  "operatingSystem":"Any",
+  "description":"AI assistant specialised in Rwanda.",
+  "url":"https://deeprwa.agentdomains.co/",
+  "image":"https://deeprwa.agentdomains.co/av.png",
+  "author":{"@type":"Person","name":"Emmanuel Mukiza"}
+}
+</script>
+</head>
+<body>
+<main class="landing">
+  <img src="/av.png" alt="DeepRWA" class="brand-logo" />
+  <h1 class="brand-name">DeepRWA</h1>
+  <p class="brand-tag">Your AI guide to Rwanda</p>
+  <p class="status" id="status">Initializing…</p>
+</main>
+<script>
+fetch('/health')
+  .then(r => r.json())
+  .then(d => {
+    document.getElementById('status').textContent =
+      '✅ DeepRWA is online — ' + new Date(d.time).toLocaleTimeString();
+  })
+  .catch(() => {
+    document.getElementById('status').textContent = '⚠ Could not reach the server';
+  });
+</script>
+</body>
+</html>
