@@ -4,8 +4,8 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <title>DeepRWA — Your AI Guide to Rwanda</title>
-<meta name="description" content="DeepRWA is an AI assistant specialised in everything about Rwanda — history, culture, tourism, news, people, services and more. Ask in any language." />
-<meta name="theme-color" content="#0a0e1a" />
+<meta name="description" content="DeepRWA is an AI assistant specialised in everything about Rwanda. Ask in any language." />
+<meta name="theme-color" content="#0f1115" />
 <meta property="og:title" content="DeepRWA — Your AI Guide to Rwanda" />
 <meta property="og:description" content="Ask anything about Rwanda. Get professional answers in your language." />
 <meta property="og:type" content="website" />
@@ -20,47 +20,101 @@
 <script src="https://cdn.jsdelivr.net/npm/marked@13.0.3/marked.min.js"></script>
 <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"SoftwareApplication","name":"DeepRWA","applicationCategory":"AIApplication","operatingSystem":"Any","description":"AI assistant specialised in Rwanda.","url":"https://deeprwa.agentdomains.co/","image":"https://deeprwa.agentdomains.co/av.png","author":{"@type":"Person","name":"Emmanuel Mukiza"}}
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"DeepRWA","applicationCategory":"AIApplication","operatingSystem":"Any","url":"https://deeprwa.agentdomains.co/","image":"https://deeprwa.agentdomains.co/av.png","author":{"@type":"Person","name":"Emmanuel Mukiza"}}
 </script>
 </head>
 <body>
 <div class="app">
-  <header class="topbar">
-    <div class="brand">
-      <img src="/av.png" alt="DeepRWA" class="brand-logo" />
-      <div class="brand-text">
-        <span class="brand-name">DeepRWA</span>
-        <span class="brand-tag">Your AI guide to Rwanda</span>
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar" id="sidebar" aria-label="Menu">
+    <div class="sidebar-top">
+      <div class="brand">
+        <img src="/av.png" alt="DeepRWA" class="brand-logo" />
+        <span class="brand-name"><span class="b-deep">Deep</span><span class="b-r">R</span><span class="b-w">W</span><span class="b-a">A</span></span>
+      </div>
+      <button class="icon-btn sidebar-close" id="sidebarClose" aria-label="Close menu">
+        <i data-lucide="x"></i>
+      </button>
+    </div>
+
+    <button class="new-chat-btn" id="newChatBtn">
+      <i data-lucide="square-pen"></i>
+      <span>New chat</span>
+    </button>
+
+    <nav class="sidebar-nav" id="sidebarNav">
+      <button class="nav-item active" data-view="chats">
+        <i data-lucide="message-square"></i>
+        <span>Chats</span>
+      </button>
+      <button class="nav-item" data-view="images">
+        <i data-lucide="image"></i>
+        <span>Images</span>
+      </button>
+    </nav>
+
+    <div class="sidebar-content" id="sidebarContent">
+      <div class="sidebar-empty">
+        <p>No chats yet</p>
+        <span>Start a conversation with DeepRWA</span>
       </div>
     </div>
-    <button id="newChatBtn" class="icon-btn" title="New chat" aria-label="New chat">
-      <i data-lucide="square-pen"></i>
-    </button>
-  </header>
 
-  <main id="chat" class="chat" aria-live="polite">
-    <div class="welcome">
-      <img src="/av.png" alt="DeepRWA" class="welcome-logo" />
-      <h1>DeepRWA</h1>
-      <p>Ask me anything about <strong>Rwanda</strong> — history, culture, tourism, people, news, and more. In any language.</p>
-      <div class="chips">
-        <button class="chip" data-q="Tell me about the history of Rwanda">History</button>
-        <button class="chip" data-q="What are the top tourist attractions in Rwanda?">Tourism</button>
-        <button class="chip" data-q="Who are some famous Rwandan people?">People</button>
-        <button class="chip" data-q="Explain Umuganda and its importance">Culture</button>
+    <div class="sidebar-footer">
+      <button class="auth-btn" id="loginBtn">
+        <i data-lucide="log-in"></i>
+        <span>Log in</span>
+      </button>
+    </div>
+  </aside>
+
+  <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+
+  <!-- MAIN -->
+  <main class="main">
+    <header class="topbar">
+      <button class="icon-btn menu-btn" id="menuBtn" aria-label="Open menu">
+        <i data-lucide="menu"></i>
+      </button>
+      <div class="topbar-brand">
+        <img src="/av.png" alt="DeepRWA" class="topbar-logo" />
+        <span class="brand-name"><span class="b-deep">Deep</span><span class="b-r">R</span><span class="b-w">W</span><span class="b-a">A</span></span>
       </div>
+    </header>
+
+    <div id="chat" class="chat" aria-live="polite">
+      <div class="welcome" id="welcome">
+        <img src="/av.png" alt="DeepRWA" class="welcome-logo" />
+        <h1 class="brand-name brand-name-lg"><span class="b-deep">Deep</span><span class="b-r">R</span><span class="b-w">W</span><span class="b-a">A</span></h1>
+        <p>Ask me anything about <strong>Rwanda</strong> — history, culture, tourism, people, news, and more. In any language.</p>
+        <div class="chips">
+          <button class="chip" data-q="Tell me about the history of Rwanda">History</button>
+          <button class="chip" data-q="What are the top tourist attractions in Rwanda?">Tourism</button>
+          <button class="chip" data-q="Who are some famous Rwandan people?">People</button>
+          <button class="chip" data-q="Explain Umuganda and its importance">Culture</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="composer">
+      <div class="file-previews" id="filePreviews" hidden></div>
+      <form class="composer-inner" id="composer">
+        <button type="button" class="attach-btn" id="attachBtn" aria-label="Attach file">
+          <i data-lucide="paperclip"></i>
+        </button>
+        <input type="file" id="fileInput" multiple hidden accept="image/*,.pdf,.txt,.doc,.docx,.md" />
+        <textarea id="input" rows="1" placeholder="Ask anything about Rwanda…" autocomplete="off"></textarea>
+        <button type="submit" class="send-btn" id="sendBtn" disabled aria-label="Send">
+          <i data-lucide="arrow-up"></i>
+        </button>
+        <button type="button" class="send-btn stop-btn" id="stopBtn" hidden aria-label="Stop">
+          <i data-lucide="square"></i>
+        </button>
+      </form>
     </div>
   </main>
 
-  <form id="composer" class="composer">
-    <textarea id="input" rows="1" placeholder="Ask anything about Rwanda…" autocomplete="off"></textarea>
-    <button type="submit" id="sendBtn" class="send-btn" aria-label="Send">
-      <i data-lucide="arrow-up"></i>
-    </button>
-    <button type="button" id="stopBtn" class="send-btn stop-btn hidden" aria-label="Stop">
-      <i data-lucide="square"></i>
-    </button>
-  </form>
 </div>
 <script src="/main.js"></script>
 </body>
