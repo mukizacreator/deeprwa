@@ -17,37 +17,51 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="/style.css" />
+<script src="https://cdn.jsdelivr.net/npm/marked@13.0.3/marked.min.js"></script>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
 <script type="application/ld+json">
-{
-  "@context":"https://schema.org",
-  "@type":"SoftwareApplication",
-  "name":"DeepRWA",
-  "applicationCategory":"AIApplication",
-  "operatingSystem":"Any",
-  "description":"AI assistant specialised in Rwanda.",
-  "url":"https://deeprwa.agentdomains.co/",
-  "image":"https://deeprwa.agentdomains.co/av.png",
-  "author":{"@type":"Person","name":"Emmanuel Mukiza"}
-}
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"DeepRWA","applicationCategory":"AIApplication","operatingSystem":"Any","description":"AI assistant specialised in Rwanda.","url":"https://deeprwa.agentdomains.co/","image":"https://deeprwa.agentdomains.co/av.png","author":{"@type":"Person","name":"Emmanuel Mukiza"}}
 </script>
 </head>
 <body>
-<main class="landing">
-  <img src="/av.png" alt="DeepRWA" class="brand-logo" />
-  <h1 class="brand-name">DeepRWA</h1>
-  <p class="brand-tag">Your AI guide to Rwanda</p>
-  <p class="status" id="status">Initializing…</p>
-</main>
-<script>
-fetch('/health')
-  .then(r => r.json())
-  .then(d => {
-    document.getElementById('status').textContent =
-      '✅ DeepRWA is online — ' + new Date(d.time).toLocaleTimeString();
-  })
-  .catch(() => {
-    document.getElementById('status').textContent = '⚠ Could not reach the server';
-  });
-</script>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <img src="/av.png" alt="DeepRWA" class="brand-logo" />
+      <div class="brand-text">
+        <span class="brand-name">DeepRWA</span>
+        <span class="brand-tag">Your AI guide to Rwanda</span>
+      </div>
+    </div>
+    <button id="newChatBtn" class="icon-btn" title="New chat" aria-label="New chat">
+      <i data-lucide="square-pen"></i>
+    </button>
+  </header>
+
+  <main id="chat" class="chat" aria-live="polite">
+    <div class="welcome">
+      <img src="/av.png" alt="DeepRWA" class="welcome-logo" />
+      <h1>DeepRWA</h1>
+      <p>Ask me anything about <strong>Rwanda</strong> — history, culture, tourism, people, news, and more. In any language.</p>
+      <div class="chips">
+        <button class="chip" data-q="Tell me about the history of Rwanda">History</button>
+        <button class="chip" data-q="What are the top tourist attractions in Rwanda?">Tourism</button>
+        <button class="chip" data-q="Who are some famous Rwandan people?">People</button>
+        <button class="chip" data-q="Explain Umuganda and its importance">Culture</button>
+      </div>
+    </div>
+  </main>
+
+  <form id="composer" class="composer">
+    <textarea id="input" rows="1" placeholder="Ask anything about Rwanda…" autocomplete="off"></textarea>
+    <button type="submit" id="sendBtn" class="send-btn" aria-label="Send">
+      <i data-lucide="arrow-up"></i>
+    </button>
+    <button type="button" id="stopBtn" class="send-btn stop-btn hidden" aria-label="Stop">
+      <i data-lucide="square"></i>
+    </button>
+  </form>
+</div>
+<script src="/main.js"></script>
 </body>
 </html>
