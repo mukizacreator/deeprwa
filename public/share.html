@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Shared chat — DeepRWA</title>
+<meta name="theme-color" content="#000000" />
+<meta name="robots" content="noindex" />
+<link rel="icon" href="/av.png" type="image/png" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<style>
+:root {
+  --bg: #000; --surface: #0a0a0a; --surface-2: #121212; --surface-3: #1a1a1a;
+  --border: rgba(255,255,255,0.08); --border-strong: rgba(255,255,255,0.18);
+  --text: #e6e8eb; --text-muted: #8b9199; --text-dim: #5c636d;
+  --accent: #3b6ef5;
+  --rwa-blue: #00a1de; --rwa-yellow: #fad201; --rwa-green: #20603d;
+  --font: 'Inter', system-ui, -apple-system, sans-serif;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--text); font-family: var(--font); min-height: 100vh; -webkit-font-smoothing: antialiased; }
+.header { padding: 1rem; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; background: rgba(0,0,0,0.85); backdrop-filter: blur(12px); z-index: 10; }
+.brand { display: flex; align-items: center; gap: 0.6rem; text-decoration: none; color: var(--text); }
+.brand img { width: 30px; height: 30px; border-radius: 8px; }
+.brand-name { font-weight: 700; font-size: 1.02rem; display: inline-flex; align-items: baseline; }
+.b-deep { color: var(--text); }
+.b-r { color: var(--rwa-blue); }
+.b-w { color: var(--rwa-yellow); }
+.b-a { color: var(--rwa-green); }
+.cta { background: var(--accent); color: #fff; text-decoration: none; padding: 0.55rem 1rem; border-radius: 999px; font-size: 0.85rem; font-weight: 600; }
+.cta:hover { background: #2f5ee0; }
+.container { max-width: 760px; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
+.shared-title { font-size: 0.8rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; margin-bottom: 1.5rem; }
+.msg { display: flex; margin-bottom: 1.5rem; }
+.msg-user { justify-content: flex-end; flex-direction: column; align-items: flex-end; gap: 0.35rem; }
+.msg-user .bubble { background: var(--surface-2); padding: 0.7rem 1rem; border-radius: 16px 16px 4px 16px; max-width: min(80%, 620px); line-height: 1.55; font-size: 0.94rem; border: 1px solid var(--border); word-wrap: break-word; overflow-wrap: anywhere; }
+.msg-assistant { gap: 0.75rem; align-items: flex-start; }
+.avatar { flex-shrink: 0; width: 30px; height: 30px; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); margin-top: 2px; }
+.avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.assistant-body { flex: 1; min-width: 0; }
+.assistant-name { font-size: 0.72rem; font-weight: 600; color: var(--text-muted); margin-bottom: 0.3rem; }
+.assistant-text { line-height: 1.65; font-size: 0.95rem; word-wrap: break-word; overflow-wrap: anywhere; }
+.assistant-text p { margin: 0 0 0.75rem; }
+.assistant-text p:last-child { margin-bottom: 0; }
+.assistant-text strong { color: #fff; font-weight: 600; }
+.assistant-text ul, .assistant-text ol { margin: 0 0 0.75rem 1.25rem; }
+.assistant-text a { color: var(--accent); }
+.assistant-text code { background: var(--surface); padding: 0.1rem 0.35rem; border-radius: 5px; font-family: ui-monospace, monospace; font-size: 0.86em; }
+.assistant-text pre { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 0.85rem 1rem; overflow-x: auto; margin: 0 0 0.75rem; font-size: 0.83rem; }
+.assistant-text table { border-collapse: collapse; width: 100%; margin: 0 0 0.75rem; font-size: 0.88rem; }
+.assistant-text th, .assistant-text td { border: 1px solid var(--border); padding: 0.4rem 0.65rem; text-align: left; }
+.msg-files { display: flex; flex-wrap: wrap; gap: 0.4rem; max-width: min(80%, 620px); justify-content: flex-end; }
+.msg-file-thumb { width: 120px; height: 120px; object-fit: cover; border-radius: 10px; border: 1px solid var(--border); }
+.version-switcher { display: inline-flex; align-items: center; gap: 0.3rem; margin-top: 0.35rem; background: var(--surface); border: 1px solid var(--border); border-radius: 999px; padding: 2px 6px; font-size: 0.78rem; color: var(--text-muted); }
+.vs-btn { background: transparent; border: none; color: var(--text-muted); width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; cursor: pointer; }
+.vs-btn:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
+.vs-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+.vs-label { font-weight: 500; padding: 0 0.2rem; }
+.error { text-align: center; padding: 4rem 1rem; color: var(--text-muted); }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/marked@13.0.3/marked.min.js"></script>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+</head>
+<body>
+<header class="header">
+  <a href="/" class="brand">
+    <img src="/av.png" alt="DeepRWA" />
+    <span class="brand-name"><span class="b-deep">Deep</span><span class="b-r">R</span><span class="b-w">W</span><span class="b-a">A</span></span>
+  </a>
+  <a href="/" class="cta">Open DeepRWA</a>
+</header>
+<div class="container" id="container">
+  <div class="shared-title">Shared chat</div>
+  <div id="content"><p style="color:var(--text-muted);">Loading…</p></div>
+</div>
+
+<script>
+const state = { messages: [], versions: {} };
+
+function escapeHtml(t) { return String(t || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function escapeHtmlOutsideCode(text) {
+  const lines = (text || '').split('\n'); let inCode = false;
+  return lines.map(line => {
+    if (/^\s*```/.test(line)) { inCode = !inCode; return line; }
+    if (inCode) return line;
+    return line.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }).join('\n');
+}
+function renderMarkdown(text) {
+  const safe = escapeHtmlOutsideCode(text || '');
+  try { return window.marked.parse(safe, { breaks: true, gfm: true }); }
+  catch { return safe.replace(/\n/g, '<br>'); }
+}
+
+async function load() {
+  const token = location.pathname.split('/').pop();
+  try {
+    const res = await fetch(`/api/share/${token}`);
+    if (!res.ok) throw new Error('Share not found');
+    const data = await res.json();
+    state.messages = data.messages || [];
+
+    // Rebuild versions
+    state.messages.forEach((m, i) => {
+      if (m.role === 'user' && m.versions && m.versions.length > 0) {
+        state.versions[i] = {
+          versions: m.versions,
+          versionFiles: m.version_files || m.versionFiles || [],
+          aiReplies: m.ai_replies || m.aiReplies || [],
+          aiFiles: m.ai_files || m.aiFiles || [],
+          currentIndex: m.current_version_index || m.currentVersionIndex || 0
+        };
+      }
+    });
+    render();
+  } catch (e) {
+    document.getElementById('content').innerHTML = `<div class="error">This share link is invalid or has expired.</div>`;
+  }
+}
+
+function render() {
+  const content = document.getElementById('content');
+  if (!state.messages.length) {
+    content.innerHTML = `<div class="error">Nothing to show.</div>`;
+    return;
+  }
+  content.innerHTML = state.messages.map((m, i) => {
+    if (m.role === 'user') return renderUser(m, i);
+    return renderAssistant(m, i);
+  }).join('');
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function renderFilesInline(files) {
+  if (!files || !files.length) return '';
+  return `<div class="msg-files">${files.map(f => {
+    const isImg = (f.type || '').startsWith('image/');
+    const url = f.url || f.public_url || '';
+    if (!url) return '';
+    return isImg ? `<img src="${url}" class="msg-file-thumb" />` : '';
+  }).join('')}</div>`;
+}
+
+function renderUser(m, i) {
+  const v = state.versions[i];
+  const content = v ? v.versions[v.currentIndex] : m.content;
+  const files = v ? v.versionFiles[v.currentIndex] : m.files;
+  const switcher = v && v.versions.length > 1 ? `
+    <div class="version-switcher">
+      <button class="vs-btn" data-vs="prev" data-idx="${i}" ${v.currentIndex === 0 ? 'disabled' : ''}><i data-lucide="chevron-left"></i></button>
+      <span class="vs-label">${v.currentIndex + 1} / ${v.versions.length}</span>
+      <button class="vs-btn" data-vs="next" data-idx="${i}" ${v.currentIndex === v.versions.length - 1 ? 'disabled' : ''}><i data-lucide="chevron-right"></i></button>
+    </div>` : '';
+  return `
+    <div class="msg msg-user">
+      ${renderFilesInline(files)}
+      <div class="bubble">${escapeHtml(content).replace(/\n/g, '<br>')}</div>
+      ${switcher}
+    </div>`;
+}
+
+function renderAssistant(m, i) {
+  // Check if previous user message has versions — use current index
+  const prevIdx = i - 1;
+  const v = state.versions[prevIdx];
+  const content = (v && v.aiReplies[v.currentIndex]) ? v.aiReplies[v.currentIndex] : (m.content || '');
+  return `
+    <div class="msg msg-assistant">
+      <div class="avatar"><img src="/av.png" alt="DeepRWA" /></div>
+      <div class="assistant-body">
+        <div class="assistant-name">DeepRWA</div>
+        <div class="assistant-text">${content ? renderMarkdown(content) : ''}</div>
+      </div>
+    </div>`;
+}
+
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-vs]');
+  if (!btn) return;
+  const idx = parseInt(btn.dataset.idx);
+  const dir = btn.dataset.vs;
+  const v = state.versions[idx];
+  if (!v) return;
+  const newIdx = dir === 'prev' ? Math.max(0, v.currentIndex - 1) : Math.min(v.versions.length - 1, v.currentIndex + 1);
+  if (newIdx === v.currentIndex) return;
+  v.currentIndex = newIdx;
+  // Update visible user message
+  state.messages[idx].content = v.versions[newIdx];
+  state.messages[idx].files = v.versionFiles[newIdx];
+  // Update following assistant
+  if (state.messages[idx + 1] && state.messages[idx + 1].role === 'assistant') {
+    state.messages[idx + 1].content = v.aiReplies[newIdx];
+    state.messages[idx + 1].files = v.aiFiles[newIdx];
+  }
+  render();
+});
+
+load();
+</script>
+</body>
+</html>
