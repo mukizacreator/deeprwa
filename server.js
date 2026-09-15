@@ -27,7 +27,7 @@ const supabase = (supabaseUrl && supabaseKey)
   : null;
 const supabaseConfigured = !!supabase;
 
-// ============ BREVO (deliverability-first) ============
+// ============ BREVO ============
 let brevoClient = null;
 try {
   if (process.env.BREVO_API_KEY) {
@@ -42,12 +42,9 @@ const FROM_NAME = 'DeepRWA';
 const LOGO_URL = 'https://deeprwa.agentdomains.co/av.png';
 
 const ACTION_SUBJECTS = {
-  signup: 'DeepRWA verification code',
-  login: 'DeepRWA login code',
-  reset: 'DeepRWA password reset',
-  'forgot-password': 'DeepRWA password reset',
-  'change-email': 'DeepRWA email change',
-  'change-password': 'DeepRWA password change',
+  signup: 'DeepRWA verification code', login: 'DeepRWA login code',
+  reset: 'DeepRWA password reset', 'forgot-password': 'DeepRWA password reset',
+  'change-email': 'DeepRWA email change', 'change-password': 'DeepRWA password change',
   'delete-account': 'DeepRWA account deletion'
 };
 const ACTION_INTROS = {
@@ -83,8 +80,7 @@ function buildVerificationEmailHtml(action, code) {
 
 async function sendEmailRaw(to, subject, html) {
   const m = new brevo.SendSmtpEmail();
-  m.subject = subject;
-  m.htmlContent = html;
+  m.subject = subject; m.htmlContent = html;
   m.sender = { name: FROM_NAME, email: FROM_EMAIL };
   m.to = [{ email: to }];
   return await brevoClient.sendTransacEmail(m);
@@ -178,6 +174,7 @@ async function trackSession(userId, req) {
       if (ex) { await supabase.from('sessions').update({ device: ua.substring(0, 120), ip, user_agent: ua, last_active: new Date().toISOString() }).eq('id', ex.id); return; }
     }
     await supabase.from('sessions').insert({ user_id: userId, client_id: clientId, device: ua.substring(0, 120), user_agent: ua, ip });
+    console.log(`📌 Session tracked for ${userId} (client: ${clientId || 'none'})`);
   } catch (e) { console.warn('session track failed', e.message); }
 }
 
@@ -210,7 +207,7 @@ Always reply in the **exact language the user wrote in**.
 When a user message contains images, PDFs, or text files, the images/PDFs are provided to you natively and text content is embedded in the message. There may also be a note like "[N file(s) attached: filename]".
 - NEVER say "I don't see any document" or "I don't see any image" when such a note or attachment is present.
 - If you can see the content, describe it or answer the question.
-- If the note is there but you truly cannot extract content, say: "I received your file(s), but couldn't read their contents. Try a different format or size."
+- If the note is there but you truly cannot extract content, say: "I received your file(s), but couldn't read their contents."
 
 ## RULES
 1. Accuracy first.
@@ -246,6 +243,14 @@ const cooldown = new Map();
 function isCooling(k) { const u = cooldown.get(k); if (!u) return false; if (Date.now() > u) { cooldown.delete(k); return false; } return true; }
 function setCooldown(k, ms) { cooldown.set(k, Date.now() + ms); }
 
+// CRITICAL: Strip `files` and other unsupported fields before sending to any provider
+function sanitizeForProvider(messages) {
+  return messages.map(m => {
+    if (m.role === 'system') return { role: 'system', content: m.content };
+    return { role: m.role, content: m.content }; // No files property!
+  });
+}
+
 async function* sseOpenAI(url, headers, body, timeoutMs = 45000) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -270,29 +275,34 @@ async function* sseOpenAI(url, headers, body, timeoutMs = 45000) {
 
 async function* streamGroq(msgs) {
   const k = 'groq'; if (isCooling(k)) throw new Error('cooling');
-  try { yield* sseOpenAI('https://api.groq.com/openai/v1/chat/completions', { Authorization: `Bearer ${process.env.GROQ_API_KEY}` }, { model: 'openai/gpt-oss-120b', messages: msgs, stream: true, temperature: 0.7, max_completion_tokens: 4096 }); }
+  const sanitized = sanitizeForProvider(msgs);
+  try { yield* sseOpenAI('https://api.groq.com/openai/v1/chat/completions', { Authorization: `Bearer ${process.env.GROQ_API_KEY}` }, { model: 'openai/gpt-oss-120b', messages: sanitized, stream: true, temperature: 0.7, max_completion_tokens: 4096 }); }
   catch (e) { setCooldown(k, e.status === 429 ? 120000 : 300000); throw e; }
 }
 async function* streamOpenRouter(msgs) {
   const k = 'or'; if (isCooling(k)) throw new Error('cooling');
-  try { yield* sseOpenAI('https://openrouter.ai/api/v1/chat/completions', { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`, 'HTTP-Referer': 'https://deeprwa.agentdomains.co', 'X-Title': 'DeepRWA' }, { model: 'openrouter/free', messages: msgs, stream: true, temperature: 0.7, max_tokens: 4096 }); }
+  const sanitized = sanitizeForProvider(msgs);
+  try { yield* sseOpenAI('https://openrouter.ai/api/v1/chat/completions', { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`, 'HTTP-Referer': 'https://deeprwa.agentdomains.co', 'X-Title': 'DeepRWA' }, { model: 'openrouter/free', messages: sanitized, stream: true, temperature: 0.7, max_tokens: 4096 }); }
   catch (e) { setCooldown(k, e.status === 429 ? 120000 : 300000); throw e; }
 }
 async function* streamNVIDIA(msgs) {
   const k = 'nv'; if (isCooling(k)) throw new Error('cooling');
-  try { yield* sseOpenAI('https://integrate.api.nvidia.com/v1/chat/completions', { Authorization: `Bearer ${process.env.NVIDIA_API_KEY}` }, { model: 'nvidia/nemotron-3-super-120b-a12b', messages: msgs, stream: true, temperature: 0.7, max_tokens: 4096 }); }
+  const sanitized = sanitizeForProvider(msgs);
+  try { yield* sseOpenAI('https://integrate.api.nvidia.com/v1/chat/completions', { Authorization: `Bearer ${process.env.NVIDIA_API_KEY}` }, { model: 'nvidia/nemotron-3-super-120b-a12b', messages: sanitized, stream: true, temperature: 0.7, max_tokens: 4096 }); }
   catch (e) { setCooldown(k, e.status === 429 ? 120000 : 300000); throw e; }
 }
 async function* streamPollinations(msgs) {
   const k = 'poll'; if (isCooling(k)) throw new Error('cooling');
-  try { yield* sseOpenAI('https://text.pollinations.ai/openai', {}, { model: 'openai', messages: msgs, stream: true, temperature: 0.7, max_tokens: 4096 }); }
+  const sanitized = sanitizeForProvider(msgs);
+  try { yield* sseOpenAI('https://text.pollinations.ai/openai', {}, { model: 'openai', messages: sanitized, stream: true, temperature: 0.7, max_tokens: 4096 }); }
   catch (e) { setCooldown(k, 120000); throw e; }
 }
 async function* streamCloudflare(msgs) {
   const k = 'cf'; if (isCooling(k)) throw new Error('cooling');
+  const sanitized = sanitizeForProvider(msgs);
   const url = `https://api.cloudflare.com/client/v4/accounts/${process.env.CF_ACCOUNT_ID}/ai/run/@cf/meta/llama-3.3-70b-instruct-fp8-fast`;
   try {
-    const res = await fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${process.env.CF_API_TOKEN}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: msgs, stream: true }) });
+    const res = await fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${process.env.CF_API_TOKEN}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: sanitized, stream: true }) });
     if (!res.ok) { const e = new Error(`CF HTTP ${res.status}`); e.status = res.status; throw e; }
     const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = '';
     while (true) {
@@ -310,8 +320,9 @@ async function* streamCloudflare(msgs) {
 }
 async function* streamGemini(msgs) {
   const k = 'gem'; if (isCooling(k)) throw new Error('cooling');
-  const sys = msgs.filter(m => m.role === 'system').map(m => m.content).join('\n');
-  const convo = msgs.filter(m => m.role !== 'system').map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
+  const sanitized = sanitizeForProvider(msgs);
+  const sys = sanitized.filter(m => m.role === 'system').map(m => m.content).join('\n');
+  const convo = sanitized.filter(m => m.role !== 'system').map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
   const body = { contents: convo, systemInstruction: sys ? { parts: [{ text: sys }] } : undefined, generationConfig: { temperature: 0.7, maxOutputTokens: 4096 } };
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:streamGenerateContent?alt=sse&key=${process.env.GEMINI_API_KEY}`;
   try {
@@ -334,16 +345,17 @@ async function* streamGemini(msgs) {
 
 // Vision: Gemini primary (images + PDFs), then OpenRouter + NVIDIA for images only
 async function* streamGeminiVision(messages, attachments) {
-  const sys = messages.filter(m => m.role === 'system').map(m => m.content).join('\n');
-  const userMsgs = messages.filter(m => m.role === 'user');
+  const sanitized = sanitizeForProvider(messages);
+  const sys = sanitized.filter(m => m.role === 'system').map(m => m.content).join('\n');
+  const userMsgs = sanitized.filter(m => m.role === 'user');
   const lastUser = userMsgs[userMsgs.length - 1];
-  const priorConvo = messages.filter(m => m.role !== 'system' && m !== lastUser).map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
+  const priorConvo = sanitized.filter(m => m.role !== 'system' && m !== lastUser).map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
   const parts = [{ text: lastUser?.content || 'Analyse the attached file(s).' }];
   for (const f of attachments) parts.push({ inline_data: { mime_type: f.mime, data: f.data } });
   const body = { contents: [...priorConvo, { role: 'user', parts }], systemInstruction: sys ? { parts: [{ text: sys }] } : undefined, generationConfig: { temperature: 0.7, maxOutputTokens: 4096 } };
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:streamGenerateContent?alt=sse&key=${process.env.GEMINI_API_KEY}`;
   const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  if (!res.ok) { const t = await res.text().catch(() => ''); const e = new Error(`Gemini Vision ${res.status}`); e.status = res.status; throw e; }
+  if (!res.ok) { const e = new Error(`Gemini Vision ${res.status}`); e.status = res.status; throw e; }
   const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = '';
   while (true) {
     const { done, value } = await reader.read(); if (done) break;
@@ -361,9 +373,10 @@ async function* streamGeminiVision(messages, attachments) {
 async function* streamOpenRouterVision(messages, attachments) {
   const images = attachments.filter(a => a.mime.startsWith('image/'));
   if (!images.length) throw new Error('no images');
-  const userMsgs = messages.filter(m => m.role === 'user');
+  const sanitized = sanitizeForProvider(messages);
+  const userMsgs = sanitized.filter(m => m.role === 'user');
   const lastUser = userMsgs[userMsgs.length - 1];
-  const convo = messages.map(m => {
+  const convo = sanitized.map(m => {
     if (m === lastUser) {
       const content = [{ type: 'text', text: lastUser.content || 'Analyse the attached image(s).' }];
       for (const f of images) content.push({ type: 'image_url', image_url: { url: `data:${f.mime};base64,${f.data}` } });
@@ -383,9 +396,10 @@ async function* streamOpenRouterVision(messages, attachments) {
 async function* streamNVIDIAVision(messages, attachments) {
   const images = attachments.filter(a => a.mime.startsWith('image/'));
   if (!images.length) throw new Error('no images');
-  const userMsgs = messages.filter(m => m.role === 'user');
+  const sanitized = sanitizeForProvider(messages);
+  const userMsgs = sanitized.filter(m => m.role === 'user');
   const lastUser = userMsgs[userMsgs.length - 1];
-  const convo = messages.map(m => {
+  const convo = sanitized.map(m => {
     if (m === lastUser) {
       const content = [{ type: 'text', text: lastUser.content || 'Analyse the attached image(s).' }];
       for (const f of images) content.push({ type: 'image_url', image_url: { url: `data:${f.mime};base64,${f.data}` } });
@@ -426,19 +440,19 @@ async function generateChatTitle(firstMessage) {
     const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'openai/gpt-oss-120b', messages: [{ role: 'system', content: 'Generate a concise 2-5 word title. Reply with ONLY the title — no quotes, no prefix, no punctuation.' }, { role: 'user', content: t }], max_completion_tokens: 40, reasoning_effort: 'none', temperature: 0.3 })
+      body: JSON.stringify({ model: 'openai/gpt-oss-120b', messages: [{ role: 'system', content: 'Generate a concise 2-5 word title. Reply with ONLY the title.' }, { role: 'user', content: t }], max_completion_tokens: 40, reasoning_effort: 'none', temperature: 0.3 })
     });
     if (!res.ok) throw new Error();
     const data = await res.json();
-    let title = (data.choices?.[0]?.message?.content || '').trim().replace(/^["'`\s]+|["'`\s]+$/g, '').replace(/^Title:\s*/i, '').split('\n')[0].trim().replace(/[.!?,;:]+$/, '');
-    if (!title || title.length > 60 || title.toLowerCase() === t.toLowerCase()) title = t.split(/\s+/).slice(0, 6).join(' ');
+    let title = (data.choices?.[0]?.message?.content || '').trim().replace(/^["'`\s]+|["'`\s]+$/g, '').split('\n')[0].trim();
+    if (!title || title.length > 60) title = t.split(/\s+/).slice(0, 6).join(' ');
     return title || 'New chat';
   } catch { return t.split(/\s+/).slice(0, 6).join(' ') || 'New chat'; }
 }
 
 // ============ ROUTES ============
-app.get('/health', (req, res) => res.json({ status: 'ok', service: 'DeepRWA', version: '2.5.0', time: new Date().toISOString() }));
-app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '2.5.0', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
+app.get('/health', (req, res) => res.json({ status: 'ok', service: 'DeepRWA', version: '2.6.0', time: new Date().toISOString() }));
+app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '2.6.0', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
 app.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nSitemap: https://deeprwa.agentdomains.co/sitemap.xml\n`));
 app.get('/sitemap.xml', (req, res) => res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>https://deeprwa.agentdomains.co/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>\n</urlset>`));
 
@@ -696,6 +710,11 @@ app.get('/api/auth/session-check', requireAuth, async (req, res) => {
   const { data } = await supabase.from('sessions').select('id, client_id').eq('user_id', req.userId);
   const byClient = clientId ? (data || []).find(s => s.client_id === clientId) : null;
   if (byClient) { await supabase.from('sessions').update({ last_active: new Date().toISOString() }).eq('id', byClient.id); return res.json({ valid: true }); }
+  // If no session row yet but token is valid, DON'T sign out — just track it
+  if (!data || data.length === 0) {
+    await supabase.from('sessions').insert({ user_id: req.userId, client_id: clientId || null, device: 'Unknown', last_active: new Date().toISOString() });
+    return res.json({ valid: true });
+  }
   return res.json({ valid: false });
 });
 
@@ -769,12 +788,6 @@ app.post('/api/chat', requireAuth, async (req, res) => {
     const { data: conv, error } = await supabase.from('conversations').insert({ user_id: req.userId, title }).select().single();
     if (error) return res.status(500).json({ error: error.message });
     convId = conv.id;
-  } else {
-    const { data: conv } = await supabase.from('conversations').select('title').eq('id', convId).single();
-    if (conv && (!conv.title || conv.title === 'New chat' || conv.title.length < 3) && firstUserText) {
-      const title = await generateChatTitle(firstUserText);
-      await supabase.from('conversations').update({ title }).eq('id', convId);
-    }
   }
   const lastMsg = messages[messages.length - 1];
   if (lastMsg?.role === 'user') {
@@ -797,39 +810,43 @@ async function streamChatResponse(messages, res, conversationId, attachments) {
   const userText = lastUser?.content || '';
 
   if ((!attachments || !attachments.length)) {
-    if (isIdentityQuestion(userText)) { for (const c of IDENTITY_REPLY) send({ text: c }); return done(); }
-    if (isGreeting(userText) && messages.length <= 2) { const r = buildGreetingReply(userText); for (const c of r) send({ text: c }); return done(); }
+    if (isIdentityQuestion(userText)) { send({ text: IDENTITY_REPLY }); return done(); }
+    if (isGreeting(userText) && messages.length <= 2) {
+      send({ text: buildGreetingReply(userText) });
+      return done();
+    }
   }
 
+  // If attachments present, try vision providers
   if (attachments && attachments.length) {
-    const names = attachments.map(a => a.name || a.mime).join(', ');
-    const note = `\n\n[${attachments.length} file(s) attached: ${names}]`;
-    let handled = false;
     for (const vp of VISION_PROVIDERS) {
       try {
         let fullText = ''; let any = false;
-        for await (const chunk of vp.fn(messages, attachments)) { any = true; fullText += chunk; send({ text: chunk }); }
+        for await (const chunk of vp.fn(messages, attachments)) { any = true; fullText += chunk; }
         if (any && fullText.trim()) {
-          handled = true;
+          send({ text: fullText });
           if (conversationId && supabase) await supabase.from('messages').insert({ conversation_id: conversationId, role: 'assistant', content: fullText });
           return done();
         }
       } catch (e) { console.warn(`[fail] ${vp.name}: ${e.message}`); continue; }
     }
-    if (!handled) {
-      const lastIdx = messages.length - 1;
-      if (messages[lastIdx]?.role === 'user') messages = messages.map((m, i) => i === lastIdx ? { ...m, content: m.content + note } : m);
-    }
+    // All vision failed — add note so text models don't deny
+    const names = attachments.map(a => a.name || a.mime).join(', ');
+    const note = `\n\n[${attachments.length} file(s) attached: ${names} — vision service temporarily unavailable]`;
+    const lastIdx = messages.length - 1;
+    if (messages[lastIdx]?.role === 'user') messages = messages.map((m, i) => i === lastIdx ? { ...m, content: m.content + note } : m);
   }
 
-  const full = [{ role: 'system', content: SYSTEM_PROMPT }, ...messages];
+  const sanitized = sanitizeForProvider(messages);
+  const full = [{ role: 'system', content: SYSTEM_PROMPT }, ...sanitized];
   let lastErr = null;
   for (const p of PROVIDERS) {
     try {
-      let started = false; let fullText = '';
-      for await (const chunk of p.fn(full)) { started = true; fullText += chunk; send({ text: chunk }); }
-      if (!started) throw new Error('empty');
-      if (conversationId && fullText && supabase) await supabase.from('messages').insert({ conversation_id: conversationId, role: 'assistant', content: fullText });
+      let fullText = '';
+      for await (const chunk of p.fn(full)) { fullText += chunk; }
+      if (!fullText.trim()) throw new Error('empty');
+      send({ text: fullText });
+      if (conversationId && supabase) await supabase.from('messages').insert({ conversation_id: conversationId, role: 'assistant', content: fullText });
       return done();
     } catch (e) { lastErr = e; console.warn(`[fail] ${p.name}: ${e.message}`); continue; }
   }
