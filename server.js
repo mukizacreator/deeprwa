@@ -1,4 +1,4 @@
-// DeepRWA — Complete backend: auth, 2FA, sessions, vision, files, chat, sharing
+// DeepRWA — Complete backend
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -27,76 +27,64 @@ const supabase = (supabaseUrl && supabaseKey)
   : null;
 const supabaseConfigured = !!supabase;
 
-// ============ BREVO (SDK) ============
+// ============ BREVO ============
 let brevoClient = null;
 try {
   if (process.env.BREVO_API_KEY) {
     brevoClient = new brevo.TransactionalEmailsApi();
     brevoClient.setApiKey(brevo.TransactionalEmailsApiApiKeys.apiKey, process.env.BREVO_API_KEY);
     console.log('✅ Brevo client initialized');
-  } else {
-    console.warn('⚠️  BREVO_API_KEY missing — emails will not send');
   }
-} catch (e) {
-  console.error('❌ Brevo init failed:', e.message);
-}
+} catch (e) { console.error('❌ Brevo init failed:', e.message); }
 
 async function sendEmailCode(toEmail, code, purpose = 'verification') {
-  if (!brevoClient) {
-    console.error('❌ Brevo not configured — cannot send email');
-    return false;
-  }
-
+  if (!brevoClient) return false;
   const subjects = {
-    signup: 'DeepRWA — Verify your email',
-    login: 'DeepRWA — Your login code',
-    reset: 'DeepRWA — Password reset code',
-    'change-email': 'DeepRWA — Confirm new email',
-    'change-password': 'DeepRWA — Confirm password change',
-    'delete-account': 'DeepRWA — Confirm account deletion'
+    signup: 'Your DeepRWA verification code',
+    login: 'Your DeepRWA login code',
+    reset: 'Your DeepRWA password reset code',
+    'change-email': 'Your DeepRWA email change code',
+    'change-password': 'Your DeepRWA password change code',
+    'delete-account': 'Your DeepRWA account deletion code'
   };
-
-  const subjectLine = subjects[purpose] || 'DeepRWA — Verification code';
-
-  const htmlContent = `<!DOCTYPE html>
-<html><body style="margin:0;padding:0;background:#000;font-family:'Inter',system-ui,-apple-system,Segoe UI,sans-serif;">
-  <div style="max-width:480px;margin:0 auto;padding:40px 24px;">
-    <div style="text-align:center;margin-bottom:32px;">
-      <img src="https://deeprwa.agentdomains.co/av.png" alt="DeepRWA" width="72" height="72" style="border-radius:18px;display:inline-block;" />
-      <div style="margin-top:16px;font-size:28px;font-weight:800;letter-spacing:-0.02em;">
-        <span style="color:#e6e8eb;">Deep</span><span style="color:#00a1de;">R</span><span style="color:#fad201;">W</span><span style="color:#20603d;">A</span>
-      </div>
-      <div style="margin-top:6px;font-size:14px;color:#8b9199;">Your AI guide to Rwanda</div>
+  const plain = `DeepRWA\n\nYour verification code is: ${code}\n\nThis code expires in 15 minutes.\nIf you did not request this, please ignore this email.\n\n— DeepRWA · The Star`;
+  const html = `<div style="font-family:Arial,Helvetica,sans-serif;max-width:520px;margin:0 auto;padding:24px;color:#1a1a1a;background:#ffffff;">
+  <div style="text-align:center;padding-bottom:16px;border-bottom:1px solid #eaeaea;">
+    <div style="font-size:22px;font-weight:700;letter-spacing:-0.02em;">
+      <span style="color:#111;">Deep</span><span style="color:#00a1de;">R</span><span style="color:#fad201;">W</span><span style="color:#20603d;">A</span>
     </div>
-    <div style="background:#0f1115;border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:32px 24px;text-align:center;">
-      <p style="margin:0 0 20px;color:#8b9199;font-size:14px;">Your verification code is:</p>
-      <div style="background:#1c1f26;padding:24px;border-radius:12px;font-size:36px;font-weight:800;letter-spacing:12px;color:#fff;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">${code}</div>
-      <p style="margin:24px 0 0;color:#5c636d;font-size:12px;">This code expires in 15 minutes. If you didn't request this, ignore this email.</p>
-    </div>
-    <div style="text-align:center;margin-top:28px;color:#5c636d;font-size:11px;">
-      © DeepRWA — The Star&#127775;
-    </div>
+    <div style="font-size:12px;color:#888;margin-top:4px;">Your AI guide to Rwanda</div>
   </div>
-</body></html>`;
+  <div style="padding:28px 0;text-align:center;">
+    <p style="color:#555;font-size:14px;margin:0 0 16px;">Your verification code is:</p>
+    <div style="display:inline-block;background:#f4f6fa;border:1px solid #e2e6ee;border-radius:8px;padding:16px 24px;font-size:28px;font-weight:700;letter-spacing:8px;color:#111;font-family:Consolas,monospace;">${code}</div>
+    <p style="color:#888;font-size:12px;margin:20px 0 0;">This code expires in 15 minutes.</p>
+  </div>
+  <div style="text-align:center;padding-top:16px;border-top:1px solid #eaeaea;color:#999;font-size:11px;">
+    If you did not request this, please ignore this email.<br/>— DeepRWA · The Star
+  </div>
+</div>`;
 
   const sendSmtpEmail = new brevo.SendSmtpEmail();
-  sendSmtpEmail.subject = subjectLine;
-  sendSmtpEmail.htmlContent = htmlContent;
+  sendSmtpEmail.subject = subjects[purpose] || 'Your DeepRWA verification code';
+  sendSmtpEmail.htmlContent = html;
+  sendSmtpEmail.textContent = plain;
   sendSmtpEmail.sender = {
     name: 'DeepRWA',
     email: process.env.EMAIL_FROM || 'noreply@deeprwa.agentdomains.co'
   };
   sendSmtpEmail.to = [{ email: toEmail }];
-
+  sendSmtpEmail.headers = {
+    'List-Unsubscribe': `<mailto:unsubscribe@deeprwa.agentdomains.co?subject=unsubscribe>`,
+    'X-Entity-Ref-ID': crypto.randomBytes(8).toString('hex')
+  };
   try {
     const result = await brevoClient.sendTransacEmail(sendSmtpEmail);
     console.log(`✅ Email sent to ${toEmail} (${purpose}) — messageId: ${result?.body?.messageId || 'n/a'}`);
     return true;
   } catch (err) {
     console.error(`❌ Brevo send failed for ${toEmail}:`, err.message || err);
-    if (err.response && err.response.body) {
-      console.error('Brevo response:', JSON.stringify(err.response.body));
-    }
+    if (err.response && err.response.body) console.error('Brevo response:', JSON.stringify(err.response.body));
     return false;
   }
 }
@@ -111,14 +99,8 @@ app.use('/api/', apiLimiter);
 
 // ============ JWT HELPERS ============
 const JWT_SECRET = process.env.JWT_SECRET;
-
-function signPending(payload, ttlSeconds = 900) {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: ttlSeconds });
-}
-function verifyPending(token) {
-  try { return jwt.verify(token, JWT_SECRET); }
-  catch { return null; }
-}
+function signPending(payload, ttlSeconds = 900) { return jwt.sign(payload, JWT_SECRET, { expiresIn: ttlSeconds }); }
+function verifyPending(token) { try { return jwt.verify(token, JWT_SECRET); } catch { return null; } }
 function stripJwtClaims(payload) {
   if (!payload || typeof payload !== 'object') return {};
   const { exp, iat, nbf, aud, iss, sub, jti, ...rest } = payload;
@@ -134,12 +116,8 @@ function isValidEmail(email) {
   if (t.includes('..')) return false;
   return EMAIL_RE.test(t);
 }
-function pwIsStrong(p) {
-  return typeof p === 'string' && p.length >= 8 && /[a-zA-Z]/.test(p) && /\d/.test(p);
-}
-function genCode() {
-  return Math.floor(100000 + Math.random() * 900000).toString();
-}
+function pwIsStrong(p) { return typeof p === 'string' && p.length >= 8 && /[a-zA-Z]/.test(p) && /\d/.test(p); }
+function genCode() { return Math.floor(100000 + Math.random() * 900000).toString(); }
 
 // ============ USER LOOKUP ============
 async function findUserByEmail(email) {
@@ -163,14 +141,11 @@ async function isEmailTakenByOther(email, currentUserId) {
   return user.id !== currentUserId;
 }
 
-// ============ AUTH HELPERS ============
+// ============ AUTH ============
 function getUserId(req) {
   const auth = req.headers.authorization;
   if (!auth?.startsWith('Bearer ')) return null;
-  try {
-    const payload = jwt.verify(auth.slice(7), JWT_SECRET);
-    return payload.sub;
-  } catch { return null; }
+  try { const p = jwt.verify(auth.slice(7), JWT_SECRET); return p.sub; } catch { return null; }
 }
 async function requireAuth(req, res, next) {
   const userId = getUserId(req);
@@ -200,25 +175,13 @@ async function trackSession(userId, req) {
   const ip = (req.headers['x-forwarded-for'] || req.ip || 'Unknown').split(',')[0].trim();
   try {
     if (clientId) {
-      const { data: existing } = await supabase.from('sessions')
-        .select('id').eq('user_id', userId).eq('client_id', clientId).maybeSingle();
+      const { data: existing } = await supabase.from('sessions').select('id').eq('user_id', userId).eq('client_id', clientId).maybeSingle();
       if (existing) {
-        await supabase.from('sessions').update({
-          device: ua.substring(0, 120),
-          ip,
-          user_agent: ua,
-          last_active: new Date().toISOString()
-        }).eq('id', existing.id);
+        await supabase.from('sessions').update({ device: ua.substring(0, 120), ip, user_agent: ua, last_active: new Date().toISOString() }).eq('id', existing.id);
         return;
       }
     }
-    await supabase.from('sessions').insert({
-      user_id: userId,
-      client_id: clientId,
-      device: ua.substring(0, 120),
-      user_agent: ua,
-      ip
-    });
+    await supabase.from('sessions').insert({ user_id: userId, client_id: clientId, device: ua.substring(0, 120), user_agent: ua, ip });
   } catch (e) { console.warn('session track failed', e.message); }
 }
 
@@ -244,8 +207,8 @@ If the user asks about **any other country** or a topic unrelated to Rwanda, rep
 ## GREETINGS AND SMALL TALK
 Greetings, thanks, goodbyes, "how are you", "who are you", "who made you" are NOT out of scope. Respond warmly and briefly, then invite a Rwanda-related question.
 
-## LANGUAGE RULE (critical)
-Always reply in the **exact language the user wrote in**. Support every language.
+## LANGUAGE RULE
+Always reply in the **exact language the user wrote in**.
 
 ## IMAGES AND DOCUMENTS
 When a user sends an image, describe what you see and answer their question about it professionally. When a user sends a PDF or text document, read it, summarise it, and answer questions about it. Never claim you cannot see images or files when they are attached.
@@ -255,10 +218,6 @@ When a user sends an image, describe what you see and answer their question abou
 2. If you cannot find a definitive answer, say so politely. Never invent facts.
 3. Be concise, clear, easy to understand. Use Markdown. No raw HTML.
 4. Respectful tone always.
-
-## OUTPUT FORMAT
-- Markdown only. Bold key subjects.
-- For prices, state currency (RWF) and add "approximate, may vary".
 
 ## STYLE
 Warm, professional, concise, respectful.`;
@@ -280,9 +239,7 @@ const IDENTITY_PATTERNS = [
   /\bwho\s+is\s+your\s+(creator|maker|owner|developer)\b/,
   /\bwhat\s+is\s+your\s+name\b/, /\byour\s+name\b/
 ];
-function normalise(t) {
-  return String(t || '').toLowerCase().replace(/[’‘`]/g, "'").replace(/[^\p{L}\p{N}\s']/gu, ' ').replace(/\s+/g, ' ').trim();
-}
+function normalise(t) { return String(t || '').toLowerCase().replace(/[’‘`]/g, "'").replace(/[^\p{L}\p{N}\s']/gu, ' ').replace(/\s+/g, ' ').trim(); }
 function isGreeting(t) {
   const n = normalise(t);
   if (!n) return false;
@@ -290,9 +247,7 @@ function isGreeting(t) {
   if (n.length > 40) return false;
   return /^(hi|hey|hello|yo|muraho|bonjour|jambo|hola|ciao|hallo)\b/.test(n) && n.split(' ').length <= 4;
 }
-function isIdentityQuestion(t) {
-  return IDENTITY_PATTERNS.some(r => r.test(normalise(t)));
-}
+function isIdentityQuestion(t) { return IDENTITY_PATTERNS.some(r => r.test(normalise(t))); }
 function buildGreetingReply(text) {
   const n = normalise(text);
   if (/\b(muraho|mwaramutse|mwiriwe|amakuru|bite)\b/.test(n)) return "Muraho! Ndine DeepRWA — umufasha wawe mu bya Rwanda. Mbaza ikibazo cyose ku Rwanda.";
@@ -370,7 +325,6 @@ async function* streamCloudflare(msgs) {
     }
   } catch (e) { setCooldown(k, e.status === 429 ? 120000 : 300000); throw e; }
 }
-
 async function* streamGemini(msgs) {
   const k = 'gem'; if (isCooling(k)) throw new Error('cooling');
   const sys = msgs.filter(m => m.role === 'system').map(m => m.content).join('\n');
@@ -394,8 +348,6 @@ async function* streamGemini(msgs) {
     }
   } catch (e) { setCooldown(k, e.status === 429 ? 120000 : 300000); throw e; }
 }
-
-// Gemini VISION
 async function* streamGeminiVision(messages, images) {
   const sys = messages.filter(m => m.role === 'system').map(m => m.content).join('\n');
   const userMsgs = messages.filter(m => m.role === 'user');
@@ -404,18 +356,15 @@ async function* streamGeminiVision(messages, images) {
     role: m.role === 'assistant' ? 'model' : 'user',
     parts: [{ text: m.content }]
   }));
-
   const parts = [{ text: lastUser?.content || 'Analyse the attached files.' }];
   for (const img of images) {
     parts.push({ inline_data: { mime_type: img.mime, data: img.data } });
   }
-
   const body = {
     contents: [...priorConvo, { role: 'user', parts }],
     systemInstruction: sys ? { parts: [{ text: sys }] } : undefined,
     generationConfig: { temperature: 0.7, maxOutputTokens: 4096 }
   };
-
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:streamGenerateContent?alt=sse&key=${process.env.GEMINI_API_KEY}`;
   const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   if (!res.ok) { const err = await res.text(); const e = new Error(`Gemini Vision ${res.status}: ${err.slice(0, 200)}`); e.status = res.status; throw e; }
@@ -455,7 +404,7 @@ async function generateChatTitle(firstMessage) {
       body: JSON.stringify({
         model: 'openai/gpt-oss-120b',
         messages: [
-          { role: 'system', content: 'Generate a concise 2-5 word title that captures the topic of the user\'s message. Reply with ONLY the title text — no quotes, no "Title:" prefix, no punctuation at the end. Examples: "Rwandan History Overview", "Kigali Hotels Guide", "Coffee Prices Rwanda", "Nyungwe Forest Tours"' },
+          { role: 'system', content: 'Generate a concise 2-5 word title that captures the topic of the user\'s message. Reply with ONLY the title text — no quotes, no "Title:" prefix, no punctuation at the end.' },
           { role: 'user', content: textOnly }
         ],
         max_completion_tokens: 40,
@@ -472,34 +421,28 @@ async function generateChatTitle(firstMessage) {
       title = textOnly.split(/\s+/).slice(0, 6).join(' ');
     }
     return title || 'New chat';
-  } catch (e) {
+  } catch {
     return textOnly.split(/\s+/).slice(0, 6).join(' ') || 'New chat';
   }
 }
 
 // ============ ROUTES ============
-app.get('/health', (req, res) => res.json({ status: 'ok', service: 'DeepRWA', version: '2.2.2', time: new Date().toISOString() }));
+app.get('/health', (req, res) => res.json({ status: 'ok', service: 'DeepRWA', version: '2.3.0', time: new Date().toISOString() }));
 
 app.get('/api/config', (req, res) => res.json({
-  name: 'DeepRWA', tagline: 'Your AI guide to Rwanda', version: '2.2.2',
+  name: 'DeepRWA', tagline: 'Your AI guide to Rwanda', version: '2.3.0',
   supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null
 }));
 
 app.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nSitemap: https://deeprwa.agentdomains.co/sitemap.xml\n`));
 app.get('/sitemap.xml', (req, res) => res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>https://deeprwa.agentdomains.co/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>\n</urlset>`));
 
-// ---- DEBUG EMAIL TEST ----
+// Debug email test
 app.get('/api/debug/test-email', async (req, res) => {
   const to = req.query.to;
   if (!to) return res.status(400).json({ error: 'Add ?to=email' });
-  const testCode = '123456';
-  const ok = await sendEmailCode(to, testCode, 'signup');
-  res.json({
-    sent: ok,
-    brevoConfigured: !!brevoClient,
-    fromEmail: process.env.EMAIL_FROM || 'noreply@deeprwa.agentdomains.co',
-    to
-  });
+  const ok = await sendEmailCode(to, '123456', 'signup');
+  res.json({ sent: ok, brevoConfigured: !!brevoClient, fromEmail: process.env.EMAIL_FROM || 'noreply@deeprwa.agentdomains.co', to });
 });
 
 // ---- AUTH: Signup ----
@@ -509,10 +452,8 @@ app.post('/api/auth/signup', async (req, res) => {
   if (!isValidEmail(email)) return res.status(400).json({ error: 'Invalid email address' });
   if (!pwIsStrong(password)) return res.status(400).json({ error: 'Password must be at least 8 characters with letters and numbers' });
   const emailLower = email.toLowerCase().trim();
-
   const existing = await findUserByEmail(emailLower);
   if (existing) return res.status(400).json({ error: 'Email already registered' });
-
   const code = genCode();
   const pendingToken = signPending({ type: 'signup', email: emailLower, password, fullName: fullName || '', code }, 900);
   const sent = await sendEmailCode(emailLower, code, 'signup');
@@ -527,20 +468,9 @@ app.post('/api/auth/confirm-signup', async (req, res) => {
   const payload = verifyPending(pendingToken);
   if (!payload || payload.type !== 'signup') return res.status(400).json({ error: 'Invalid or expired token' });
   if (payload.code !== code) return res.status(400).json({ error: 'Invalid code' });
-
-  const { data: newUser, error } = await supabase.auth.admin.createUser({
-    email: payload.email,
-    password: payload.password,
-    email_confirm: true
-  });
+  const { data: newUser, error } = await supabase.auth.admin.createUser({ email: payload.email, password: payload.password, email_confirm: true });
   if (error) return res.status(500).json({ error: error.message });
-
-  await supabase.from('profiles').insert({
-    id: newUser.user.id,
-    email: payload.email,
-    display_name: payload.fullName || null
-  });
-
+  await supabase.from('profiles').insert({ id: newUser.user.id, email: payload.email, display_name: payload.fullName || null });
   await trackSession(newUser.user.id, req);
   const accessToken = jwt.sign({ sub: newUser.user.id, email: payload.email }, JWT_SECRET, { expiresIn: '30d' });
   res.json({ accessToken, user: { id: newUser.user.id, email: payload.email, display_name: payload.fullName || null } });
@@ -552,8 +482,7 @@ app.post('/api/auth/resend-verification', async (req, res) => {
   const p = verifyPending(pendingToken);
   if (!p || p.type !== 'signup') return res.status(400).json({ error: 'Invalid token' });
   const code = genCode();
-  const clean = stripJwtClaims(p);
-  const newToken = signPending({ ...clean, code }, 900);
+  const newToken = signPending({ ...stripJwtClaims(p), code }, 900);
   const sent = await sendEmailCode(p.email, code, 'signup');
   if (!sent) return res.status(500).json({ error: 'Could not send email' });
   res.json({ pendingToken: newToken, email: p.email });
@@ -570,10 +499,7 @@ app.post('/api/auth/login', async (req, res) => {
   const { data: profile } = await supabase.from('profiles').select('totp_enabled').eq('id', user.id).maybeSingle();
   const code = genCode();
   const pendingToken = signPending({
-    type: 'login',
-    userId: user.id,
-    email: user.email,
-    code,
+    type: 'login', userId: user.id, email: user.email, code,
     needs2fa: profile?.totp_enabled || false
   }, 900);
   const sent = await sendEmailCode(user.email, code, 'login');
@@ -602,14 +528,13 @@ app.post('/api/auth/resend-login-code', async (req, res) => {
   const p = verifyPending(pendingToken);
   if (!p || p.type !== 'login') return res.status(400).json({ error: 'Invalid token' });
   const code = genCode();
-  const clean = stripJwtClaims(p);
-  const newToken = signPending({ ...clean, code }, 900);
+  const newToken = signPending({ ...stripJwtClaims(p), code }, 900);
   const sent = await sendEmailCode(p.email, code, 'login');
   if (!sent) return res.status(500).json({ error: 'Could not send email' });
   res.json({ pendingToken: newToken });
 });
 
-// ---- AUTH: 2FA login ----
+// ---- 2FA login ----
 app.post('/api/auth/verify-2fa', async (req, res) => {
   const { twofaToken, code } = req.body || {};
   if (!twofaToken || !code) return res.status(400).json({ error: 'Token and code required' });
@@ -624,22 +549,19 @@ app.post('/api/auth/verify-2fa', async (req, res) => {
   res.json({ accessToken, user: { id: payload.userId, email: payload.email } });
 });
 
-// ---- AUTH: Me ----
+// ---- Me ----
 app.get('/api/auth/me', requireAuth, async (req, res) => {
   if (!supabaseConfigured) return res.status(503).json({ error: 'Not configured' });
   const { data } = await supabase.from('profiles').select('*').eq('id', req.userId).maybeSingle();
   res.json({
     user: {
-      id: req.userId,
-      email: data?.email,
-      display_name: data?.display_name,
-      totp_enabled: data?.totp_enabled || false,
-      created_at: data?.created_at
+      id: req.userId, email: data?.email, display_name: data?.display_name,
+      totp_enabled: data?.totp_enabled || false, created_at: data?.created_at
     }
   });
 });
 
-// ---- Forgot Password (3-step) ----
+// ---- Forgot password ----
 app.post('/api/auth/forgot-password-request', async (req, res) => {
   if (!supabaseConfigured) return res.status(503).json({ error: 'Not configured' });
   const { email } = req.body || {};
@@ -669,8 +591,7 @@ app.post('/api/auth/resend-forgot-password-code', async (req, res) => {
   const p = verifyPending(pendingToken);
   if (!p || p.type !== 'forgot-password') return res.status(400).json({ error: 'Invalid token' });
   const code = genCode();
-  const clean = stripJwtClaims(p);
-  const newToken = signPending({ ...clean, code }, 900);
+  const newToken = signPending({ ...stripJwtClaims(p), code }, 900);
   const sent = await sendEmailCode(p.email, code, 'reset');
   if (!sent) return res.status(500).json({ error: 'Could not send email' });
   res.json({ pendingToken: newToken });
@@ -683,7 +604,6 @@ app.post('/api/auth/reset-password', async (req, res) => {
   if (!pwIsStrong(newPassword)) return res.status(400).json({ error: 'Password must be at least 8 chars with letters and numbers' });
   const g = verifyPending(grantedToken);
   if (!g || g.type !== 'forgot-password-granted') return res.status(400).json({ error: 'Invalid token' });
-  // Verify new password is different
   const same = await verifyPassword(g.email, newPassword);
   if (same) return res.status(400).json({ error: 'New password must be different from the current one' });
   const { error } = await supabase.auth.admin.updateUserById(g.userId, { password: newPassword });
@@ -691,38 +611,26 @@ app.post('/api/auth/reset-password', async (req, res) => {
   res.json({ success: true });
 });
 
-// ---- Account: Send verification code (change-email / change-password / delete-account) ----
+// ---- Account actions ----
 app.post('/api/auth/send-action-code', requireAuth, async (req, res) => {
   if (!supabaseConfigured) return res.status(503).json({ error: 'Not configured' });
   const { action, newEmail } = req.body || {};
-  if (!['change-email', 'change-password', 'delete-account'].includes(action)) {
-    return res.status(400).json({ error: 'Invalid action' });
-  }
+  if (!['change-email', 'change-password', 'delete-account'].includes(action)) return res.status(400).json({ error: 'Invalid action' });
   const { data: profile } = await supabase.from('profiles').select('email').eq('id', req.userId).maybeSingle();
   if (!profile?.email) return res.status(400).json({ error: 'Profile not found' });
-
   let targetEmail = profile.email;
-
   if (action === 'change-email') {
     if (!isValidEmail(newEmail)) return res.status(400).json({ error: 'Invalid new email' });
-    if (newEmail.toLowerCase() === profile.email.toLowerCase()) {
-      return res.status(400).json({ error: 'New email must be different' });
-    }
+    if (newEmail.toLowerCase() === profile.email.toLowerCase()) return res.status(400).json({ error: 'New email must be different' });
     const taken = await isEmailTakenByOther(newEmail, req.userId);
     if (taken) return res.status(400).json({ error: 'That email is already in use' });
     targetEmail = newEmail;
   }
-
   const code = genCode();
   const pendingToken = signPending({
-    type: 'action',
-    action,
-    userId: req.userId,
-    email: profile.email,
-    newEmail: action === 'change-email' ? newEmail : null,
-    code
+    type: 'action', action, userId: req.userId, email: profile.email,
+    newEmail: action === 'change-email' ? newEmail : null, code
   }, 900);
-
   const sent = await sendEmailCode(targetEmail, code, action);
   if (!sent) return res.status(500).json({ error: 'Could not send email' });
   res.json({ pendingToken, targetEmail });
@@ -734,8 +642,7 @@ app.post('/api/auth/resend-action-code', requireAuth, async (req, res) => {
   const p = verifyPending(pendingToken);
   if (!p || p.type !== 'action' || p.userId !== req.userId) return res.status(400).json({ error: 'Invalid token' });
   const code = genCode();
-  const clean = stripJwtClaims(p);
-  const newToken = signPending({ ...clean, code }, 900);
+  const newToken = signPending({ ...stripJwtClaims(p), code }, 900);
   const targetEmail = p.action === 'change-email' && p.newEmail ? p.newEmail : p.email;
   const sent = await sendEmailCode(targetEmail, code, p.action);
   if (!sent) return res.status(500).json({ error: 'Could not send email' });
@@ -749,24 +656,16 @@ app.post('/api/auth/verify-action-code', requireAuth, async (req, res) => {
   if (!p || p.type !== 'action' || p.userId !== req.userId) return res.status(400).json({ error: 'Invalid token' });
   if (p.action !== action) return res.status(400).json({ error: 'Action mismatch' });
   if (p.code !== code) return res.status(400).json({ error: 'Invalid code' });
-  const grantedToken = signPending({
-    type: 'granted',
-    action: p.action,
-    userId: p.userId,
-    newEmail: p.newEmail || null
-  }, 600);
+  const grantedToken = signPending({ type: 'granted', action: p.action, userId: p.userId, newEmail: p.newEmail || null }, 600);
   res.json({ grantedToken });
 });
 
-// ---- Account: Change password ----
 app.post('/api/auth/change-password', requireAuth, async (req, res) => {
   if (!supabaseConfigured) return res.status(503).json({ error: 'Not configured' });
   const { currentPassword, newPassword, grantedToken } = req.body || {};
   if (!pwIsStrong(newPassword)) return res.status(400).json({ error: 'Password must be at least 8 chars with letters and numbers' });
   const g = verifyPending(grantedToken);
-  if (!g || g.type !== 'granted' || g.action !== 'change-password' || g.userId !== req.userId) {
-    return res.status(400).json({ error: 'Invalid or expired token' });
-  }
+  if (!g || g.type !== 'granted' || g.action !== 'change-password' || g.userId !== req.userId) return res.status(400).json({ error: 'Invalid or expired token' });
   const { data: profile } = await supabase.from('profiles').select('email').eq('id', req.userId).maybeSingle();
   const user = await verifyPassword(profile?.email, currentPassword);
   if (!user) return res.status(401).json({ error: 'Current password is incorrect' });
@@ -777,7 +676,6 @@ app.post('/api/auth/change-password', requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
-// ---- Account: Verify current password (pre-check) ----
 app.post('/api/auth/verify-current-password', requireAuth, async (req, res) => {
   const { password } = req.body || {};
   if (!password) return res.status(400).json({ error: 'Password required' });
@@ -787,14 +685,11 @@ app.post('/api/auth/verify-current-password', requireAuth, async (req, res) => {
   res.json({ valid: true });
 });
 
-// ---- Account: Change email ----
 app.post('/api/auth/change-email', requireAuth, async (req, res) => {
   if (!supabaseConfigured) return res.status(503).json({ error: 'Not configured' });
   const { grantedToken } = req.body || {};
   const g = verifyPending(grantedToken);
-  if (!g || g.type !== 'granted' || g.action !== 'change-email' || g.userId !== req.userId || !g.newEmail) {
-    return res.status(400).json({ error: 'Invalid or expired token' });
-  }
+  if (!g || g.type !== 'granted' || g.action !== 'change-email' || g.userId !== req.userId || !g.newEmail) return res.status(400).json({ error: 'Invalid or expired token' });
   if (!isValidEmail(g.newEmail)) return res.status(400).json({ error: 'Invalid email' });
   const taken = await isEmailTakenByOther(g.newEmail, req.userId);
   if (taken) return res.status(400).json({ error: 'That email is already in use' });
@@ -804,14 +699,11 @@ app.post('/api/auth/change-email', requireAuth, async (req, res) => {
   res.json({ success: true, newEmail: g.newEmail });
 });
 
-// ---- Account: Delete ----
 app.delete('/api/auth/account', requireAuth, async (req, res) => {
   if (!supabaseConfigured) return res.status(503).json({ error: 'Not configured' });
   const { grantedToken } = req.body || {};
   const g = verifyPending(grantedToken);
-  if (!g || g.type !== 'granted' || g.action !== 'delete-account' || g.userId !== req.userId) {
-    return res.status(400).json({ error: 'Invalid or expired token' });
-  }
+  if (!g || g.type !== 'granted' || g.action !== 'delete-account' || g.userId !== req.userId) return res.status(400).json({ error: 'Invalid or expired token' });
   await supabase.from('sessions').delete().eq('user_id', req.userId);
   const { error } = await supabase.auth.admin.deleteUser(req.userId);
   if (error) return res.status(500).json({ error: error.message });
@@ -825,10 +717,7 @@ app.post('/api/auth/2fa/setup', requireAuth, async (req, res) => {
   if (profile?.totp_enabled) return res.status(400).json({ error: '2FA is already enabled' });
   const secret = authenticator.generateSecret();
   const otpauth = authenticator.keyuri(profile?.email || 'user', 'DeepRWA', secret);
-  const qrDataUrl = await QRCode.toDataURL(otpauth, {
-    width: 240, margin: 1,
-    color: { dark: '#e6e8eb', light: '#0a0a0a' }
-  });
+  const qrDataUrl = await QRCode.toDataURL(otpauth, { width: 240, margin: 1, color: { dark: '#e6e8eb', light: '#0a0a0a' } });
   await supabase.from('profiles').update({ totp_secret: secret }).eq('id', req.userId);
   res.json({ secret, otpauth, qrDataUrl });
 });
@@ -867,7 +756,7 @@ app.get('/api/auth/sessions', requireAuth, async (req, res) => {
 app.get('/api/auth/session-check', requireAuth, async (req, res) => {
   if (!supabaseConfigured) return res.json({ valid: true });
   const clientId = req.headers['x-client-id'] || '';
-  const { data } = await supabase.from('sessions').select('id, client_id, ip, user_agent').eq('user_id', req.userId);
+  const { data } = await supabase.from('sessions').select('id, client_id').eq('user_id', req.userId);
   const rows = data || [];
   const byClient = clientId ? rows.find(s => s.client_id === clientId) : null;
   if (byClient) {
@@ -881,9 +770,7 @@ app.delete('/api/auth/sessions/:id', requireAuth, async (req, res) => {
   if (!supabaseConfigured) return res.status(503).json({ error: 'Not configured' });
   const clientId = req.headers['x-client-id'] || '';
   const { data: row } = await supabase.from('sessions').select('client_id').eq('id', req.params.id).eq('user_id', req.userId).maybeSingle();
-  if (row && row.client_id === clientId) {
-    return res.status(400).json({ error: 'Use the account menu to log out the current session' });
-  }
+  if (row && row.client_id === clientId) return res.status(400).json({ error: 'Use the account menu to log out the current session' });
   await supabase.from('sessions').delete().eq('id', req.params.id).eq('user_id', req.userId);
   res.json({ success: true });
 });
@@ -891,12 +778,26 @@ app.delete('/api/auth/sessions/:id', requireAuth, async (req, res) => {
 app.delete('/api/auth/sessions-all-others', requireAuth, async (req, res) => {
   if (!supabaseConfigured) return res.status(503).json({ error: 'Not configured' });
   const clientId = req.headers['x-client-id'] || '';
-  if (clientId) {
-    await supabase.from('sessions').delete().eq('user_id', req.userId).neq('client_id', clientId);
-  } else {
-    await supabase.from('sessions').delete().eq('user_id', req.userId);
-  }
+  if (clientId) await supabase.from('sessions').delete().eq('user_id', req.userId).neq('client_id', clientId);
+  else await supabase.from('sessions').delete().eq('user_id', req.userId);
   res.json({ success: true });
+});
+
+// ---- FILE UPLOAD ----
+app.post('/api/upload', requireAuth, async (req, res) => {
+  if (!supabaseConfigured) return res.status(503).json({ error: 'Not configured' });
+  const { name, type, data } = req.body || {};
+  if (!name || !type || !data) return res.status(400).json({ error: 'Missing file data' });
+  try {
+    const buffer = Buffer.from(data, 'base64');
+    if (buffer.length > 20 * 1024 * 1024) return res.status(413).json({ error: 'File too large (max 20MB)' });
+    const ext = (name.split('.').pop() || 'bin').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8);
+    const filePath = `${req.userId}/${Date.now()}-${crypto.randomBytes(4).toString('hex')}.${ext}`;
+    const { error: upErr } = await supabase.storage.from('uploads').upload(filePath, buffer, { contentType: type, upsert: false });
+    if (upErr) return res.status(500).json({ error: upErr.message });
+    const { data: urlData } = supabase.storage.from('uploads').getPublicUrl(filePath);
+    res.json({ url: urlData.publicUrl, name, type });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ---- TITLE ----
@@ -937,7 +838,12 @@ app.post('/api/chat', requireAuth, async (req, res) => {
 
   const lastMsg = messages[messages.length - 1];
   if (lastMsg?.role === 'user') {
-    await supabase.from('messages').insert({ conversation_id: convId, role: 'user', content: lastMsg.content });
+    await supabase.from('messages').insert({
+      conversation_id: convId,
+      role: 'user',
+      content: lastMsg.content,
+      files: Array.isArray(lastMsg.files) ? lastMsg.files : []
+    });
   }
 
   res.setHeader('X-Conversation-Id', convId);
@@ -980,10 +886,7 @@ async function streamChatResponse(messages, res, conversationId, images) {
         await supabase.from('messages').insert({ conversation_id: conversationId, role: 'assistant', content: fullText });
       }
       return done();
-    } catch (e) {
-      lastErr = e;
-      console.warn('[fail] Gemini Vision:', e.message);
-    }
+    } catch (e) { lastErr = e; console.warn('[fail] Gemini Vision:', e.message); }
   }
 
   for (const p of PROVIDERS) {
