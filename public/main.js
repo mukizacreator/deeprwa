@@ -1,4 +1,4 @@
-// DeepRWA — Complete frontend logic
+// DeepRWA — Complete frontend logic (guest = memory only, share = permanent)
 
 // ============ CLIENT ID ============
 function getOrCreateClientId() {
@@ -14,28 +14,7 @@ function getOrCreateClientId() {
 }
 const CLIENT_ID = getOrCreateClientId();
 
-// ============ GUEST FILE STORAGE ============
-const GUEST_FILES_KEY = 'deeprwa_guest_files_v1';
-const GUEST_FILE_MAX_BYTES = 2 * 1024 * 1024;
-const GUEST_FILES_MAX = 30;
-
-function loadGuestFiles() {
-  try {
-    const raw = localStorage.getItem(GUEST_FILES_KEY);
-    if (!raw) return [];
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr : [];
-  } catch { return []; }
-}
-function saveGuestFiles(files) {
-  try { localStorage.setItem(GUEST_FILES_KEY, JSON.stringify(files.slice(-GUEST_FILES_MAX))); }
-  catch {
-    try { localStorage.setItem(GUEST_FILES_KEY, JSON.stringify(files.slice(-Math.floor(GUEST_FILES_MAX / 2)))); } catch {}
-  }
-}
-function clearGuestFiles() { try { localStorage.removeItem(GUEST_FILES_KEY); } catch {} }
-
-// ============ STATE ============
+// ============ STATE (guest data lives ONLY in memory) ============
 const state = {
   user: null,
   token: localStorage.getItem('deeprwa_token') || null,
@@ -49,7 +28,6 @@ const state = {
   editingValue: '',
   messageVersions: {},
   view: 'chats',
-  guestFiles: loadGuestFiles(),
   authModal: { mode: 'login', pendingToken: null, forgot: { email: null, pendingToken: null, grantedToken: null } },
   settingsTab: 'profile',
   sessionCheckInterval: null,
@@ -156,9 +134,7 @@ function passwordFieldHTML(id, placeholder, autocomplete = 'current-password') {
   return `
     <div class="input-wrap">
       <input type="password" id="${id}" placeholder="${placeholder}" class="modal-input" autocomplete="${autocomplete}" />
-      <button type="button" class="input-toggle" data-toggle="${id}" aria-label="Show password">
-        <i data-lucide="eye"></i>
-      </button>
+      <button type="button" class="input-toggle" data-toggle="${id}" aria-label="Show password"><i data-lucide="eye"></i></button>
     </div>`;
 }
 function attachPasswordToggles(root = document) {
@@ -189,8 +165,6 @@ function resetBtn(btn) {
   btn.innerHTML = btn._originalHTML;
   refreshIcons();
 }
-
-// ============ COUNTDOWN ============
 function attachCountdown(btn, seconds = 60) {
   if (!btn) return;
   if (btn._cdInterval) clearInterval(btn._cdInterval);
@@ -202,13 +176,9 @@ function attachCountdown(btn, seconds = 60) {
   btn._cdInterval = setInterval(() => {
     remaining--;
     if (remaining <= 0) {
-      clearInterval(btn._cdInterval);
-      btn._cdInterval = null;
-      btn.disabled = false;
-      btn.textContent = original;
-    } else {
-      btn.textContent = `Resend in ${remaining}s`;
-    }
+      clearInterval(btn._cdInterval); btn._cdInterval = null;
+      btn.disabled = false; btn.textContent = original;
+    } else btn.textContent = `Resend in ${remaining}s`;
   }, 1000);
 }
 
@@ -253,16 +223,9 @@ function startSessionCheck() {
 }
 
 async function forceSignOut(reason) {
-  state.token = null;
-  state.user = null;
-  state.chats = [];
-  state.activeChatId = null;
-  state.messages = [];
+  state.token = null; state.user = null; state.chats = []; state.activeChatId = null; state.messages = [];
   localStorage.removeItem('deeprwa_token');
-  renderUser();
-  renderChatList();
-  renderWelcome();
-  closeAllModals();
+  renderUser(); renderChatList(); renderWelcome(); closeAllModals();
   toast(reason || 'Signed out', 'info');
 }
 
@@ -282,9 +245,7 @@ function renderUser() {
     $('accountBtn').addEventListener('click', (e) => { e.stopPropagation(); toggleAccountDropdown(e.currentTarget); });
   } else {
     sidebarFooter.innerHTML = `
-      <button class="auth-btn" id="authBtn">
-        <i data-lucide="log-in"></i><span>Log in</span>
-      </button>`;
+      <button class="auth-btn" id="authBtn"><i data-lucide="log-in"></i><span>Log in</span></button>`;
     refreshIcons();
     $('authBtn').addEventListener('click', () => openAuthModal('login'));
   }
@@ -322,13 +283,11 @@ function closeSidebar() { sidebar.classList.remove('open'); sidebarBackdrop.clas
 menuBtn.addEventListener('click', openSidebar);
 sidebarBackdrop.addEventListener('click', closeSidebar);
 sidebarCollapseBtn.addEventListener('click', () => {
-  document.body.classList.add('sidebar-collapsed');
-  expandBtn.classList.remove('hidden');
+  document.body.classList.add('sidebar-collapsed'); expandBtn.classList.remove('hidden');
   try { localStorage.setItem('dr_sidebar', 'collapsed'); } catch {}
 });
 expandBtn.addEventListener('click', () => {
-  document.body.classList.remove('sidebar-collapsed');
-  expandBtn.classList.add('hidden');
+  document.body.classList.remove('sidebar-collapsed'); expandBtn.classList.add('hidden');
   try { localStorage.setItem('dr_sidebar', 'expanded'); } catch {}
 });
 try { if (localStorage.getItem('dr_sidebar') === 'collapsed' && window.innerWidth > 820) { document.body.classList.add('sidebar-collapsed'); expandBtn.classList.remove('hidden'); } } catch {}
@@ -345,7 +304,9 @@ sidebarNav.addEventListener('click', (e) => {
 function renderChatList() {
   if (state.view === 'files') { renderFilesList(); return; }
   if (!state.chats.length) {
-    sidebarContent.innerHTML = `<div class="sidebar-empty"><p>No chats yet</p><span>Start a conversation with DeepRWA</span></div>`;
+    sidebarContent.innerHTML = state.user
+      ? `<div class="sidebar-empty"><p>No chats yet</p><span>Start a conversation with DeepRWA</span></div>`
+      : `<div class="sidebar-empty"><p>No chats</p><span>Guest chats live only in this tab. Reload clears them.</span></div>`;
     return;
   }
   const pinned = state.chats.filter(c => c.pinned);
@@ -363,24 +324,36 @@ function renderChatList() {
   refreshIcons();
 }
 
-// FILES — works for both guest AND logged-in
+// FILES — guests see files from current session (memory); logged-in fetch from server
 function renderFilesList() {
   if (state.user) {
     sidebarContent.innerHTML = `<div class="sidebar-empty"><p>Loading files…</p></div>`;
     fetch('/api/files', { headers: authHeaders() })
       .then(r => r.json())
       .then(d => renderFilesArray(d.files || []))
-      .catch(() => {
-        sidebarContent.innerHTML = `<div class="sidebar-empty"><p>Could not load files</p></div>`;
-      });
+      .catch(() => { sidebarContent.innerHTML = `<div class="sidebar-empty"><p>Could not load files</p></div>`; });
     return;
   }
-  renderFilesArray(state.guestFiles || []);
+  // Guest: scan all in-memory chats for files
+  const files = [];
+  for (const chat of state.chats) {
+    const msgs = chat.messages || [];
+    for (const m of msgs) {
+      if (Array.isArray(m.files)) {
+        for (const f of m.files) {
+          if (f && (f.dataUrl || f.url)) files.push({ ...f, created_at: m._createdAt || nowISO() });
+        }
+      }
+    }
+  }
+  renderFilesArray(files, true);
 }
 
-function renderFilesArray(files) {
+function renderFilesArray(files, isGuest = false) {
   if (!files.length) {
-    sidebarContent.innerHTML = `<div class="sidebar-empty"><p>No files yet</p><span>Files you send or receive will appear here</span></div>`;
+    sidebarContent.innerHTML = isGuest
+      ? `<div class="sidebar-empty"><p>No files in this session</p><span>Guest files are not saved. Reload clears them.</span></div>`
+      : `<div class="sidebar-empty"><p>No files yet</p><span>Files you send or receive will appear here</span></div>`;
     return;
   }
   sidebarContent.innerHTML = files.map(f => {
@@ -394,20 +367,14 @@ function renderFilesArray(files) {
         <div class="file-item-name" title="${escapeHtml(f.name || 'file')}">${escapeHtml(f.name || 'file')}</div>
         <div class="file-item-meta">${timeAgo(f.created_at)}</div>
       </div>`;
-    return url
-      ? `<a class="file-item" href="${url}" target="_blank" rel="noopener">${inner}</a>`
-      : `<div class="file-item">${inner}</div>`;
+    return url ? `<a class="file-item" href="${url}" target="_blank" rel="noopener">${inner}</a>` : `<div class="file-item">${inner}</div>`;
   }).join('');
   refreshIcons();
 }
 
 sidebarContent.addEventListener('click', (e) => {
   const menuBtn = e.target.closest('.chat-item-menu');
-  if (menuBtn) {
-    e.stopPropagation();
-    openChatMenu(menuBtn.dataset.menu, menuBtn.getBoundingClientRect());
-    return;
-  }
+  if (menuBtn) { e.stopPropagation(); openChatMenu(menuBtn.dataset.menu, menuBtn.getBoundingClientRect()); return; }
   const item = e.target.closest('.chat-item');
   if (item) selectChat(item.dataset.id);
 });
@@ -431,8 +398,7 @@ function openChatMenu(id, rect) {
   setTimeout(() => document.addEventListener('click', close), 0);
   menu.addEventListener('click', async (ev) => {
     const btn = ev.target.closest('button'); if (!btn) return;
-    const act = btn.dataset.act;
-    menu.remove();
+    const act = btn.dataset.act; menu.remove();
     if (act === 'pin') await togglePin(id);
     else if (act === 'share') await shareChat(id);
     else if (act === 'rename') openRenameModal(id);
@@ -444,13 +410,7 @@ async function togglePin(id) {
   const chat = state.chats.find(c => c.id === id); if (!chat) return;
   chat.pinned = !chat.pinned;
   if (state.user && !isLocalId(id)) {
-    try {
-      await fetch(`/api/conversations/${id}`, {
-        method: 'PATCH',
-        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pinned: chat.pinned })
-      });
-    } catch {}
+    try { await fetch(`/api/conversations/${id}`, { method: 'PATCH', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ pinned: chat.pinned }) }); } catch {}
   }
   renderChatList();
 }
@@ -459,7 +419,7 @@ function askDelete(id) {
   const chat = state.chats.find(c => c.id === id); if (!chat) return;
   confirmAction({
     title: 'Delete this chat?',
-    text: `"${chat.title || 'New chat'}" will be permanently removed. This cannot be undone.`,
+    text: `"${chat.title || 'New chat'}" will be removed from this session.`,
     confirmLabel: 'Delete',
     onConfirm: async () => {
       if (state.user && !isLocalId(id)) {
@@ -480,19 +440,14 @@ function confirmAction({ title, text, confirmLabel = 'Confirm', danger = true, o
   confirmOk.className = danger ? 'btn-danger' : 'btn-primary';
   confirmModal.classList.remove('hidden');
   const cleanup = () => { confirmOk.onclick = null; confirmCancel.onclick = null; };
-  confirmOk.onclick = async () => {
-    confirmModal.classList.add('hidden');
-    cleanup();
-    await onConfirm();
-  };
+  confirmOk.onclick = async () => { confirmModal.classList.add('hidden'); cleanup(); await onConfirm(); };
   confirmCancel.onclick = () => { confirmModal.classList.add('hidden'); cleanup(); };
 }
 
 function openRenameModal(id) {
   const chat = state.chats.find(c => c.id === id); if (!chat) return;
   renameInput.value = chat.title || '';
-  renameModal.classList.remove('hidden');
-  renameModal.dataset.id = id;
+  renameModal.classList.remove('hidden'); renameModal.dataset.id = id;
   renameInput.focus(); renameInput.select();
 }
 renameModalClose.addEventListener('click', () => renameModal.classList.add('hidden'));
@@ -503,26 +458,14 @@ renameSubmit.addEventListener('click', async () => {
   const chat = state.chats.find(c => c.id === id); if (!chat) return;
   chat.title = newTitle;
   if (state.user && !isLocalId(id)) {
-    try {
-      await fetch(`/api/conversations/${id}`, {
-        method: 'PATCH',
-        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: newTitle })
-      });
-    } catch {}
+    try { await fetch(`/api/conversations/${id}`, { method: 'PATCH', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ title: newTitle }) }); } catch {}
   }
-  renderChatList();
-  renameModal.classList.add('hidden');
-  toast('Chat renamed', 'success');
+  renderChatList(); renameModal.classList.add('hidden'); toast('Chat renamed', 'success');
 });
 
 function newChatSilent() {
-  state.activeChatId = null;
-  state.messages = [];
-  state.attachments = [];
-  renderFilePreviews();
-  renderWelcome();
-  updateSendButton();
+  state.activeChatId = null; state.messages = []; state.attachments = [];
+  renderFilePreviews(); renderWelcome(); updateSendButton();
 }
 
 // ============ NEW CHAT ============
@@ -538,21 +481,12 @@ newChatBtn.addEventListener('click', () => {
 });
 
 function createNewChat() {
-  const chat = {
-    id: makeLocalId(), title: 'New chat', messages: [], pinned: false,
-    createdAt: nowISO(), updatedAt: nowISO()
-  };
+  const chat = { id: makeLocalId(), title: 'New chat', messages: [], pinned: false, createdAt: nowISO(), updatedAt: nowISO() };
   state.chats.unshift(chat);
   state.activeChatId = chat.id;
-  state.messages = [];
-  state.attachments = [];
-  state.editingMessageId = null;
-  renderFilePreviews();
-  renderWelcome();
-  renderChatList();
-  updateSendButton();
-  inputEl.focus();
-  closeSidebar();
+  state.messages = []; state.attachments = []; state.editingMessageId = null;
+  renderFilePreviews(); renderWelcome(); renderChatList(); updateSendButton();
+  inputEl.focus(); closeSidebar();
 }
 
 // ============ WELCOME ============
@@ -575,8 +509,7 @@ chatEl.addEventListener('click', (e) => {
   const chip = e.target.closest('.chip');
   if (!chip) return;
   inputEl.value = chip.dataset.q || '';
-  autoGrow(); updateSendButton();
-  formEl.requestSubmit();
+  autoGrow(); updateSendButton(); formEl.requestSubmit();
 });
 
 // ============ SEND/STOP ============
@@ -586,31 +519,20 @@ function updateSendButton() {
   const iconSend = sendBtn.querySelector('.icon-send');
   const iconStop = sendBtn.querySelector('.icon-stop');
   if (state.isGenerating) {
-    iconSend.classList.add('hidden');
-    iconStop.classList.remove('hidden');
-    sendBtn.classList.add('generating');
-    sendBtn.disabled = false;
+    iconSend.classList.add('hidden'); iconStop.classList.remove('hidden');
+    sendBtn.classList.add('generating'); sendBtn.disabled = false;
   } else {
-    iconSend.classList.remove('hidden');
-    iconStop.classList.add('hidden');
-    sendBtn.classList.remove('generating');
-    sendBtn.disabled = !(hasText || hasFiles);
+    iconSend.classList.remove('hidden'); iconStop.classList.add('hidden');
+    sendBtn.classList.remove('generating'); sendBtn.disabled = !(hasText || hasFiles);
   }
 }
-
 sendBtn.addEventListener('click', () => {
   if (state.isGenerating) stopGeneration();
   else if (!sendBtn.disabled) formEl.requestSubmit();
 });
-
 function stopGeneration() {
-  if (state.abortController) {
-    state.abortController.abort();
-    state.abortController = null;
-  }
-  state.isGenerating = false;
-  inputEl.disabled = false;
-  updateSendButton();
+  if (state.abortController) { state.abortController.abort(); state.abortController = null; }
+  state.isGenerating = false; inputEl.disabled = false; updateSendButton();
 }
 
 // ============ COMPOSER ============
@@ -628,16 +550,13 @@ inputEl.addEventListener('keydown', (e) => {
     if (!state.isGenerating && !sendBtn.disabled) formEl.requestSubmit();
   }
 });
-
 attachBtn.addEventListener('click', () => fileInput.click());
 fileInput.addEventListener('change', (e) => {
   for (const f of e.target.files) {
     const id = Math.random().toString(36).slice(2);
     state.attachments.push({ id, file: f, url: URL.createObjectURL(f), name: f.name, type: f.type });
   }
-  fileInput.value = '';
-  renderFilePreviews();
-  updateSendButton();
+  fileInput.value = ''; renderFilePreviews(); updateSendButton();
 });
 
 function renderFilePreviews() {
@@ -668,11 +587,9 @@ function renderMessages() {
     if (m.role === 'user') chatEl.appendChild(buildUserMessage(m, i));
     else chatEl.appendChild(buildAssistantMessage(m, i));
   });
-  scrollBottom();
-  refreshIcons();
+  scrollBottom(); refreshIcons();
 }
 
-// Thumbnails only, clickable to open
 function renderFilesInline(files) {
   if (!files || !files.length) return '';
   return `<div class="msg-files">${files.map(f => {
@@ -681,9 +598,7 @@ function renderFilesInline(files) {
     const inner = isImg && url
       ? `<img src="${url}" class="msg-file-thumb" loading="lazy" alt="attachment" />`
       : `<div class="msg-file-doc"><i data-lucide="file-text"></i></div>`;
-    return url
-      ? `<a href="${url}" target="_blank" rel="noopener">${inner}</a>`
-      : `<div>${inner}</div>`;
+    return url ? `<a href="${url}" target="_blank" rel="noopener">${inner}</a>` : `<div>${inner}</div>`;
   }).join('')}</div>`;
 }
 
@@ -692,7 +607,6 @@ function buildUserMessage(m, i) {
   wrap.className = 'msg msg-user';
   wrap.dataset.index = i;
   wrap.dataset.id = m.id || '';
-
   if (state.editingMessageId === m.id) {
     wrap.classList.add('editing');
     wrap.innerHTML = `
@@ -706,7 +620,6 @@ function buildUserMessage(m, i) {
       </div>`;
     return wrap;
   }
-
   const v = state.messageVersions[m.id];
   const switcher = v && v.versions.length > 1 ? `
     <div class="version-switcher">
@@ -714,7 +627,6 @@ function buildUserMessage(m, i) {
       <span class="vs-label">${v.currentIndex + 1} / ${v.versions.length}</span>
       <button class="vs-btn" data-vs="next" ${v.currentIndex === v.versions.length - 1 ? 'disabled' : ''}><i data-lucide="chevron-right"></i></button>
     </div>` : '';
-
   wrap.innerHTML = `
     ${renderFilesInline(m.files)}
     <div class="bubble">${escapeHtml(m.content).replace(/\n/g, '<br>')}</div>
@@ -752,32 +664,17 @@ function buildAssistantMessage(m, i) {
 // ============ MESSAGE ACTIONS ============
 chatEl.addEventListener('click', async (e) => {
   const vs = e.target.closest('[data-vs]');
-  if (vs) {
-    const wrap = vs.closest('.msg-user');
-    applyVersionChange(wrap.dataset.id, vs.dataset.vs);
-    return;
-  }
-  if (e.target.closest('#editCancel')) {
-    state.editingMessageId = null;
-    state.editingValue = '';
-    renderMessages();
-    return;
-  }
-  if (e.target.closest('#editSend')) {
-    const ta = document.getElementById('editTextarea');
-    if (ta) await saveEditAndSend(ta.value);
-    return;
-  }
-  const action = e.target.closest('.msg-action');
-  if (!action) return;
+  if (vs) { const wrap = vs.closest('.msg-user'); applyVersionChange(wrap.dataset.id, vs.dataset.vs); return; }
+  if (e.target.closest('#editCancel')) { state.editingMessageId = null; state.editingValue = ''; renderMessages(); return; }
+  if (e.target.closest('#editSend')) { const ta = document.getElementById('editTextarea'); if (ta) await saveEditAndSend(ta.value); return; }
+  const action = e.target.closest('.msg-action'); if (!action) return;
   const msgEl = action.closest('.msg');
   const idx = parseInt(msgEl.dataset.index);
   const act = action.dataset.action;
   if (act === 'copy') {
     const text = state.messages[idx]?.content || '';
     try { await navigator.clipboard.writeText(text); } catch {}
-    action.classList.add('copied');
-    toast('Copied to clipboard', 'success', 2000);
+    action.classList.add('copied'); toast('Copied to clipboard', 'success', 2000);
     setTimeout(() => action.classList.remove('copied'), 1500);
   } else if (act === 'like') {
     action.classList.toggle('active');
@@ -787,18 +684,12 @@ chatEl.addEventListener('click', async (e) => {
     action.closest('.msg-actions').querySelector('[data-action="like"]')?.classList.remove('active');
   } else if (act === 'edit') {
     const m = state.messages[idx];
-    state.editingMessageId = m.id;
-    state.editingValue = m.content;
-    renderMessages();
-    setTimeout(() => {
-      const ta = document.getElementById('editTextarea');
-      if (ta) { ta.focus(); ta.style.height = ta.scrollHeight + 'px'; }
-    }, 0);
+    state.editingMessageId = m.id; state.editingValue = m.content; renderMessages();
+    setTimeout(() => { const ta = document.getElementById('editTextarea'); if (ta) { ta.focus(); ta.style.height = ta.scrollHeight + 'px'; } }, 0);
   } else if (act === 'share') {
     await shareSingleMessage(idx);
   }
 });
-
 chatEl.addEventListener('input', (e) => {
   if (e.target.id === 'editTextarea') {
     state.editingValue = e.target.value;
@@ -824,93 +715,56 @@ function fileToDataURL(file) {
     reader.readAsDataURL(file);
   });
 }
-
 async function uploadAttachmentsToServer() {
   if (!state.user || !state.attachments.length) return null;
   const uploaded = [];
   for (const att of state.attachments) {
     try {
-      if (att.file.size > 10 * 1024 * 1024) {
-        toast(`${att.name} is over 10 MB — kept locally only`, 'error');
-        uploaded.push({ name: att.name, type: att.type, url: att.url });
-        continue;
-      }
+      if (att.file.size > 10 * 1024 * 1024) { toast(`${att.name} is over 10 MB — kept locally only`, 'error'); uploaded.push({ name: att.name, type: att.type, url: att.url }); continue; }
       const base64 = await fileToBase64(att.file);
-      const res = await fetch('/api/upload', {
-        method: 'POST',
-        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: att.name, type: att.type, data: base64 })
-      });
-      if (res.ok) {
-        const d = await res.json();
-        uploaded.push({ name: d.name, type: d.type, url: d.url });
-      } else {
-        const err = await res.json().catch(() => ({}));
-        console.warn('Upload failed:', att.name, err.error);
-        uploaded.push({ name: att.name, type: att.type, url: att.url });
-      }
-    } catch (e) {
-      console.warn('Upload exception:', e.message);
-      uploaded.push({ name: att.name, type: att.type, url: att.url });
-    }
+      const res = await fetch('/api/upload', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ name: att.name, type: att.type, data: base64 }) });
+      if (res.ok) { const d = await res.json(); uploaded.push({ name: d.name, type: d.type, url: d.url }); }
+      else { uploaded.push({ name: att.name, type: att.type, url: att.url }); }
+    } catch { uploaded.push({ name: att.name, type: att.type, url: att.url }); }
   }
   return uploaded;
 }
 
-// Save guest files to localStorage so they appear in Files tab
-async function saveGuestAttachments(attachments) {
-  if (state.user || !attachments.length) return;
-  const newEntries = [];
+// Guest: convert attachments to data URLs so they can be shown AND shared
+async function attachmentsToDataUrls(attachments) {
+  const out = [];
   for (const att of attachments) {
     try {
-      if (att.file.size > GUEST_FILE_MAX_BYTES) continue;
+      if (att.file.size > 3 * 1024 * 1024) continue; // 3 MB limit for data URLs in memory
       const dataUrl = await fileToDataURL(att.file);
-      if (dataUrl.length > GUEST_FILE_MAX_BYTES * 1.5) continue;
-      newEntries.push({
-        name: att.name,
-        type: att.type,
-        dataUrl,
-        created_at: new Date().toISOString()
-      });
+      out.push({ name: att.name, type: att.type, dataUrl });
     } catch {}
   }
-  if (!newEntries.length) return;
-  state.guestFiles = [...(state.guestFiles || []), ...newEntries];
-  saveGuestFiles(state.guestFiles);
-  if (state.view === 'files') renderFilesList();
+  return out;
 }
 
-// Prepare attachments for the AI (images + PDFs as base64, text as base64)
 async function collectAttachmentsForAI(attachments) {
   const out = [];
   for (const a of attachments) {
     try {
       if (a.type.startsWith('image/') && a.file.size < 4 * 1024 * 1024) {
-        const data = await fileToBase64(a.file);
-        out.push({ name: a.name, mime: a.type, data });
+        out.push({ name: a.name, mime: a.type, data: await fileToBase64(a.file) });
       } else if (a.type === 'application/pdf' && a.file.size < 6 * 1024 * 1024) {
-        const data = await fileToBase64(a.file);
-        out.push({ name: a.name, mime: 'application/pdf', data });
+        out.push({ name: a.name, mime: 'application/pdf', data: await fileToBase64(a.file) });
       } else if (a.type === 'text/plain' || a.type === 'text/markdown' || a.type === 'text/csv' || a.type === 'application/json') {
         const text = await a.file.text();
-        const base64 = btoa(unescape(encodeURIComponent(text.slice(0, 30000))));
-        out.push({ name: a.name, mime: 'text/plain', data: base64 });
+        out.push({ name: a.name, mime: 'text/plain', data: btoa(unescape(encodeURIComponent(text.slice(0, 30000)))) });
       }
-    } catch (e) { console.warn('collect attachment failed', a.name, e.message); }
+    } catch {}
   }
   return out;
 }
 
 async function requestTitle(text) {
   try {
-    const res = await fetch('/api/chat/title', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text })
-    });
+    const res = await fetch('/api/chat/title', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: text }) });
     if (!res.ok) return null;
-    const d = await res.json();
-    return d.title || null;
+    return (await res.json()).title || null;
   } catch { return null; }
 }
 
@@ -925,32 +779,27 @@ formEl.addEventListener('submit', async (e) => {
   let isNewChat = false;
   if (!chat) {
     chat = { id: makeLocalId(), title: 'New chat', messages: [], pinned: false, createdAt: nowISO(), updatedAt: nowISO() };
-    state.chats.unshift(chat);
-    state.activeChatId = chat.id;
-    isNewChat = true;
-    renderChatList();
+    state.chats.unshift(chat); state.activeChatId = chat.id; isNewChat = true; renderChatList();
   }
 
   const attachmentsForAI = await collectAttachmentsForAI(state.attachments);
-  const uploadedFiles = await uploadAttachmentsToServer();
-  await saveGuestAttachments(state.attachments);
-
-  const filesForMsg = uploadedFiles
-    || state.attachments.map(f => ({ name: f.name, type: f.type, url: f.url }));
+  let filesForMsg;
+  if (state.user) {
+    filesForMsg = await uploadAttachmentsToServer() || [];
+  } else {
+    filesForMsg = await attachmentsToDataUrls(state.attachments);
+  }
   const isFirstMessage = isNewChat || chat.title === 'New chat' || !chat.messages.length;
 
-  inputEl.value = '';
-  autoGrow();
-  state.attachments = [];
-  renderFilePreviews();
-
+  inputEl.value = ''; autoGrow();
+  state.attachments = []; renderFilePreviews();
   chatEl.querySelector('.welcome')?.remove();
 
-  const userMsg = { id: 'user_' + Date.now(), role: 'user', content: text, files: filesForMsg };
+  const userMsg = { id: 'user_' + Date.now(), role: 'user', content: text, files: filesForMsg, _createdAt: nowISO() };
   state.messages.push(userMsg);
   chat.messages = state.messages;
 
-  const assistantMsg = { id: 'asst_' + Date.now(), role: 'assistant', content: '', files: [] };
+  const assistantMsg = { id: 'asst_' + Date.now(), role: 'assistant', content: '', files: [], _createdAt: nowISO() };
   state.messages.push(assistantMsg);
   renderMessages();
 
@@ -959,9 +808,7 @@ formEl.addEventListener('submit', async (e) => {
     if (title) { chat.title = title; renderChatList(); }
   }
 
-  state.isGenerating = true;
-  inputEl.disabled = true;
-  updateSendButton();
+  state.isGenerating = true; inputEl.disabled = true; updateSendButton();
   state.abortController = new AbortController();
 
   let fullText = '';
@@ -977,20 +824,11 @@ formEl.addEventListener('submit', async (e) => {
     };
     if (state.user) payload.conversationId = isLocalId(chat.id) ? null : chat.id;
 
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify(payload),
-      signal: state.abortController.signal
-    });
+    const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload), signal: state.abortController.signal });
     if (!res.ok || !res.body) throw new Error('Bad response');
 
     const serverConvId = res.headers.get('X-Conversation-Id');
-    if (serverConvId && isLocalId(chat.id)) {
-      chat.id = serverConvId;
-      state.activeChatId = serverConvId;
-      renderChatList();
-    }
+    if (serverConvId && isLocalId(chat.id)) { chat.id = serverConvId; state.activeChatId = serverConvId; renderChatList(); }
 
     const reader = res.body.getReader();
     const dec = new TextDecoder();
@@ -1007,12 +845,8 @@ formEl.addEventListener('submit', async (e) => {
         try {
           const j = JSON.parse(p);
           if (j.text) {
-            if (firstChunk) {
-              firstChunk = false;
-              chatEl.querySelector(`.msg-assistant[data-id="${assistantMsg.id}"] .thinking`)?.remove();
-            }
-            fullText += j.text;
-            assistantMsg.content = fullText;
+            if (firstChunk) { firstChunk = false; chatEl.querySelector(`.msg-assistant[data-id="${assistantMsg.id}"] .thinking`)?.remove(); }
+            fullText += j.text; assistantMsg.content = fullText;
             const el = chatEl.querySelector(`.msg-assistant[data-id="${assistantMsg.id}"] .assistant-text`);
             if (el) el.innerHTML = renderMarkdown(fullText);
             scrollBottom();
@@ -1025,31 +859,15 @@ formEl.addEventListener('submit', async (e) => {
       assistantMsg.content = fullText;
       const actEl = chatEl.querySelector(`.msg-assistant[data-id="${assistantMsg.id}"] .msg-actions-assistant`);
       if (actEl) actEl.classList.remove('hidden');
-      if (state.user) {
-        await loadConversations();
-        if (state.view === 'files') renderFilesList();
-      } else {
-        if (state.view === 'files') renderFilesList();
-      }
-    } else {
-      assistantMsg.content = 'No response received.';
-      renderMessages();
-    }
+      if (state.user) await loadConversations();
+      if (state.view === 'files') renderFilesList();
+    } else { assistantMsg.content = 'No response received.'; renderMessages(); }
   } catch (err) {
-    if (err.name === 'AbortError') {
-      assistantMsg.content = fullText ? fullText + '\n\n*[stopped]*' : '*Stopped.*';
-      renderMessages();
-    } else {
-      console.error(err);
-      assistantMsg.content = 'Something went wrong. Please try again.';
-      renderMessages();
-    }
+    if (err.name === 'AbortError') { assistantMsg.content = fullText ? fullText + '\n\n*[stopped]*' : '*Stopped.*'; renderMessages(); }
+    else { console.error(err); assistantMsg.content = 'Something went wrong. Please try again.'; renderMessages(); }
   } finally {
-    state.isGenerating = false;
-    inputEl.disabled = false;
-    state.abortController = null;
-    updateSendButton();
-    inputEl.focus();
+    state.isGenerating = false; inputEl.disabled = false; state.abortController = null;
+    updateSendButton(); inputEl.focus();
   }
 });
 
@@ -1060,68 +878,44 @@ async function saveEditAndSend(newText) {
   const editId = state.editingMessageId;
   const editIdx = state.messages.findIndex(m => m.id === editId);
   if (editIdx < 0) return;
-
   const userMsg = state.messages[editIdx];
   const nextMsg = state.messages[editIdx + 1];
   const isAsst = nextMsg && nextMsg.role === 'assistant';
 
   if (!state.messageVersions[editId]) {
-    state.messageVersions[editId] = {
-      versions: [userMsg.content],
-      files: [userMsg.files || []],
-      aiReplies: [isAsst ? nextMsg.content : ''],
-      aiFiles: [isAsst ? (nextMsg.files || []) : []],
-      currentIndex: 0
-    };
+    state.messageVersions[editId] = { versions: [userMsg.content], files: [userMsg.files || []], aiReplies: [isAsst ? nextMsg.content : ''], aiFiles: [isAsst ? (nextMsg.files || []) : []], currentIndex: 0 };
   }
   const v = state.messageVersions[editId];
-
   if (v.versions[v.versions.length - 1] !== trimmed) {
-    v.versions.push(trimmed);
-    v.files.push(userMsg.files || []);
-    v.aiReplies.push('');
-    v.aiFiles.push([]);
+    v.versions.push(trimmed); v.files.push(userMsg.files || []); v.aiReplies.push(''); v.aiFiles.push([]);
   }
   v.currentIndex = v.versions.length - 1;
-  userMsg.content = trimmed;
-  userMsg.files = v.files[v.currentIndex];
+  userMsg.content = trimmed; userMsg.files = v.files[v.currentIndex];
 
   state.messages = state.messages.slice(0, editIdx + 1);
   const chat = state.chats.find(c => c.id === state.activeChatId);
   if (chat) chat.messages = state.messages;
 
-  state.editingMessageId = null;
-  state.editingValue = '';
+  state.editingMessageId = null; state.editingValue = '';
 
-  const assistantMsg = { id: 'asst_' + Date.now(), role: 'assistant', content: '', files: [] };
+  const assistantMsg = { id: 'asst_' + Date.now(), role: 'assistant', content: '', files: [], _createdAt: nowISO() };
   state.messages.push(assistantMsg);
   renderMessages();
 
-  state.isGenerating = true;
-  inputEl.disabled = true;
-  updateSendButton();
+  state.isGenerating = true; inputEl.disabled = true; updateSendButton();
   state.abortController = new AbortController();
 
   let fullText = '';
   try {
     const endpoint = state.user ? '/api/chat' : '/api/chat/guest';
-    const payload = {
-      messages: state.messages
-        .filter(m => m.role === 'user' || (m.role === 'assistant' && m.content))
-        .map(m => {
-          const out = { role: m.role, content: m.content };
-          if (m.role === 'user' && m.files) out.files = m.files;
-          return out;
-        })
-    };
+    const payload = { messages: state.messages.filter(m => m.role === 'user' || (m.role === 'assistant' && m.content)).map(m => {
+      const out = { role: m.role, content: m.content };
+      if (m.role === 'user' && m.files) out.files = m.files;
+      return out;
+    }) };
     if (state.user && chat && !isLocalId(chat.id)) payload.conversationId = chat.id;
 
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify(payload),
-      signal: state.abortController.signal
-    });
+    const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload), signal: state.abortController.signal });
     if (!res.ok || !res.body) throw new Error('Bad response');
     const reader = res.body.getReader();
     const dec = new TextDecoder();
@@ -1138,12 +932,8 @@ async function saveEditAndSend(newText) {
         try {
           const j = JSON.parse(p);
           if (j.text) {
-            if (firstChunk) {
-              firstChunk = false;
-              chatEl.querySelector(`.msg-assistant[data-id="${assistantMsg.id}"] .thinking`)?.remove();
-            }
-            fullText += j.text;
-            assistantMsg.content = fullText;
+            if (firstChunk) { firstChunk = false; chatEl.querySelector(`.msg-assistant[data-id="${assistantMsg.id}"] .thinking`)?.remove(); }
+            fullText += j.text; assistantMsg.content = fullText;
             const el = chatEl.querySelector(`.msg-assistant[data-id="${assistantMsg.id}"] .assistant-text`);
             if (el) el.innerHTML = renderMarkdown(fullText);
             scrollBottom();
@@ -1158,35 +948,17 @@ async function saveEditAndSend(newText) {
     if (state.user && chat && !isLocalId(chat.id) && userMsg.id && !userMsg.id.startsWith('user_')) {
       try {
         await fetch(`/api/chat/messages/${userMsg.id}/sync-versions`, {
-          method: 'POST',
-          headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            userMessageContent: userMsg.content,
-            userMessageFiles: userMsg.files || [],
-            versions: v.versions,
-            versionFiles: v.files,
-            aiReplies: v.aiReplies,
-            aiFiles: v.aiFiles,
-            currentVersionIndex: v.currentIndex,
-            assistantContent: fullText,
-            assistantFiles: []
-          })
+          method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userMessageContent: userMsg.content, userMessageFiles: userMsg.files || [], versions: v.versions, versionFiles: v.files, aiReplies: v.aiReplies, aiFiles: v.aiFiles, currentVersionIndex: v.currentIndex, assistantContent: fullText, assistantFiles: [] })
         });
-      } catch (e) { console.warn('sync failed', e); }
+      } catch {}
     }
   } catch (err) {
-    if (err.name === 'AbortError') {
-      v.aiReplies[v.currentIndex] = fullText || '*Stopped.*';
-    } else {
-      console.error(err);
-      v.aiReplies[v.currentIndex] = 'Something went wrong.';
-    }
+    if (err.name === 'AbortError') v.aiReplies[v.currentIndex] = fullText || '*Stopped.*';
+    else { console.error(err); v.aiReplies[v.currentIndex] = 'Something went wrong.'; }
     renderMessages();
   } finally {
-    state.isGenerating = false;
-    inputEl.disabled = false;
-    state.abortController = null;
-    updateSendButton();
+    state.isGenerating = false; inputEl.disabled = false; state.abortController = null; updateSendButton();
   }
 }
 
@@ -1200,10 +972,7 @@ function applyVersionChange(msgId, dir) {
   state.messages[msgIdx].content = v.versions[newIdx];
   state.messages[msgIdx].files = v.files[newIdx];
   const next = state.messages[msgIdx + 1];
-  if (next && next.role === 'assistant') {
-    next.content = v.aiReplies[newIdx] || '';
-    next.files = v.aiFiles[newIdx] || [];
-  }
+  if (next && next.role === 'assistant') { next.content = v.aiReplies[newIdx] || ''; next.files = v.aiFiles[newIdx] || []; }
   renderMessages();
 }
 
@@ -1213,10 +982,7 @@ async function loadConversations() {
   try {
     const res = await fetch('/api/conversations', { headers: authHeaders() });
     const data = await res.json();
-    const serverChats = (data.conversations || []).map(c => ({
-      id: c.id, title: c.title, pinned: c.pinned, messages: [],
-      createdAt: c.created_at, updatedAt: c.updated_at
-    }));
+    const serverChats = (data.conversations || []).map(c => ({ id: c.id, title: c.title, pinned: c.pinned, messages: [], createdAt: c.created_at, updatedAt: c.updated_at }));
     const locals = state.chats.filter(c => isLocalId(c.id));
     state.chats = [...locals, ...serverChats];
     renderChatList();
@@ -1226,29 +992,18 @@ async function loadConversations() {
 async function selectChat(id) {
   if (state.isGenerating) return;
   const chat = state.chats.find(c => c.id === id); if (!chat) return;
-  state.activeChatId = id;
-  state.editingMessageId = null;
-  state.editingValue = '';
-  state.attachments = [];
-  renderFilePreviews();
+  state.activeChatId = id; state.editingMessageId = null; state.editingValue = '';
+  state.attachments = []; renderFilePreviews();
 
   if (state.user && !isLocalId(id)) {
     try {
       const res = await fetch(`/api/conversations/${id}/messages`, { headers: authHeaders() });
       const data = await res.json();
-      state.messages = (data.messages || []).map(m => ({
-        id: m.id, role: m.role, content: m.content, files: m.files || []
-      }));
+      state.messages = (data.messages || []).map(m => ({ id: m.id, role: m.role, content: m.content, files: m.files || [], _createdAt: m.created_at }));
       state.messageVersions = {};
       (data.messages || []).forEach(m => {
         if (m.role === 'user' && m.versions && m.versions.length > 0) {
-          state.messageVersions[m.id] = {
-            versions: m.versions,
-            files: m.version_files || [],
-            aiReplies: m.ai_replies || [],
-            aiFiles: m.ai_files || [],
-            currentIndex: m.current_version_index || 0
-          };
+          state.messageVersions[m.id] = { versions: m.versions, files: m.version_files || [], aiReplies: m.ai_replies || [], aiFiles: m.ai_files || [], currentIndex: m.current_version_index || 0 };
         }
       });
     } catch { state.messages = []; }
@@ -1257,8 +1012,7 @@ async function selectChat(id) {
   }
   chat.messages = state.messages;
   if (state.messages.length) renderMessages(); else renderWelcome();
-  renderChatList();
-  closeSidebar();
+  renderChatList(); closeSidebar();
 }
 
 // ============ AUTH MODAL ============
@@ -1280,21 +1034,16 @@ function renderLoginForm() {
     <button class="btn-primary" id="authSubmit">Log in</button>
     <button class="link-btn" id="forgotLink">Forgot password?</button>
     <p class="modal-switch">Don't have an account? <a id="switchSignup">Sign up</a></p>`;
-  refreshIcons();
-  attachPasswordToggles(authModalBody);
+  refreshIcons(); attachPasswordToggles(authModalBody);
   $('switchSignup').onclick = (e) => { e.preventDefault(); renderSignupForm(); };
   $('forgotLink').onclick = (e) => { e.preventDefault(); renderForgotStep1(); };
   $('authSubmit').onclick = async () => {
     const email = $('authEmail').value.trim();
     const password = $('authPassword').value;
     if (!email || !password) { toast('Enter email and password', 'error'); return; }
-    const btn = $('authSubmit');
-    setBtnLoading(btn, 'Logging in…');
+    const btn = $('authSubmit'); setBtnLoading(btn, 'Logging in…');
     try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password })
-      });
+      const res = await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) });
       const data = await res.json();
       if (!res.ok) { resetBtn(btn); toast(data.error || 'Login failed', 'error'); return; }
       state.authModal.pendingToken = data.pendingToken;
@@ -1313,8 +1062,7 @@ function renderSignupForm() {
     ${passwordFieldHTML('authConfirm', 'Confirm password', 'new-password')}
     <button class="btn-primary" id="authSubmit">Create account</button>
     <p class="modal-switch">Already have an account? <a id="switchLogin">Log in</a></p>`;
-  refreshIcons();
-  attachPasswordToggles(authModalBody);
+  refreshIcons(); attachPasswordToggles(authModalBody);
   $('switchLogin').onclick = (e) => { e.preventDefault(); renderLoginForm(); };
   $('authSubmit').onclick = async () => {
     const email = $('authEmail').value.trim();
@@ -1324,13 +1072,9 @@ function renderSignupForm() {
     if (!email || !password) { toast('Fill all required fields', 'error'); return; }
     if (password !== confirm) { toast('Passwords do not match', 'error'); return; }
     if (password.length < 8) { toast('Password must be at least 8 characters', 'error'); return; }
-    const btn = $('authSubmit');
-    setBtnLoading(btn, 'Sending code…');
+    const btn = $('authSubmit'); setBtnLoading(btn, 'Sending code…');
     try {
-      const res = await fetch('/api/auth/signup', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, fullName })
-      });
+      const res = await fetch('/api/auth/signup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password, fullName }) });
       const data = await res.json();
       if (!res.ok) { resetBtn(btn); toast(data.error || 'Signup failed', 'error'); return; }
       state.authModal.pendingToken = data.pendingToken;
@@ -1347,45 +1091,32 @@ function renderVerifyCodeForm(type) {
     <button class="btn-primary" id="verifySubmit">Verify</button>
     <button class="link-btn" id="resendBtn">Resend code</button>`;
   refreshIcons();
-  const codeInput = $('verifyCode');
-  codeInput.focus();
-  const resendBtn = $('resendBtn');
-  attachCountdown(resendBtn, 60);
+  const codeInput = $('verifyCode'); codeInput.focus();
+  const resendBtn = $('resendBtn'); attachCountdown(resendBtn, 60);
   resendBtn.onclick = async () => {
     if (resendBtn.disabled) return;
     const endpoint = type === 'signup' ? '/api/auth/resend-verification' : '/api/auth/resend-login-code';
     try {
-      const res = await fetch(endpoint, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pendingToken: state.authModal.pendingToken })
-      });
+      const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pendingToken: state.authModal.pendingToken }) });
       const data = await res.json();
       if (!res.ok) { toast(data.error || 'Could not resend', 'error'); return; }
       state.authModal.pendingToken = data.pendingToken;
-      attachCountdown(resendBtn, 60);
-      toast('Code resent', 'success');
+      attachCountdown(resendBtn, 60); toast('Code resent', 'success');
     } catch { toast('Network error', 'error'); }
   };
   $('verifySubmit').onclick = async () => {
     const code = codeInput.value.trim();
     if (code.length !== 6) { toast('Enter the 6-digit code', 'error'); return; }
-    const btn = $('verifySubmit');
-    setBtnLoading(btn, 'Verifying…');
+    const btn = $('verifySubmit'); setBtnLoading(btn, 'Verifying…');
     const endpoint = type === 'signup' ? '/api/auth/confirm-signup' : '/api/auth/verify-login';
     try {
-      const res = await fetch(endpoint, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pendingToken: state.authModal.pendingToken, code })
-      });
+      const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pendingToken: state.authModal.pendingToken, code }) });
       const data = await res.json();
       if (!res.ok) { resetBtn(btn); toast(data.error || 'Invalid code', 'error'); return; }
       if (data.requires2fa) { render2FALoginForm(data.twofaToken); return; }
-      state.token = data.accessToken;
-      state.user = data.user;
+      state.token = data.accessToken; state.user = data.user;
       localStorage.setItem('deeprwa_token', data.accessToken);
-      authModal.classList.add('hidden');
-      renderUser();
-      await loadConversations();
+      authModal.classList.add('hidden'); renderUser(); await loadConversations();
       toast(type === 'signup' ? 'Welcome to DeepRWA!' : 'Logged in', 'success');
     } catch { resetBtn(btn); toast('Network error', 'error'); }
   };
@@ -1397,25 +1128,17 @@ function render2FALoginForm(twofaToken) {
     <p class="modal-sub">Enter the 6-digit code from your authenticator app.</p>
     <input type="text" id="faCode" placeholder="000000" maxlength="6" class="modal-input code-input" inputmode="numeric" />
     <button class="btn-primary" id="faSubmit">Verify</button>`;
-  refreshIcons();
-  $('faCode').focus();
+  refreshIcons(); $('faCode').focus();
   $('faSubmit').onclick = async () => {
     const code = $('faCode').value.trim();
-    const btn = $('faSubmit');
-    setBtnLoading(btn, 'Verifying…');
+    const btn = $('faSubmit'); setBtnLoading(btn, 'Verifying…');
     try {
-      const res = await fetch('/api/auth/verify-2fa', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ twofaToken, code })
-      });
+      const res = await fetch('/api/auth/verify-2fa', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ twofaToken, code }) });
       const data = await res.json();
       if (!res.ok) { resetBtn(btn); toast(data.error || 'Invalid code', 'error'); return; }
-      state.token = data.accessToken;
-      state.user = data.user;
+      state.token = data.accessToken; state.user = data.user;
       localStorage.setItem('deeprwa_token', data.accessToken);
-      authModal.classList.add('hidden');
-      renderUser();
-      await loadConversations();
+      authModal.classList.add('hidden'); renderUser(); await loadConversations();
       toast('Logged in', 'success');
     } catch { resetBtn(btn); toast('Network error', 'error'); }
   };
@@ -1434,17 +1157,12 @@ function renderForgotStep1() {
   $('fpSubmit').onclick = async () => {
     const email = $('fpEmail').value.trim();
     if (!email) { toast('Enter your email', 'error'); return; }
-    const btn = $('fpSubmit');
-    setBtnLoading(btn, 'Sending code…');
+    const btn = $('fpSubmit'); setBtnLoading(btn, 'Sending code…');
     try {
-      const res = await fetch('/api/auth/forgot-password-request', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email })
-      });
+      const res = await fetch('/api/auth/forgot-password-request', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email }) });
       const data = await res.json();
       if (!res.ok) { resetBtn(btn); toast(data.error || 'Failed', 'error'); return; }
-      state.authModal.forgot.email = email;
-      state.authModal.forgot.pendingToken = data.pendingToken;
+      state.authModal.forgot.email = email; state.authModal.forgot.pendingToken = data.pendingToken;
       renderForgotStep2();
     } catch { resetBtn(btn); toast('Network error', 'error'); }
   };
@@ -1457,34 +1175,24 @@ function renderForgotStep2() {
     <input type="text" id="fpCode" placeholder="000000" maxlength="6" class="modal-input code-input" inputmode="numeric" autocomplete="one-time-code" />
     <button class="btn-primary" id="fpVerify">Verify code</button>
     <button class="link-btn" id="fpResend">Resend code</button>`;
-  refreshIcons();
-  $('fpCode').focus();
-  const resendBtn = $('fpResend');
-  attachCountdown(resendBtn, 60);
+  refreshIcons(); $('fpCode').focus();
+  const resendBtn = $('fpResend'); attachCountdown(resendBtn, 60);
   resendBtn.onclick = async () => {
     if (resendBtn.disabled) return;
     try {
-      const res = await fetch('/api/auth/resend-forgot-password-code', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pendingToken: state.authModal.forgot.pendingToken })
-      });
+      const res = await fetch('/api/auth/resend-forgot-password-code', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pendingToken: state.authModal.forgot.pendingToken }) });
       const data = await res.json();
       if (!res.ok) { toast(data.error || 'Failed', 'error'); return; }
       state.authModal.forgot.pendingToken = data.pendingToken;
-      attachCountdown(resendBtn, 60);
-      toast('Code resent', 'success');
+      attachCountdown(resendBtn, 60); toast('Code resent', 'success');
     } catch { toast('Network error', 'error'); }
   };
   $('fpVerify').onclick = async () => {
     const code = $('fpCode').value.trim();
     if (code.length !== 6) { toast('Enter the 6-digit code', 'error'); return; }
-    const btn = $('fpVerify');
-    setBtnLoading(btn, 'Verifying…');
+    const btn = $('fpVerify'); setBtnLoading(btn, 'Verifying…');
     try {
-      const res = await fetch('/api/auth/forgot-password-verify-code', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pendingToken: state.authModal.forgot.pendingToken, code })
-      });
+      const res = await fetch('/api/auth/forgot-password-verify-code', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pendingToken: state.authModal.forgot.pendingToken, code }) });
       const data = await res.json();
       if (!res.ok) { resetBtn(btn); toast(data.error || 'Invalid code', 'error'); return; }
       state.authModal.forgot.grantedToken = data.grantedToken;
@@ -1500,20 +1208,15 @@ function renderForgotStep3() {
     ${passwordFieldHTML('fpNew', 'New password (min 8, letters + numbers)', 'new-password')}
     ${passwordFieldHTML('fpConfirm', 'Confirm new password', 'new-password')}
     <button class="btn-primary" id="fpReset">Reset password</button>`;
-  refreshIcons();
-  attachPasswordToggles(authModalBody);
+  refreshIcons(); attachPasswordToggles(authModalBody);
   $('fpReset').onclick = async () => {
     const newPassword = $('fpNew').value;
     const confirm = $('fpConfirm').value;
     if (newPassword.length < 8) { toast('Password must be at least 8 characters', 'error'); return; }
     if (newPassword !== confirm) { toast('Passwords do not match', 'error'); return; }
-    const btn = $('fpReset');
-    setBtnLoading(btn, 'Resetting password…');
+    const btn = $('fpReset'); setBtnLoading(btn, 'Resetting password…');
     try {
-      const res = await fetch('/api/auth/reset-password', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ grantedToken: state.authModal.forgot.grantedToken, newPassword })
-      });
+      const res = await fetch('/api/auth/reset-password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ grantedToken: state.authModal.forgot.grantedToken, newPassword }) });
       const data = await res.json();
       if (!res.ok) { resetBtn(btn); toast(data.error || 'Failed', 'error'); return; }
       toast('Password reset. Log in with your new password.', 'success');
@@ -1535,11 +1238,9 @@ settingsModal.addEventListener('click', (e) => { if (e.target === settingsModal)
 settingsSidebar.addEventListener('click', (e) => {
   const tab = e.target.closest('.settings-tab'); if (!tab) return;
   settingsSidebar.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
-  tab.classList.add('active');
-  state.settingsTab = tab.dataset.tab;
+  tab.classList.add('active'); state.settingsTab = tab.dataset.tab;
   renderSettingsTab(state.settingsTab);
 });
-
 function renderSettingsTab(tab) {
   if (tab === 'profile') renderProfileTab();
   else if (tab === 'account') renderAccountTab();
@@ -1593,52 +1294,33 @@ function renderAccountTab() {
       <p>Permanently delete your account and all associated data. This action cannot be undone.</p>
       <button class="btn-danger" id="deleteAccBtn">Delete account</button>
     </div>`;
-  refreshIcons();
-  attachPasswordToggles(settingsContent);
+  refreshIcons(); attachPasswordToggles(settingsContent);
   $('changeEmailBtn').onclick = () => { $('changeEmailArea').classList.toggle('hidden'); };
-  $('sendEmailCodeBtn').onclick = () => {
-    const newEmail = $('newEmailInput')?.value.trim();
-    if (!newEmail) { toast('Enter new email', 'error'); return; }
-    sendActionCode('change-email', { newEmail });
-  };
+  $('sendEmailCodeBtn').onclick = () => { const newEmail = $('newEmailInput')?.value.trim(); if (!newEmail) { toast('Enter new email', 'error'); return; } sendActionCode('change-email', { newEmail }); };
   $('changePwBtn').onclick = () => { $('changePwArea').classList.toggle('hidden'); };
   $('sendPwCodeBtn').onclick = async () => {
-    const current = $('currentPw').value;
-    const newPw = $('newPw').value;
-    const confirm = $('confirmPw').value;
+    const current = $('currentPw').value, newPw = $('newPw').value, confirm = $('confirmPw').value;
     if (!current || !newPw || !confirm) { toast('Fill all password fields', 'error'); return; }
     if (newPw.length < 8) { toast('Password must be at least 8 characters', 'error'); return; }
     if (newPw !== confirm) { toast('Passwords do not match', 'error'); return; }
     if (current === newPw) { toast('New password must be different', 'error'); return; }
-    const btn = $('sendPwCodeBtn');
-    setBtnLoading(btn, 'Verifying…');
+    const btn = $('sendPwCodeBtn'); setBtnLoading(btn, 'Verifying…');
     try {
-      const res = await fetch('/api/auth/verify-current-password', {
-        method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: current })
-      });
+      const res = await fetch('/api/auth/verify-current-password', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ password: current }) });
       if (!res.ok) { resetBtn(btn); toast('Current password is incorrect', 'error'); return; }
       state._pendingPw = { current, newPw };
       sendActionCode('change-password');
     } catch { resetBtn(btn); toast('Network error', 'error'); }
   };
-  $('deleteAccBtn').onclick = () => {
-    confirmAction({
-      title: 'Delete your account?',
-      text: 'This will permanently delete your account, chats, and files. This action cannot be undone.',
-      confirmLabel: 'Delete account',
-      onConfirm: () => sendActionCode('delete-account')
-    });
-  };
+  $('deleteAccBtn').onclick = () => confirmAction({
+    title: 'Delete your account?', text: 'This will permanently delete your account, chats, and files.', confirmLabel: 'Delete account',
+    onConfirm: () => sendActionCode('delete-account')
+  });
 }
 
 async function sendActionCode(action, extra = {}) {
   try {
-    const res = await fetch('/api/auth/send-action-code', {
-      method: 'POST',
-      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action, ...extra })
-    });
+    const res = await fetch('/api/auth/send-action-code', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ action, ...extra }) });
     const data = await res.json();
     if (!res.ok) { toast(data.error || 'Failed', 'error'); return; }
     state._pendingAction = { action, token: data.pendingToken, targetEmail: data.targetEmail };
@@ -1654,77 +1336,48 @@ function renderActionVerify(action, targetEmail) {
     <button class="btn-primary" id="actVerify">Verify & ${action === 'change-email' ? 'change email' : action === 'change-password' ? 'change password' : 'delete'}</button>
     <button class="link-btn" id="actResend">Resend code</button>
     <button class="link-btn" id="actBack">Back</button>`;
-  refreshIcons();
-  $('actCode').focus();
-  const resendBtn = $('actResend');
-  attachCountdown(resendBtn, 60);
+  refreshIcons(); $('actCode').focus();
+  const resendBtn = $('actResend'); attachCountdown(resendBtn, 60);
   resendBtn.onclick = async () => {
     if (resendBtn.disabled) return;
     try {
-      const res = await fetch('/api/auth/resend-action-code', {
-        method: 'POST',
-        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pendingToken: state._pendingAction.token })
-      });
+      const res = await fetch('/api/auth/resend-action-code', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ pendingToken: state._pendingAction.token }) });
       const data = await res.json();
       if (!res.ok) { toast(data.error || 'Failed', 'error'); return; }
       state._pendingAction.token = data.pendingToken;
-      attachCountdown(resendBtn, 60);
-      toast('Code resent', 'success');
+      attachCountdown(resendBtn, 60); toast('Code resent', 'success');
     } catch { toast('Network error', 'error'); }
   };
   $('actBack').onclick = () => renderAccountTab();
   $('actVerify').onclick = async () => {
     const code = $('actCode').value.trim();
     if (code.length !== 6) { toast('Enter 6-digit code', 'error'); return; }
-    const btn = $('actVerify');
-    setBtnLoading(btn, 'Verifying…');
+    const btn = $('actVerify'); setBtnLoading(btn, 'Verifying…');
     try {
-      const vres = await fetch('/api/auth/verify-action-code', {
-        method: 'POST',
-        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pendingToken: state._pendingAction.token, code, action })
-      });
+      const vres = await fetch('/api/auth/verify-action-code', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ pendingToken: state._pendingAction.token, code, action }) });
       const vdata = await vres.json();
       if (!vres.ok) { resetBtn(btn); toast(vdata.error || 'Invalid code', 'error'); return; }
 
       if (action === 'change-email') {
         setBtnLoading(btn, 'Changing email…');
-        const r = await fetch('/api/auth/change-email', {
-          method: 'POST',
-          headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-          body: JSON.stringify({ grantedToken: vdata.grantedToken })
-        });
+        const r = await fetch('/api/auth/change-email', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ grantedToken: vdata.grantedToken }) });
         const d = await r.json();
         if (!r.ok) { resetBtn(btn); toast(d.error || 'Failed', 'error'); return; }
-        state.user.email = d.newEmail;
-        toast('Email changed to ' + d.newEmail, 'success');
-        renderUser();
-        renderProfileTab();
+        state.user.email = d.newEmail; toast('Email changed to ' + d.newEmail, 'success');
+        renderUser(); renderProfileTab();
       } else if (action === 'change-password') {
         setBtnLoading(btn, 'Changing password…');
         const pw = state._pendingPw || {};
-        const r = await fetch('/api/auth/change-password', {
-          method: 'POST',
-          headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-          body: JSON.stringify({ grantedToken: vdata.grantedToken, currentPassword: pw.current, newPassword: pw.newPw })
-        });
+        const r = await fetch('/api/auth/change-password', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ grantedToken: vdata.grantedToken, currentPassword: pw.current, newPassword: pw.newPw }) });
         const d = await r.json();
         if (!r.ok) { resetBtn(btn); toast(d.error || 'Failed', 'error'); return; }
-        state._pendingPw = null;
-        toast('Password changed', 'success');
-        renderProfileTab();
+        state._pendingPw = null; toast('Password changed', 'success'); renderProfileTab();
       } else if (action === 'delete-account') {
         setBtnLoading(btn, 'Deleting account…');
-        const r = await fetch('/api/auth/account', {
-          method: 'DELETE',
-          headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-          body: JSON.stringify({ grantedToken: vdata.grantedToken })
-        });
+        const r = await fetch('/api/auth/account', { method: 'DELETE', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ grantedToken: vdata.grantedToken }) });
         const d = await r.json();
         if (!r.ok) { resetBtn(btn); toast(d.error || 'Failed', 'error'); return; }
-        settingsModal.classList.add('hidden');
-        await forceSignOut('Account deleted');
+        settingsModal.classList.add('hidden'); await forceSignOut('Account deleted');
       }
     } catch { resetBtn(btn); toast('Network error', 'error'); }
   };
@@ -1753,7 +1406,7 @@ async function setup2FA() {
     if (!res.ok) { toast(data.error || 'Failed', 'error'); renderSecurityTab(); return; }
     settingsContent.innerHTML = `
       <h3>Enable 2FA</h3>
-      <p class="modal-sub">Scan this QR code with your authenticator app (Google Authenticator, Authy, 1Password, etc.).</p>
+      <p class="modal-sub">Scan this QR code with your authenticator app.</p>
       <div class="qr-wrap"><img src="${data.qrDataUrl}" alt="QR code" /></div>
       <p style="font-size:0.83rem;color:var(--text-muted);margin-bottom:0.5rem;">Or enter this key manually:</p>
       <div class="secret-box"><code>${escapeHtml(data.secret)}</code><button class="btn-secondary" id="copySecret" style="padding:0.4rem 0.7rem;font-size:0.8rem;">Copy</button></div>
@@ -1768,15 +1421,12 @@ async function setup2FA() {
     $('confirm2faBtn').onclick = async () => {
       const code = $('faSetupCode').value.trim();
       if (code.length !== 6) { toast('Enter the 6-digit code', 'error'); return; }
-      const btn = $('confirm2faBtn');
-      setBtnLoading(btn, 'Verifying…');
+      const btn = $('confirm2faBtn'); setBtnLoading(btn, 'Verifying…');
       try {
         const r = await fetch('/api/auth/2fa/enable', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) });
         const d = await r.json();
         if (!r.ok) { resetBtn(btn); toast(d.error || 'Invalid code', 'error'); return; }
-        state.user.totp_enabled = true;
-        toast('2FA enabled', 'success');
-        renderSecurityTab();
+        state.user.totp_enabled = true; toast('2FA enabled', 'success'); renderSecurityTab();
       } catch { resetBtn(btn); toast('Network error', 'error'); }
     };
   } catch { toast('Network error', 'error'); renderSecurityTab(); }
@@ -1794,15 +1444,12 @@ async function disable2FA() {
   $('confirmDisableBtn').onclick = async () => {
     const code = $('faDisableCode').value.trim();
     if (code.length !== 6) { toast('Enter the 6-digit code', 'error'); return; }
-    const btn = $('confirmDisableBtn');
-    setBtnLoading(btn, 'Disabling…');
+    const btn = $('confirmDisableBtn'); setBtnLoading(btn, 'Disabling…');
     try {
       const r = await fetch('/api/auth/2fa/disable', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) });
       const d = await r.json();
       if (!r.ok) { resetBtn(btn); toast(d.error || 'Invalid code', 'error'); return; }
-      state.user.totp_enabled = false;
-      toast('2FA disabled', 'success');
-      renderSecurityTab();
+      state.user.totp_enabled = false; toast('2FA disabled', 'success'); renderSecurityTab();
     } catch { resetBtn(btn); toast('Network error', 'error'); }
   };
 }
@@ -1837,19 +1484,13 @@ async function renderSessionsTab() {
     settingsContent.querySelectorAll('[data-logout-session]').forEach(btn => {
       btn.onclick = () => confirmAction({
         title: 'Log out this session?', text: 'That device will need to log in again.', confirmLabel: 'Log out',
-        onConfirm: async () => {
-          try { await fetch(`/api/auth/sessions/${btn.dataset.logoutSession}`, { method: 'DELETE', headers: authHeaders() }); toast('Session logged out', 'success'); renderSessionsTab(); }
-          catch { toast('Failed', 'error'); }
-        }
+        onConfirm: async () => { try { await fetch(`/api/auth/sessions/${btn.dataset.logoutSession}`, { method: 'DELETE', headers: authHeaders() }); toast('Session logged out', 'success'); renderSessionsTab(); } catch { toast('Failed', 'error'); } }
       });
     });
     const allBtn = $('logoutAllBtn');
     if (allBtn) allBtn.onclick = () => confirmAction({
       title: 'Log out all other sessions?', text: 'All devices except this one will be signed out.', confirmLabel: 'Log out all',
-      onConfirm: async () => {
-        try { await fetch('/api/auth/sessions-all-others', { method: 'DELETE', headers: authHeaders() }); toast('All other sessions logged out', 'success'); renderSessionsTab(); }
-        catch { toast('Failed', 'error'); }
-      }
+      onConfirm: async () => { try { await fetch('/api/auth/sessions-all-others', { method: 'DELETE', headers: authHeaders() }); toast('All other sessions logged out', 'success'); renderSessionsTab(); } catch { toast('Failed', 'error'); } }
     });
   } catch { settingsContent.innerHTML = `<h3>Sessions</h3><p class="modal-sub">Could not load sessions.</p>`; }
 }
@@ -1861,14 +1502,13 @@ function confirmLogout() {
     onConfirm: () => {
       state.token = null; state.user = null; state.chats = []; state.activeChatId = null; state.messages = [];
       localStorage.removeItem('deeprwa_token');
-      renderUser(); renderChatList(); renderWelcome();
-      settingsModal.classList.add('hidden');
+      renderUser(); renderChatList(); renderWelcome(); settingsModal.classList.add('hidden');
       toast('Logged out', 'info');
     }
   });
 }
 
-// ============ SHARE ============
+// ============ SHARE (works for guest & logged-in; saves snapshot to server) ============
 async function shareChat(chatId) {
   const chat = state.chats.find(c => c.id === chatId); if (!chat) return;
   let msgs = chat.messages || [];
@@ -1898,11 +1538,20 @@ async function postShare(msgs) {
     }
     return out;
   }).filter(m => (m.content && m.content.trim()) || (m.files && m.files.length));
+
+  // Size sanity check
+  const payloadStr = JSON.stringify({ messages: enriched });
+  if (payloadStr.length > 25 * 1024 * 1024) {
+    toast('Share is too large. Try without large files.', 'error');
+    return;
+  }
+
   try {
-    const res = await fetch('/api/share/guest', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: enriched }) });
+    const res = await fetch('/api/share/guest', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payloadStr });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
     showShareModal(data.url);
+    toast('Share link created — it will work anywhere.', 'success');
   } catch { toast('Could not create share link', 'error'); }
 }
 function showShareModal(url) { shareLinkInput.value = url; shareModal.classList.remove('hidden'); }
