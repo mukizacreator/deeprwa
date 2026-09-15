@@ -35,7 +35,8 @@ const state = {
   _pendingPw: null,
   _loginAt: 0,
   _filesCache: [],
-  _selectedFiles: new Set()
+  _selectedFiles: new Set(),
+  _multiSelectMode: false
 };
 
 // ============ DOM ============
@@ -56,9 +57,11 @@ const filePreviews = $('filePreviews');
 const sidebarNav = $('sidebarNav');
 const sidebarContent = $('sidebarContent');
 const sidebarFooter = $('sidebarFooter');
-const filesActions = $('filesActions');
+const filesMultiBar = $('filesMultiBar');
 const filesSelectAllBtn = $('filesSelectAllBtn');
-const filesDeleteBtn = $('filesDeleteBtn');
+const filesDeleteSelectedBtn = $('filesDeleteSelectedBtn');
+const filesDeleteCountLabel = $('filesDeleteCountLabel');
+const filesCancelSelectBtn = $('filesCancelSelectBtn');
 const authModal = $('authModal');
 const authModalBody = $('authModalBody');
 const authModalClose = $('authModalClose');
@@ -104,7 +107,6 @@ function renderMarkdown(text) {
   let html;
   try { html = window.marked.parse(safe, { breaks: true, gfm: true }); }
   catch { return safe.replace(/\n/g, '<br>'); }
-  // Strip horizontal rules — they look unprofessional
   html = html.replace(/<hr\s*\/?>/gi, '');
   return html;
 }
@@ -226,19 +228,17 @@ function startSessionCheck() {
     const now = Date.now();
     if (now - state.lastSessionCheck < 30000) return;
     state.lastSessionCheck = now;
-    // Skip first 30 seconds after login
     if (state._loginAt && (Date.now() - state._loginAt) < 30000) return;
     fetch('/api/auth/session-check', { headers: authHeaders() })
       .then(r => r.ok ? r.json() : null)
-      .then(d => {
-        if (d && d.valid === false) forceSignOut('Signed out from another device');
-      })
+      .then(d => { if (d && d.valid === false) forceSignOut('Signed out from another device'); })
       .catch(() => {});
   }, 60000);
 }
 
 async function forceSignOut(reason) {
   state.token = null; state.user = null; state.chats = []; state.activeChatId = null; state.messages = [];
+  state._selectedFiles.clear(); state._multiSelectMode = false;
   localStorage.removeItem('deeprwa_token');
   renderUser(); renderChatList(); renderWelcome(); closeAllModals();
   toast(reason || 'Signed out', 'info');
@@ -312,17 +312,19 @@ sidebarNav.addEventListener('click', (e) => {
   sidebarNav.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   item.classList.add('active');
   state.view = item.dataset.view;
+  state._selectedFiles.clear();
+  state._multiSelectMode = false;
   renderChatList();
 });
 
 // ============ CHAT LIST ============
 function renderChatList() {
   if (state.view === 'files') {
-    filesActions.classList.remove('hidden');
+    updateMultiBar();
     renderFilesList();
     return;
   }
-  filesActions.classList.add('hidden');
+  filesMultiBar.classList.add('hidden');
   if (!state.chats.length) {
     sidebarContent.innerHTML = `<div class="sidebar-empty"><p>No chats yet</p><span>Start a conversation with DeepRWA</span></div>`;
     return;
@@ -342,6 +344,7 @@ function renderChatList() {
   refreshIcons();
 }
 
+// ============ FILES LIST ============
 async function renderFilesList() {
   if (state.user) {
     sidebarContent.innerHTML = `<div class="sidebar-empty"><p>Loading files…</p></div>`;
@@ -352,10 +355,12 @@ async function renderFilesList() {
       renderFilesArray(state._filesCache, false);
     } catch {
       sidebarContent.innerHTML = `<div class="sidebar-empty"><p>Could not load files</p></div>`;
+      state._filesCache = [];
     }
+    updateMultiBar();
     return;
   }
-  // Guest: scan in-memory chats
+  // Guests: scan in-memory chats
   const files = [];
   for (const chat of state.chats) {
     for (const m of chat.messages || []) {
@@ -368,6 +373,30 @@ async function renderFilesList() {
   }
   state._filesCache = files;
   renderFilesArray(files, true);
+  updateMultiBar();
+}
+
+function fileKey(f, idx) {
+  if (f.messageId !== undefined) return `${f.messageId}:${f.index}`;
+  if (f._guestRef) return `g:${f._guestRef.chatId}:${f._guestRef.msgId}:${f._guestRef.index}`;
+  return `i:${idx}`;
+}
+
+function updateMultiBar() {
+  // Show the multi-select bar ONLY when multi-select mode is active AND there are files
+  if (state._multiSelectMode && state._filesCache.length > 0) {
+    filesMultiBar.classList.remove('hidden');
+    const n = state._selectedFiles.size;
+    filesDeleteCountLabel.textContent = n > 0 ? `Delete (${n})` : 'Delete';
+    filesDeleteSelectedBtn.disabled = n === 0;
+    const allSelected = state._filesCache.length > 0 && state._filesCache.every((f, idx) => state._selectedFiles.has(fileKey(f, idx)));
+    filesSelectAllBtn.innerHTML = allSelected
+      ? '<i data-lucide="check-square"></i><span>Deselect all</span>'
+      : '<i data-lucide="square"></i><span>Select all</span>';
+    refreshIcons();
+  } else {
+    filesMultiBar.classList.add('hidden');
+  }
 }
 
 function renderFilesArray(files, isGuest = false) {
@@ -377,15 +406,20 @@ function renderFilesArray(files, isGuest = false) {
       : `<div class="sidebar-empty"><p>No files yet</p><span>Files you send or receive will appear here</span></div>`;
     return;
   }
+
+  const inMulti = state._multiSelectMode;
+
   sidebarContent.innerHTML = files.map((f, idx) => {
     const isImg = (f.type || '').startsWith('image/');
     const url = f.url || f.dataUrl || f.public_url || '';
-    const selected = state._selectedFiles.has(fileKey(f, idx));
-    return `<div class="file-item-wrap">
-      <label class="file-checkbox">
-        <input type="checkbox" data-file-check="${idx}" ${selected ? 'checked' : ''} />
+    const key = fileKey(f, idx);
+    const checked = state._selectedFiles.has(key);
+
+    return `<div class="file-item-wrap" data-file-idx="${idx}">
+      ${inMulti ? `<label class="file-checkbox" title="Select">
+        <input type="checkbox" data-file-check="${idx}" ${checked ? 'checked' : ''} />
         <span class="file-checkbox-mark"></span>
-      </label>
+      </label>` : ''}
       <button class="file-item" data-file-view='${escapeHtml(JSON.stringify({url, name: f.name, type: f.type}))}'>
         ${isImg && url
           ? `<img src="${url}" class="file-thumb-sm" loading="lazy" alt="file" />`
@@ -395,18 +429,103 @@ function renderFilesArray(files, isGuest = false) {
           <div class="file-item-meta">${timeAgo(f.created_at)}</div>
         </div>
       </button>
+      ${!inMulti ? `<button class="file-item-menu" data-file-menu="${idx}" aria-label="File menu"><i data-lucide="more-vertical"></i></button>` : ''}
     </div>`;
   }).join('');
   refreshIcons();
 }
 
-function fileKey(f, idx) {
-  if (f.messageId !== undefined) return `${f.messageId}:${f.index}`;
-  if (f._guestRef) return `g:${f._guestRef.chatId}:${f._guestRef.msgId}:${f._guestRef.index}`;
-  return `i:${idx}`;
+// ============ FILE MENU (3-dot) ============
+sidebarContent.addEventListener('click', (e) => {
+  const menuBtn = e.target.closest('[data-file-menu]');
+  if (menuBtn) {
+    e.stopPropagation();
+    openFileMenu(parseInt(menuBtn.dataset.fileMenu), menuBtn.getBoundingClientRect());
+    return;
+  }
+  const fileBtn = e.target.closest('[data-file-view]');
+  if (fileBtn && !e.target.closest('.file-checkbox')) {
+    try { const d = JSON.parse(fileBtn.dataset.fileView); showFileView(d.url, d.name, d.type); } catch {}
+    return;
+  }
+  const chatMenuBtn = e.target.closest('.chat-item-menu');
+  if (chatMenuBtn) { e.stopPropagation(); openChatMenu(chatMenuBtn.dataset.menu, chatMenuBtn.getBoundingClientRect()); return; }
+  const item = e.target.closest('.chat-item');
+  if (item) selectChat(item.dataset.id);
+});
+
+function openFileMenu(idx, rect) {
+  document.querySelectorAll('.file-menu').forEach(m => m.remove());
+  const f = state._filesCache[idx];
+  if (!f) return;
+  const menu = document.createElement('div');
+  menu.className = 'file-menu';
+  menu.style.left = Math.max(8, rect.left - 160) + 'px';
+  menu.style.top = rect.bottom + 4 + 'px';
+  menu.innerHTML = `
+    <button data-act="multi"><i data-lucide="check-square"></i>Multi-select</button>
+    <button data-act="delete" class="danger"><i data-lucide="trash-2"></i>Delete</button>`;
+  document.body.appendChild(menu);
+  refreshIcons();
+  const close = (ev) => { if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('click', close); } };
+  setTimeout(() => document.addEventListener('click', close), 0);
+  menu.addEventListener('click', async (ev) => {
+    const btn = ev.target.closest('button'); if (!btn) return;
+    const act = btn.dataset.act;
+    menu.remove();
+    if (act === 'multi') {
+      state._multiSelectMode = true;
+      state._selectedFiles.clear();
+      state._selectedFiles.add(fileKey(f, idx));
+      await renderFilesList();
+    } else if (act === 'delete') {
+      confirmAction({
+        title: 'Delete this file?',
+        text: `"${f.name || 'File'}" will be removed from your Files list.`,
+        confirmLabel: 'Delete',
+        onConfirm: async () => {
+          await deleteFiles([f]);
+          toast('File deleted', 'success');
+        }
+      });
+    }
+  });
 }
 
-// File selection state
+// ============ MULTI-SELECT BAR ============
+filesSelectAllBtn.addEventListener('click', () => {
+  const allSelected = state._filesCache.length > 0 && state._filesCache.every((f, idx) => state._selectedFiles.has(fileKey(f, idx)));
+  if (allSelected) state._selectedFiles.clear();
+  else state._filesCache.forEach((f, idx) => state._selectedFiles.add(fileKey(f, idx)));
+  renderFilesArray(state._filesCache, !state.user);
+  updateMultiBar();
+});
+
+filesCancelSelectBtn.addEventListener('click', () => {
+  state._multiSelectMode = false;
+  state._selectedFiles.clear();
+  renderFilesArray(state._filesCache, !state.user);
+  updateMultiBar();
+});
+
+filesDeleteSelectedBtn.addEventListener('click', () => {
+  const count = state._selectedFiles.size;
+  if (!count) return;
+  confirmAction({
+    title: `Delete ${count} file(s)?`,
+    text: 'They will be removed from your Files list.',
+    confirmLabel: 'Delete',
+    onConfirm: async () => {
+      const toDelete = state._filesCache.filter((f, idx) => state._selectedFiles.has(fileKey(f, idx)));
+      await deleteFiles(toDelete);
+      state._selectedFiles.clear();
+      state._multiSelectMode = false;
+      toast(`${toDelete.length} file(s) deleted`, 'success');
+    }
+  });
+});
+
+// Checkbox toggle in multi-select
 sidebarContent.addEventListener('change', (e) => {
   const chk = e.target.closest('[data-file-check]');
   if (!chk) return;
@@ -416,71 +535,54 @@ sidebarContent.addEventListener('change', (e) => {
   const key = fileKey(f, idx);
   if (chk.checked) state._selectedFiles.add(key);
   else state._selectedFiles.delete(key);
+  updateMultiBar();
 });
 
-filesSelectAllBtn.addEventListener('click', () => {
-  const allSelected = state._filesCache.every((f, idx) => state._selectedFiles.has(fileKey(f, idx)));
-  if (allSelected) {
-    state._selectedFiles.clear();
-    filesSelectAllBtn.innerHTML = '<i data-lucide="check-square"></i><span>Select all</span>';
-  } else {
-    state._filesCache.forEach((f, idx) => state._selectedFiles.add(fileKey(f, idx)));
-    filesSelectAllBtn.innerHTML = '<i data-lucide="square"></i><span>Deselect all</span>';
-  }
-  refreshIcons();
-  renderFilesArray(state._filesCache, !state.user);
-});
+// ============ DELETE FILES (single or bulk) ============
+async function deleteFiles(files) {
+  if (!files.length) return;
 
-filesDeleteBtn.addEventListener('click', async () => {
-  const count = state._selectedFiles.size;
-  if (!count) { toast('Select files to delete first', 'error'); return; }
-  confirmAction({
-    title: `Delete ${count} file(s)?`,
-    text: 'They will be removed from your Files list.',
-    confirmLabel: 'Delete',
-    onConfirm: async () => {
-      if (state.user) {
-        // Logged-in: call server delete for each selected
-        const toDelete = state._filesCache.filter((f, idx) => state._selectedFiles.has(fileKey(f, idx)));
-        for (const f of toDelete) {
-          if (f.messageId !== undefined) {
-            try { await fetch(`/api/files/${f.messageId}/${f.index}`, { method: 'DELETE', headers: authHeaders() }); } catch {}
-          }
-        }
-        state._selectedFiles.clear();
-        await renderFilesList();
-      } else {
-        // Guest: remove from in-memory chats
-        for (const f of state._filesCache) {
-          if (state._selectedFiles.has(fileKey(f, 0)) && f._guestRef) {
-            const chat = state.chats.find(c => c.id === f._guestRef.chatId);
-            if (!chat) continue;
-            const msg = (chat.messages || []).find(m => m.id === f._guestRef.msgId);
-            if (msg && Array.isArray(msg.files)) {
-              msg.files.splice(f._guestRef.index, 1);
-            }
-          }
-        }
-        state._selectedFiles.clear();
-        renderFilesList();
-      }
-      toast(`${count} file(s) deleted`, 'success');
+  if (state.user) {
+    // Logged-in: call server for each (with messageId + index)
+    // Sort descending by index per message so we don't shift indices mid-delete
+    const byMessage = {};
+    for (const f of files) {
+      if (f.messageId === undefined) continue;
+      if (!byMessage[f.messageId]) byMessage[f.messageId] = [];
+      byMessage[f.messageId].push(f.index);
     }
-  });
-});
-
-sidebarContent.addEventListener('click', (e) => {
-  const fileBtn = e.target.closest('[data-file-view]');
-  if (fileBtn && !e.target.closest('.file-checkbox')) {
-    try { const d = JSON.parse(fileBtn.dataset.fileView); showFileView(d.url, d.name, d.type); } catch {}
-    return;
+    for (const [messageId, indices] of Object.entries(byMessage)) {
+      indices.sort((a, b) => b - a);
+      for (const index of indices) {
+        try { await fetch(`/api/files/${messageId}/${index}`, { method: 'DELETE', headers: authHeaders() }); } catch {}
+      }
+    }
+    await renderFilesList();
+  } else {
+    // Guest: remove from in-memory chats
+    // Sort files by guest index descending per message
+    const byMsg = {};
+    for (const f of files) {
+      if (!f._guestRef) continue;
+      const k = `${f._guestRef.chatId}::${f._guestRef.msgId}`;
+      if (!byMsg[k]) byMsg[k] = { chatId: f._guestRef.chatId, msgId: f._guestRef.msgId, indices: [] };
+      byMsg[k].indices.push(f._guestRef.index);
+    }
+    for (const entry of Object.values(byMsg)) {
+      entry.indices.sort((a, b) => b - a);
+      const chat = state.chats.find(c => c.id === entry.chatId);
+      if (!chat) continue;
+      const msg = (chat.messages || []).find(m => m.id === entry.msgId);
+      if (!msg || !Array.isArray(msg.files)) continue;
+      for (const idx of entry.indices) msg.files.splice(idx, 1);
+    }
+    renderFilesList();
+    // If current chat is showing, re-render to reflect removed file
+    renderMessages();
   }
-  const menuBtn = e.target.closest('.chat-item-menu');
-  if (menuBtn) { e.stopPropagation(); openChatMenu(menuBtn.dataset.menu, menuBtn.getBoundingClientRect()); return; }
-  const item = e.target.closest('.chat-item');
-  if (item) selectChat(item.dataset.id);
-});
+}
 
+// ============ CHAT MENU ============
 function openChatMenu(id, rect) {
   document.querySelectorAll('.chat-menu').forEach(m => m.remove());
   const chat = state.chats.find(c => c.id === id);
@@ -649,7 +751,7 @@ inputEl.addEventListener('keydown', (e) => {
   }
 });
 
-// ============ PASTE SUPPORT ============
+// Paste support
 inputEl.addEventListener('paste', (e) => {
   const items = e.clipboardData?.items;
   if (!items) return;
@@ -668,7 +770,7 @@ inputEl.addEventListener('paste', (e) => {
   if (added) { toast(`${added} image(s) pasted`, 'success', 2000); }
 });
 
-// ============ FILE ATTACH ============
+// Attach files
 attachBtn.addEventListener('click', () => fileInput.click());
 fileInput.addEventListener('change', (e) => {
   for (const f of e.target.files) addAttachment(f);
@@ -677,7 +779,6 @@ fileInput.addEventListener('change', (e) => {
 });
 
 function addAttachment(file) {
-  // Dedupe: same name + size + lastModified
   for (const existing of state.attachments) {
     if (existing.name === file.name && existing.file.size === file.size && existing.file.lastModified === file.lastModified) {
       toast(`"${file.name}" is already attached`, 'info', 2000);
@@ -900,7 +1001,7 @@ async function attachmentsToDataUrls(attachments) {
   for (const att of attachments) {
     try {
       if (att.file.size > 3 * 1024 * 1024) {
-        out.push({ name: att.name, type: att.type, dataUrl: att.url }); // objectUrl (ephemeral)
+        out.push({ name: att.name, type: att.type, dataUrl: att.url });
         continue;
       }
       const dataUrl = await fileToDataURL(att.file);
@@ -936,7 +1037,6 @@ async function requestTitle(text) {
 // ============ SEND MESSAGE ============
 formEl.addEventListener('submit', async (e) => {
   e.preventDefault();
-  // ── LOCK IMMEDIATELY to prevent double-send duplicates ──
   if (state.isGenerating) return;
   const text = inputEl.value.trim();
   if (!text && !state.attachments.length) return;
@@ -1142,7 +1242,7 @@ async function loadConversations() {
     const res = await fetch('/api/conversations', { headers: authHeaders() });
     const data = await res.json();
     const serverChats = (data.conversations || []).map(c => ({ id: c.id, title: c.title, pinned: c.pinned, messages: [], createdAt: c.created_at, updatedAt: c.updated_at }));
-    state.chats = serverChats; // replace entire list (guest chats are cleared on login)
+    state.chats = serverChats;
     renderChatList();
   } catch {}
 }
@@ -1278,12 +1378,12 @@ function renderVerifyCodeForm(type) {
 }
 
 async function handleLoginSuccess(data) {
-  // Clear ALL guest data first
   state.chats = [];
   state.activeChatId = null;
   state.messages = [];
   state.attachments = [];
   state._selectedFiles.clear();
+  state._multiSelectMode = false;
 
   state.token = data.accessToken;
   state.user = data.user;
@@ -1396,7 +1496,7 @@ function renderForgotStep3() {
   };
 }
 
-// ============ PROFILE MODAL (info only) ============
+// ============ PROFILE MODAL ============
 function openProfileModal() {
   if (!state.user) return;
   const u = state.user;
