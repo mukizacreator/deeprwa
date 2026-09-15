@@ -146,7 +146,7 @@ async function findUserByEmail(email) {
 }
 async function isEmailTakenByOther(email, uid) { const u = await findUserByEmail(email); return u ? u.id !== uid : false; }
 
-// ============ AUTH ============
+// ============ AUTH HELPERS ============
 function getUserId(req) { const a = req.headers.authorization; if (!a?.startsWith('Bearer ')) return null; try { return jwt.verify(a.slice(7), JWT_SECRET).sub; } catch { return null; } }
 async function requireAuth(req, res, next) { const u = getUserId(req); if (!u) return res.status(401).json({ error: 'Auth required' }); req.userId = u; next(); }
 async function verifyPassword(email, password) {
@@ -171,7 +171,6 @@ async function trackSession(userId, req) {
     if (clientId) {
       const { data: ex } = await supabase.from('sessions').select('id, revoked').eq('user_id', userId).eq('client_id', clientId).maybeSingle();
       if (ex) {
-        // Reactivate revoked session on fresh login
         await supabase.from('sessions').update({ device: ua.substring(0, 120), ip, user_agent: ua, last_active: new Date().toISOString(), revoked: false }).eq('id', ex.id);
         console.log(`📌 Session updated for ${userId.slice(0,8)} (client: ${clientId.slice(0,12)}…)`);
         return;
@@ -248,7 +247,7 @@ function buildGreetingReply(text) {
 }
 const IDENTITY_REPLY = "I am DeepRWA, created by Emmanuel Mukiza under The Star🌟, specialised in information about Rwanda.";
 
-// ============ PROVIDERS ============
+// ============ PROVIDER HELPERS ============
 const cooldown = new Map();
 function isCooling(k) { const u = cooldown.get(k); if (!u) return false; if (Date.now() > u) { cooldown.delete(k); return false; } return true; }
 function setCooldown(k, ms) { cooldown.set(k, Date.now() + ms); }
@@ -352,6 +351,7 @@ async function* streamGemini(msgs) {
   } catch (e) { setCooldown(k, e.status === 429 ? 120000 : 300000); throw e; }
 }
 
+// ============ VISION PROVIDERS ============
 async function* streamGeminiVision(messages, attachments) {
   const sanitized = sanitizeForProvider(messages);
   const sys = sanitized.filter(m => m.role === 'system').map(m => m.content).join('\n');
@@ -438,7 +438,7 @@ const PROVIDERS = [
   { name: 'Pollinations', fn: streamPollinations }
 ];
 
-// ============ TITLE (improved — tries 2 providers) ============
+// ============ TITLE ============
 async function generateChatTitle(firstMessage) {
   if (!firstMessage) return 'New chat';
   if (isGreeting(firstMessage)) return 'Greeting';
@@ -489,7 +489,6 @@ async function generateChatTitle(firstMessage) {
     }
   } catch (e) { console.warn('[title] Gemini failed:', e.message); }
 
-  // Last-resort: first 5 words
   return textOnly.split(/\s+/).slice(0, 5).join(' ') || 'New chat';
 }
 
@@ -728,6 +727,7 @@ app.post('/api/auth/2fa/setup', requireAuth, async (req, res) => {
   await supabase.from('profiles').update({ totp_secret: secret }).eq('id', req.userId);
   res.json({ secret, qrDataUrl });
 });
+
 app.post('/api/auth/2fa/enable', requireAuth, async (req, res) => {
   const { code } = req.body || {};
   const { data: profile } = await supabase.from('profiles').select('totp_secret').eq('id', req.userId).maybeSingle();
@@ -736,6 +736,7 @@ app.post('/api/auth/2fa/enable', requireAuth, async (req, res) => {
   await supabase.from('profiles').update({ totp_enabled: true }).eq('id', req.userId);
   res.json({ success: true });
 });
+
 app.post('/api/auth/2fa/disable', requireAuth, async (req, res) => {
   const { code } = req.body || {};
   const { data: profile } = await supabase.from('profiles').select('totp_secret').eq('id', req.userId).maybeSingle();
@@ -745,27 +746,23 @@ app.post('/api/auth/2fa/disable', requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
-// ---- SESSIONS (with revoked flag) ----
+// ---- SESSIONS ----
 app.get('/api/auth/sessions', requireAuth, async (req, res) => {
   const clientId = req.headers['x-client-id'] || '';
   const { data } = await supabase.from('sessions').select('*').eq('user_id', req.userId).eq('revoked', false).order('last_active', { ascending: false });
-  // Only show current device + others (current marked)
   const sessions = (data || []).map(s => ({ ...s, current: s.client_id === clientId }));
   res.json({ sessions });
 });
 
 app.get('/api/auth/session-check', requireAuth, async (req, res) => {
   const clientId = (req.headers['x-client-id'] || '').toString().trim().slice(0, 80) || null;
-  if (!clientId) return res.json({ valid: true }); // no way to track without client id — assume valid
+  if (!clientId) return res.json({ valid: true });
   const { data } = await supabase.from('sessions').select('id, revoked, last_active').eq('user_id', req.userId).eq('client_id', clientId).maybeSingle();
   if (data) {
-    if (data.revoked === true) {
-      return res.json({ valid: false, reason: 'revoked' });
-    }
+    if (data.revoked === true) return res.json({ valid: false, reason: 'revoked' });
     await supabase.from('sessions').update({ last_active: new Date().toISOString() }).eq('id', data.id);
     return res.json({ valid: true });
   }
-  // No row for this client_id — this device was either logged out (single) or never tracked. Insert a fresh row.
   const ua = (req.headers['user-agent'] || 'Unknown').substring(0, 500);
   const ip = (req.headers['x-forwarded-for'] || req.ip || 'Unknown').split(',')[0].trim();
   await supabase.from('sessions').insert({ user_id: req.userId, client_id: clientId, device: ua.substring(0, 120), user_agent: ua, ip, revoked: false });
@@ -776,7 +773,6 @@ app.delete('/api/auth/sessions/:id', requireAuth, async (req, res) => {
   const clientId = req.headers['x-client-id'] || '';
   const { data: row } = await supabase.from('sessions').select('client_id').eq('id', req.params.id).eq('user_id', req.userId).maybeSingle();
   if (row && row.client_id === clientId) return res.status(400).json({ error: 'Log out via account menu' });
-  // Mark as revoked (soft delete) so session-check can detect it
   await supabase.from('sessions').update({ revoked: true, last_active: new Date().toISOString() }).eq('id', req.params.id).eq('user_id', req.userId);
   res.json({ success: true });
 });
@@ -789,7 +785,6 @@ app.delete('/api/auth/sessions-all-others', requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
-// Delete single session that belongs to current device (self-logout cleanup)
 app.delete('/api/auth/sessions-current', requireAuth, async (req, res) => {
   const clientId = req.headers['x-client-id'] || '';
   if (!clientId) return res.json({ success: true });
@@ -809,10 +804,11 @@ app.post('/api/upload', requireAuth, async (req, res) => {
     const { error: upErr } = await supabase.storage.from('uploads').upload(filePath, buffer, { contentType: type, upsert: false });
     if (upErr) return res.status(500).json({ error: upErr.message });
     const { data: urlData } = supabase.storage.from('uploads').getPublicUrl(filePath);
-    res.json({ url: urlData.publicUrl, name, type });
+    res.json({ url: data || urlData.publicUrl, name, type });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ---- FILES: list (basic, no ids) ----
 app.get('/api/files', requireAuth, async (req, res) => {
   try {
     const { data: convs } = await supabase.from('conversations').select('id').eq('user_id', req.userId);
@@ -831,6 +827,42 @@ app.get('/api/files', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message, files: [] }); }
 });
 
+// ---- FILES: list with messageId + index (for selection/delete) ----
+app.get('/api/files-with-ids', requireAuth, async (req, res) => {
+  try {
+    const { data: convs } = await supabase.from('conversations').select('id').eq('user_id', req.userId);
+    const convIds = (convs || []).map(c => c.id);
+    if (!convIds.length) return res.json({ files: [] });
+    const { data } = await supabase.from('messages').select('id, files, created_at, role').in('conversation_id', convIds).not('files', 'is', null).order('created_at', { ascending: false });
+    const all = [];
+    for (const row of (data || [])) {
+      if (Array.isArray(row.files)) {
+        row.files.forEach((f, i) => {
+          if (f && (f.url || f.public_url)) all.push({ ...f, url: f.url || f.public_url, messageId: row.id, index: i, created_at: row.created_at, role: row.role });
+        });
+      }
+    }
+    res.json({ files: all });
+  } catch (e) { res.status(500).json({ error: e.message, files: [] }); }
+});
+
+// ---- FILE DELETE from a message ----
+app.delete('/api/files/:messageId/:fileIndex', requireAuth, async (req, res) => {
+  const { messageId, fileIndex } = req.params;
+  const idx = parseInt(fileIndex);
+  if (isNaN(idx)) return res.status(400).json({ error: 'Invalid index' });
+  const { data: msg } = await supabase.from('messages').select('conversation_id, files').eq('id', messageId).single();
+  if (!msg) return res.status(404).json({ error: 'Message not found' });
+  const { data: conv } = await supabase.from('conversations').select('user_id').eq('id', msg.conversation_id).single();
+  if (!conv || conv.user_id !== req.userId) return res.status(403).json({ error: 'Not allowed' });
+  const files = Array.isArray(msg.files) ? [...msg.files] : [];
+  if (idx < 0 || idx >= files.length) return res.status(400).json({ error: 'Invalid index' });
+  files.splice(idx, 1);
+  await supabase.from('messages').update({ files }).eq('id', messageId);
+  res.json({ success: true });
+});
+
+// ---- TITLE ----
 app.post('/api/chat/title', async (req, res) => {
   const { message } = req.body || {};
   if (!message) return res.status(400).json({ error: 'message required' });
@@ -875,7 +907,6 @@ async function streamChatResponse(messages, res, conversationId, attachments) {
   const lastUser = [...messages].reverse().find(m => m.role === 'user');
   const userText = lastUser?.content || '';
 
-  // Fast paths
   if ((!attachments || !attachments.length)) {
     if (isIdentityQuestion(userText)) { send({ text: IDENTITY_REPLY }); return done(); }
     if (isGreeting(userText) && messages.length <= 2) { send({ text: buildGreetingReply(userText) }); return done(); }
@@ -884,7 +915,6 @@ async function streamChatResponse(messages, res, conversationId, attachments) {
   let fullText = '';
   let handled = false;
 
-  // Vision chain
   if (attachments && attachments.length) {
     for (const vp of VISION_PROVIDERS) {
       try {
@@ -896,7 +926,6 @@ async function streamChatResponse(messages, res, conversationId, attachments) {
     }
   }
 
-  // Text chain
   if (!handled) {
     let mod = messages;
     if (attachments && attachments.length) {
@@ -919,7 +948,6 @@ async function streamChatResponse(messages, res, conversationId, attachments) {
     if (!handled) { send({ text: 'Sorry, all AI providers are temporarily unavailable. Please try again.' }); return done(); }
   }
 
-  // Send as a SINGLE event (fixes fragmentation)
   send({ text: fullText });
   if (conversationId && supabase) {
     await supabase.from('messages').insert({ conversation_id: conversationId, role: 'assistant', content: fullText });
@@ -992,6 +1020,7 @@ app.get('/api/share/:token', async (req, res) => {
 
 app.get('/share/:token', (req, res) => res.sendFile(path.join(__dirname, 'public', 'share.html')));
 
+// ---- STATIC ----
 const PUBLIC_DIR = path.join(__dirname, 'public');
 app.use(express.static(PUBLIC_DIR));
 app.get(/^\/(?!api|health|robots|sitemap|av\.png|share).*/, (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
