@@ -18,6 +18,8 @@
   --accent-dim: rgba(59,110,245,0.14);
   --danger: #ef5350;
   --danger-hover: #e53935;
+  --danger-soft: rgba(239,83,80,0.14);
+  --danger-border: rgba(239,83,80,0.4);
   --success: #4caf50;
   --radius: 12px;
   --radius-sm: 8px;
@@ -79,10 +81,10 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
 .chat-item-menu:hover { background: var(--surface-3); color: var(--text); }
 .chat-item-menu svg { width: 14px; height: 14px; }
 
-.file-item { display: flex; align-items: center; gap: 0.55rem; padding: 0.5rem 0.6rem; border-radius: 6px; cursor: pointer; }
+.file-item { display: flex; align-items: center; gap: 0.55rem; padding: 0.5rem 0.6rem; border-radius: 6px; cursor: pointer; text-decoration: none; color: inherit; }
 .file-item:hover { background: var(--surface-2); }
-.file-thumb-sm { width: 34px; height: 34px; border-radius: 6px; object-fit: cover; background: var(--surface-3); flex-shrink: 0; display: grid; place-items: center; color: var(--text-muted); }
-.file-thumb-sm svg { width: 16px; height: 16px; }
+.file-thumb-sm { width: 38px; height: 38px; border-radius: 6px; object-fit: cover; background: var(--surface-3); flex-shrink: 0; display: grid; place-items: center; color: var(--text-muted); }
+.file-thumb-sm svg { width: 18px; height: 18px; }
 .file-item-info { flex: 1; min-width: 0; }
 .file-item-name { font-size: 0.82rem; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .file-item-meta { font-size: 0.7rem; color: var(--text-dim); }
@@ -138,10 +140,14 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
 .msg { display: flex; margin-bottom: 1.4rem; }
 .msg-user { justify-content: flex-end; flex-direction: column; align-items: flex-end; gap: 0.3rem; }
 .msg-user .bubble { background: var(--surface-2); color: var(--text); padding: 0.7rem 1rem; border-radius: 16px 16px 4px 16px; max-width: min(80%, 620px); word-wrap: break-word; overflow-wrap: anywhere; line-height: 1.55; font-size: 0.94rem; border: 1px solid var(--border); }
-.msg-files { display: flex; flex-wrap: wrap; gap: 0.35rem; max-width: min(80%, 620px); justify-content: flex-end; }
-.msg-file-thumb { width: 110px; height: 110px; object-fit: cover; border-radius: 10px; border: 1px solid var(--border); }
-.msg-file-doc { display: flex; align-items: center; gap: 0.4rem; padding: 0.5rem 0.7rem; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; font-size: 0.82rem; color: var(--text-muted); }
-.msg-file-doc svg { width: 14px; height: 14px; }
+.msg-files { display: flex; flex-wrap: wrap; gap: 0.4rem; max-width: min(80%, 620px); justify-content: flex-end; }
+.msg-file-thumb { width: 120px; height: 120px; object-fit: cover; border-radius: 10px; border: 1px solid var(--border); cursor: pointer; transition: transform 0.15s, border-color 0.15s; display: block; }
+.msg-file-thumb:hover { transform: scale(1.02); border-color: var(--border-strong); }
+.msg-file-doc { width: 90px; height: 90px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); display: grid; place-items: center; color: var(--text-muted); cursor: pointer; transition: transform 0.15s, border-color 0.15s, background 0.15s; }
+.msg-file-doc:hover { transform: scale(1.02); border-color: var(--border-strong); background: var(--surface-2); }
+.msg-file-doc svg { width: 28px; height: 28px; }
+.msg-files a { text-decoration: none; display: inline-block; }
+
 .msg-assistant { gap: 0.75rem; align-items: flex-start; }
 .avatar { flex-shrink: 0; width: 30px; height: 30px; border-radius: 8px; overflow: hidden; background: var(--surface); border: 1px solid var(--border); margin-top: 2px; }
 .avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -215,8 +221,19 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
 .send-btn { flex-shrink: 0; width: 34px; height: 34px; border-radius: 50%; border: none; background: var(--accent); color: #fff; display: grid; place-items: center; cursor: pointer; transition: 0.15s; }
 .send-btn:hover:not(:disabled):not(.generating) { background: var(--accent-hover); }
 .send-btn:disabled { background: var(--surface-2); color: var(--text-dim); cursor: not-allowed; }
-.send-btn.generating { background: var(--surface-3); border: 1px solid var(--border-strong); color: var(--text); animation: pulse-stop 1.4s ease-in-out infinite; }
-@keyframes pulse-stop { 0%,100% { box-shadow: 0 0 0 0 rgba(255,255,255,0.15); } 50% { box-shadow: 0 0 0 6px rgba(255,255,255,0); } }
+
+/* Stop state: soft red inner, not full red */
+.send-btn.generating {
+  background: var(--danger-soft);
+  border: 1px solid var(--danger-border);
+  color: var(--danger);
+  animation: pulse-stop 1.4s ease-in-out infinite;
+}
+.send-btn.generating:hover { background: rgba(239,83,80,0.22); }
+@keyframes pulse-stop {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239,83,80,0.25); }
+  50% { box-shadow: 0 0 0 6px rgba(239,83,80,0); }
+}
 .send-btn svg { width: 17px; height: 17px; }
 
 /* ============ MODALS ============ */
@@ -265,7 +282,7 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
 .settings-section p { font-size: 0.83rem; color: var(--text-muted); margin-bottom: 0.85rem; line-height: 1.5; }
 .settings-section .btn-secondary, .settings-section .btn-primary, .settings-section .btn-danger { width: auto; padding: 0.55rem 1rem; font-size: 0.85rem; margin: 0; }
 .settings-divider { height: 1px; background: var(--border); margin: 1.5rem 0; }
-.danger-zone { border: 1px solid rgba(239,83,80,0.3); border-radius: 10px; padding: 1rem; background: rgba(239,83,80,0.04); }
+.danger-zone { border: 1px solid var(--danger-border); border-radius: 10px; padding: 1rem; background: rgba(239,83,80,0.04); }
 .danger-zone h4 { color: var(--danger); }
 .status-badge { display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.2rem 0.55rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }
 .status-badge.on { background: rgba(76,175,80,0.15); color: var(--success); }
@@ -316,6 +333,7 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   .msg-user .bubble { max-width: 88%; }
   .welcome { min-height: 55vh; }
   .msg-file-thumb { width: 90px; height: 90px; }
+  .msg-file-doc { width: 76px; height: 76px; }
   .toast-container { top: auto; bottom: 1rem; right: 0.5rem; left: 0.5rem; }
   .toast { max-width: none; }
 }
