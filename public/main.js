@@ -14,6 +14,27 @@ function getOrCreateClientId() {
 }
 const CLIENT_ID = getOrCreateClientId();
 
+// ============ GUEST FILE STORAGE ============
+const GUEST_FILES_KEY = 'deeprwa_guest_files_v1';
+const GUEST_FILE_MAX_BYTES = 2 * 1024 * 1024;
+const GUEST_FILES_MAX = 30;
+
+function loadGuestFiles() {
+  try {
+    const raw = localStorage.getItem(GUEST_FILES_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
+}
+function saveGuestFiles(files) {
+  try { localStorage.setItem(GUEST_FILES_KEY, JSON.stringify(files.slice(-GUEST_FILES_MAX))); }
+  catch {
+    try { localStorage.setItem(GUEST_FILES_KEY, JSON.stringify(files.slice(-Math.floor(GUEST_FILES_MAX / 2)))); } catch {}
+  }
+}
+function clearGuestFiles() { try { localStorage.removeItem(GUEST_FILES_KEY); } catch {} }
+
 // ============ STATE ============
 const state = {
   user: null,
@@ -28,13 +49,13 @@ const state = {
   editingValue: '',
   messageVersions: {},
   view: 'chats',
+  guestFiles: loadGuestFiles(),
   authModal: { mode: 'login', pendingToken: null, forgot: { email: null, pendingToken: null, grantedToken: null } },
   settingsTab: 'profile',
   sessionCheckInterval: null,
   lastSessionCheck: 0,
   _pendingAction: null,
-  _pendingPw: null,
-  _filesCache: null
+  _pendingPw: null
 };
 
 // ============ DOM ============
@@ -217,7 +238,6 @@ async function init() {
   startSessionCheck();
 }
 
-// ============ SESSION CHECK ============
 function startSessionCheck() {
   if (state.sessionCheckInterval) clearInterval(state.sessionCheckInterval);
   state.sessionCheckInterval = setInterval(() => {
@@ -238,7 +258,6 @@ async function forceSignOut(reason) {
   state.chats = [];
   state.activeChatId = null;
   state.messages = [];
-  state._filesCache = null;
   localStorage.removeItem('deeprwa_token');
   renderUser();
   renderChatList();
@@ -344,41 +363,42 @@ function renderChatList() {
   refreshIcons();
 }
 
+// FILES — works for both guest AND logged-in
 function renderFilesList() {
-  if (!state.user) {
-    sidebarContent.innerHTML = `<div class="sidebar-empty"><p>Log in to view files</p><span>Your files will appear here</span></div>`;
+  if (state.user) {
+    sidebarContent.innerHTML = `<div class="sidebar-empty"><p>Loading files…</p></div>`;
+    fetch('/api/files', { headers: authHeaders() })
+      .then(r => r.json())
+      .then(d => renderFilesArray(d.files || []))
+      .catch(() => {
+        sidebarContent.innerHTML = `<div class="sidebar-empty"><p>Could not load files</p></div>`;
+      });
     return;
   }
-  sidebarContent.innerHTML = `<div class="sidebar-empty"><p>Loading files…</p></div>`;
-  fetch('/api/files', { headers: authHeaders() })
-    .then(r => r.json())
-    .then(d => {
-      const files = d.files || [];
-      state._filesCache = files;
-      if (!files.length) {
-        sidebarContent.innerHTML = `<div class="sidebar-empty"><p>No files yet</p><span>Files you send or receive will appear here</span></div>`;
-        return;
-      }
-      sidebarContent.innerHTML = files.map(f => {
-        const isImg = (f.type || '').startsWith('image/');
-        const url = f.url || f.public_url || '';
-        const inner = `
-          ${isImg && url
-            ? `<img src="${url}" class="file-thumb-sm" loading="lazy" />`
-            : `<div class="file-thumb-sm"><i data-lucide="file-text"></i></div>`}
-          <div class="file-item-info">
-            <div class="file-item-name" title="${escapeHtml(f.name || 'file')}">${escapeHtml(f.name || 'file')}</div>
-            <div class="file-item-meta">${timeAgo(f.created_at)}</div>
-          </div>`;
-        return url
-          ? `<a class="file-item" href="${url}" target="_blank" rel="noopener">${inner}</a>`
-          : `<div class="file-item">${inner}</div>`;
-      }).join('');
-      refreshIcons();
-    })
-    .catch(() => {
-      sidebarContent.innerHTML = `<div class="sidebar-empty"><p>Could not load files</p></div>`;
-    });
+  renderFilesArray(state.guestFiles || []);
+}
+
+function renderFilesArray(files) {
+  if (!files.length) {
+    sidebarContent.innerHTML = `<div class="sidebar-empty"><p>No files yet</p><span>Files you send or receive will appear here</span></div>`;
+    return;
+  }
+  sidebarContent.innerHTML = files.map(f => {
+    const isImg = (f.type || '').startsWith('image/');
+    const url = f.url || f.dataUrl || f.public_url || '';
+    const inner = `
+      ${isImg && url
+        ? `<img src="${url}" class="file-thumb-sm" loading="lazy" alt="file" />`
+        : `<div class="file-thumb-sm"><i data-lucide="file-text"></i></div>`}
+      <div class="file-item-info">
+        <div class="file-item-name" title="${escapeHtml(f.name || 'file')}">${escapeHtml(f.name || 'file')}</div>
+        <div class="file-item-meta">${timeAgo(f.created_at)}</div>
+      </div>`;
+    return url
+      ? `<a class="file-item" href="${url}" target="_blank" rel="noopener">${inner}</a>`
+      : `<div class="file-item">${inner}</div>`;
+  }).join('');
+  refreshIcons();
 }
 
 sidebarContent.addEventListener('click', (e) => {
@@ -652,12 +672,12 @@ function renderMessages() {
   refreshIcons();
 }
 
-// Thumbnails only — no names for docs. All clickable to open full view.
+// Thumbnails only, clickable to open
 function renderFilesInline(files) {
   if (!files || !files.length) return '';
   return `<div class="msg-files">${files.map(f => {
     const isImg = (f.type || '').startsWith('image/');
-    const url = f.url || f.public_url || '';
+    const url = f.url || f.dataUrl || f.public_url || '';
     const inner = isImg && url
       ? `<img src="${url}" class="msg-file-thumb" loading="lazy" alt="attachment" />`
       : `<div class="msg-file-doc"><i data-lucide="file-text"></i></div>`;
@@ -796,6 +816,14 @@ function fileToBase64(file) {
     reader.readAsDataURL(file);
   });
 }
+function fileToDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
 
 async function uploadAttachmentsToServer() {
   if (!state.user || !state.attachments.length) return null;
@@ -829,22 +857,48 @@ async function uploadAttachmentsToServer() {
   return uploaded;
 }
 
-async function collectImagesBase64(attachments) {
-  const images = [];
-  for (const a of attachments) {
-    if (a.type.startsWith('image/') && a.file.size < 4 * 1024 * 1024) {
-      try {
-        const data = await fileToBase64(a.file);
-        images.push({ mime: a.type, data });
-      } catch {}
-    } else if (a.type === 'text/plain' || a.type === 'text/markdown' || a.type === 'text/csv') {
-      try {
-        const text = await a.file.text();
-        images.push({ mime: 'text/plain', data: btoa(unescape(encodeURIComponent(text.slice(0, 20000)))) });
-      } catch {}
-    }
+// Save guest files to localStorage so they appear in Files tab
+async function saveGuestAttachments(attachments) {
+  if (state.user || !attachments.length) return;
+  const newEntries = [];
+  for (const att of attachments) {
+    try {
+      if (att.file.size > GUEST_FILE_MAX_BYTES) continue;
+      const dataUrl = await fileToDataURL(att.file);
+      if (dataUrl.length > GUEST_FILE_MAX_BYTES * 1.5) continue;
+      newEntries.push({
+        name: att.name,
+        type: att.type,
+        dataUrl,
+        created_at: new Date().toISOString()
+      });
+    } catch {}
   }
-  return images;
+  if (!newEntries.length) return;
+  state.guestFiles = [...(state.guestFiles || []), ...newEntries];
+  saveGuestFiles(state.guestFiles);
+  if (state.view === 'files') renderFilesList();
+}
+
+// Prepare attachments for the AI (images + PDFs as base64, text as base64)
+async function collectAttachmentsForAI(attachments) {
+  const out = [];
+  for (const a of attachments) {
+    try {
+      if (a.type.startsWith('image/') && a.file.size < 4 * 1024 * 1024) {
+        const data = await fileToBase64(a.file);
+        out.push({ name: a.name, mime: a.type, data });
+      } else if (a.type === 'application/pdf' && a.file.size < 6 * 1024 * 1024) {
+        const data = await fileToBase64(a.file);
+        out.push({ name: a.name, mime: 'application/pdf', data });
+      } else if (a.type === 'text/plain' || a.type === 'text/markdown' || a.type === 'text/csv' || a.type === 'application/json') {
+        const text = await a.file.text();
+        const base64 = btoa(unescape(encodeURIComponent(text.slice(0, 30000))));
+        out.push({ name: a.name, mime: 'text/plain', data: base64 });
+      }
+    } catch (e) { console.warn('collect attachment failed', a.name, e.message); }
+  }
+  return out;
 }
 
 async function requestTitle(text) {
@@ -877,9 +931,12 @@ formEl.addEventListener('submit', async (e) => {
     renderChatList();
   }
 
+  const attachmentsForAI = await collectAttachmentsForAI(state.attachments);
   const uploadedFiles = await uploadAttachmentsToServer();
-  const filesForMsg = uploadedFiles || state.attachments.map(f => ({ name: f.name, type: f.type, url: f.url }));
-  const imagesForAI = await collectImagesBase64(state.attachments);
+  await saveGuestAttachments(state.attachments);
+
+  const filesForMsg = uploadedFiles
+    || state.attachments.map(f => ({ name: f.name, type: f.type, url: f.url }));
   const isFirstMessage = isNewChat || chat.title === 'New chat' || !chat.messages.length;
 
   inputEl.value = '';
@@ -916,7 +973,7 @@ formEl.addEventListener('submit', async (e) => {
         if (m.role === 'user' && m.files) out.files = m.files;
         return out;
       }),
-      images: imagesForAI
+      attachments: attachmentsForAI
     };
     if (state.user) payload.conversationId = isLocalId(chat.id) ? null : chat.id;
 
@@ -970,6 +1027,8 @@ formEl.addEventListener('submit', async (e) => {
       if (actEl) actEl.classList.remove('hidden');
       if (state.user) {
         await loadConversations();
+        if (state.view === 'files') renderFilesList();
+      } else {
         if (state.view === 'files') renderFilesList();
       }
     } else {
@@ -1239,8 +1298,8 @@ function renderLoginForm() {
       const data = await res.json();
       if (!res.ok) { resetBtn(btn); toast(data.error || 'Login failed', 'error'); return; }
       state.authModal.pendingToken = data.pendingToken;
-      renderVerifyCodeForm('login', data.requires2fa);
-    } catch (err) { resetBtn(btn); toast('Network error', 'error'); }
+      renderVerifyCodeForm('login');
+    } catch { resetBtn(btn); toast('Network error', 'error'); }
   };
 }
 
@@ -1275,16 +1334,16 @@ function renderSignupForm() {
       const data = await res.json();
       if (!res.ok) { resetBtn(btn); toast(data.error || 'Signup failed', 'error'); return; }
       state.authModal.pendingToken = data.pendingToken;
-      renderVerifyCodeForm('signup', false);
+      renderVerifyCodeForm('signup');
     } catch { resetBtn(btn); toast('Network error', 'error'); }
   };
 }
 
-function renderVerifyCodeForm(type, needs2fa) {
+function renderVerifyCodeForm(type) {
   authModalBody.innerHTML = `
     <h3>${type === 'signup' ? 'Verify your email' : 'Enter login code'}</h3>
     <p class="modal-sub">We sent a 6-digit code to your email.</p>
-    <input type="text" id="verifyCode" placeholder="000000" maxlength="6" class="modal-input code-input" inputmode="numeric" />
+    <input type="text" id="verifyCode" placeholder="000000" maxlength="6" class="modal-input code-input" inputmode="numeric" autocomplete="one-time-code" />
     <button class="btn-primary" id="verifySubmit">Verify</button>
     <button class="link-btn" id="resendBtn">Resend code</button>`;
   refreshIcons();
@@ -1366,7 +1425,7 @@ function render2FALoginForm(twofaToken) {
 function renderForgotStep1() {
   authModalBody.innerHTML = `
     <h3>Reset your password</h3>
-    <p class="modal-sub">Enter the email address registered to your account.</p>
+    <p class="modal-sub">Enter the email registered to your account.</p>
     <input type="email" id="fpEmail" placeholder="Email" class="modal-input" />
     <button class="btn-primary" id="fpSubmit">Send code</button>
     <button class="link-btn" id="fpBack">Back to login</button>`;
@@ -1395,7 +1454,7 @@ function renderForgotStep2() {
   authModalBody.innerHTML = `
     <h3>Enter verification code</h3>
     <p class="modal-sub">We sent a 6-digit code to ${escapeHtml(state.authModal.forgot.email)}</p>
-    <input type="text" id="fpCode" placeholder="000000" maxlength="6" class="modal-input code-input" inputmode="numeric" />
+    <input type="text" id="fpCode" placeholder="000000" maxlength="6" class="modal-input code-input" inputmode="numeric" autocomplete="one-time-code" />
     <button class="btn-primary" id="fpVerify">Verify code</button>
     <button class="link-btn" id="fpResend">Resend code</button>`;
   refreshIcons();
@@ -1591,7 +1650,7 @@ function renderActionVerify(action, targetEmail) {
   settingsContent.innerHTML = `
     <h3>${action === 'change-email' ? 'Verify new email' : action === 'change-password' ? 'Verify password change' : 'Verify account deletion'}</h3>
     <p class="modal-sub">We sent a 6-digit code to <strong>${escapeHtml(targetEmail || '')}</strong></p>
-    <input type="text" id="actCode" placeholder="000000" maxlength="6" class="modal-input code-input" inputmode="numeric" />
+    <input type="text" id="actCode" placeholder="000000" maxlength="6" class="modal-input code-input" inputmode="numeric" autocomplete="one-time-code" />
     <button class="btn-primary" id="actVerify">Verify & ${action === 'change-email' ? 'change email' : action === 'change-password' ? 'change password' : 'delete'}</button>
     <button class="link-btn" id="actResend">Resend code</button>
     <button class="link-btn" id="actBack">Back</button>`;
@@ -1694,7 +1753,7 @@ async function setup2FA() {
     if (!res.ok) { toast(data.error || 'Failed', 'error'); renderSecurityTab(); return; }
     settingsContent.innerHTML = `
       <h3>Enable 2FA</h3>
-      <p class="modal-sub">Scan this QR code with your authenticator app.</p>
+      <p class="modal-sub">Scan this QR code with your authenticator app (Google Authenticator, Authy, 1Password, etc.).</p>
       <div class="qr-wrap"><img src="${data.qrDataUrl}" alt="QR code" /></div>
       <p style="font-size:0.83rem;color:var(--text-muted);margin-bottom:0.5rem;">Or enter this key manually:</p>
       <div class="secret-box"><code>${escapeHtml(data.secret)}</code><button class="btn-secondary" id="copySecret" style="padding:0.4rem 0.7rem;font-size:0.8rem;">Copy</button></div>
@@ -1801,7 +1860,6 @@ function confirmLogout() {
     title: 'Log out?', text: 'You will need to log in again to access your chats.', confirmLabel: 'Log out', danger: false,
     onConfirm: () => {
       state.token = null; state.user = null; state.chats = []; state.activeChatId = null; state.messages = [];
-      state._filesCache = null;
       localStorage.removeItem('deeprwa_token');
       renderUser(); renderChatList(); renderWelcome();
       settingsModal.classList.add('hidden');
@@ -1845,7 +1903,7 @@ async function postShare(msgs) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
     showShareModal(data.url);
-  } catch (e) { toast('Could not create share link', 'error'); }
+  } catch { toast('Could not create share link', 'error'); }
 }
 function showShareModal(url) { shareLinkInput.value = url; shareModal.classList.remove('hidden'); }
 shareModalClose.addEventListener('click', () => shareModal.classList.add('hidden'));
@@ -1866,4 +1924,5 @@ function closeAllModals() {
   accountDropdown.classList.add('hidden');
 }
 
+// ============ BOOT ============
 init();
