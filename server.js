@@ -1,4 +1,4 @@
-// DeepRWA — Complete backend (rev.2.8.2)
+// DeepRWA — Complete backend (rev.2.8.3)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -232,7 +232,6 @@ Warm, professional, concise, respectful.`;
 
 // ============ GREETINGS & IDENTITY (strict) ============
 const GREETING_EXACT = new Set(['hi','hello','hey','yo','hiya','howdy','sup','whats up',"what's up",'good morning','good afternoon','good evening','good night','thanks','thank you','thx','ty','bye','goodbye','see you','see ya','how are you',"how're you",'how are you doing','how do you do','muraho','mwaramutse','mwiriwe','amakuru','bite','bite se','bonjour','salut','bonsoir','coucou','comment ca va','comment ça va','ça va','ca va','jambo','habari','hujambo','sijambo','habari yako','nzuri','hola','olá','ciao','hallo','hei']);
-// STRICT anchored patterns — the WHOLE message must be an identity question, not just contain one
 const IDENTITY_EXACT_PATTERNS = [
   /^who\s+(are|r)\s+you$/,
   /^what\s+(are|r)\s+you$/,
@@ -457,6 +456,13 @@ function looksLikeCode(text) {
   return codeKeywords.test(t);
 }
 
+function startsWithCodeKeyword(text) {
+  const t = String(text || '');
+  if (/^\s*(const|let|var|function|def|class|import|from)\s/.test(t)) return true;
+  if (/^\s*#!/.test(t)) return true;
+  return false;
+}
+
 async function generateChatTitle(firstMessage) {
   if (!firstMessage) return 'New chat';
   if (isGreeting(firstMessage)) return 'Greeting';
@@ -464,9 +470,9 @@ async function generateChatTitle(firstMessage) {
 
   const fullText = String(firstMessage).slice(0, 500);
 
-  // If it clearly looks like code, return a sensible default (avoids LLM wasting tokens)
   if (looksLikeCode(fullText)) {
-    const lang = fullText.match(/^\s*(const|let|var|function|def|class|import|from|#!/) /) ? 'Code' : 'Code help';
+    const lang = startsWithCodeKeyword(fullText) ? 'Code' : 'Code help';
+    console.log(`[title] code detected → "${lang}"`);
     return lang;
   }
 
@@ -475,7 +481,6 @@ async function generateChatTitle(firstMessage) {
     { role: 'user', content: fullText.slice(0, 300) }
   ];
 
-  // Try Groq
   try {
     const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
@@ -496,7 +501,6 @@ async function generateChatTitle(firstMessage) {
     }
   } catch (e) { console.warn('[title] Groq failed:', e.message); }
 
-  // Try Gemini
   try {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
     const res = await fetch(url, {
@@ -520,7 +524,6 @@ async function generateChatTitle(firstMessage) {
     }
   } catch (e) { console.warn('[title] Gemini failed:', e.message); }
 
-  // Fallback: first 5 meaningful words, filtering out stop words
   const stop = new Set(['the','a','an','is','are','was','were','to','of','and','or','but','in','on','at','for','with','about','by','from','as','this','that','it','be','i','you','we','they','he','she','my','your','our']);
   const words = fullText.replace(/\s+/g, ' ').split(' ').filter(w => w.length > 2 && !stop.has(w.toLowerCase())).slice(0, 5);
   const fallback = words.join(' ').slice(0, 60).replace(/[.!?,;:]+$/, '');
@@ -529,8 +532,8 @@ async function generateChatTitle(firstMessage) {
 }
 
 // ============ ROUTES ============
-app.get('/health', (req, res) => res.json({ status: 'ok', service: 'DeepRWA', version: '2.8.2', time: new Date().toISOString() }));
-app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '2.8.2', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
+app.get('/health', (req, res) => res.json({ status: 'ok', service: 'DeepRWA', version: '2.8.3', time: new Date().toISOString() }));
+app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '2.8.3', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
 app.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nSitemap: https://deeprwa.agentdomains.co/sitemap.xml\n`));
 app.get('/sitemap.xml', (req, res) => res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>https://deeprwa.agentdomains.co/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>\n</urlset>`));
 
@@ -937,7 +940,6 @@ async function streamChatResponse(messages, res, conversationId, attachments) {
   const lastUser = [...messages].reverse().find(m => m.role === 'user');
   const userText = lastUser?.content || '';
 
-  // Fast paths — only apply when there are NO attachments AND the message is short
   if ((!attachments || !attachments.length)) {
     if (isIdentityQuestion(userText)) {
       console.log(`[identity-fast] matched: "${userText.slice(0, 80)}"`);
