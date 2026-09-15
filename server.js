@@ -210,8 +210,11 @@ Greetings, thanks, goodbyes, "how are you", "who are you", "who made you" are NO
 ## LANGUAGE RULE
 Always reply in the **exact language the user wrote in**.
 
-## IMAGES AND DOCUMENTS
-When a user sends an image, describe what you see and answer their question about it professionally. When a user sends a PDF or text document, read it, summarise it, and answer questions about it. Never claim you cannot see images or files when they are attached.
+## IMAGES AND DOCUMENTS (critical)
+When files are attached to a user message, they appear as image blocks, document blocks, or a note saying "[N file(s) attached]". If you see such blocks or the note:
+- NEVER claim there is no image or document.
+- If you can visually see the image content, describe it and answer the user's question about it.
+- If vision processing was unavailable and you only see the "[N file(s) attached]" note, tell the user clearly: "I can see you attached N file(s), but I'm currently unable to visually process them due to temporary vision service limits. Please try again in a moment." — do NOT say "I don't see any file".
 
 ## RULES
 1. Accuracy first.
@@ -348,10 +351,18 @@ async function* streamGemini(msgs) {
     }
   } catch (e) { setCooldown(k, e.status === 429 ? 120000 : 300000); throw e; }
 }
-async function* streamGeminiVision(messages, images) {
+
+// ============ VISION PROVIDERS ============
+function buildVisionParts(messages, images) {
   const sys = messages.filter(m => m.role === 'system').map(m => m.content).join('\n');
   const userMsgs = messages.filter(m => m.role === 'user');
   const lastUser = userMsgs[userMsgs.length - 1];
+  return { sys, lastUser };
+}
+
+// Gemini Vision (native format)
+async function* streamGeminiVision(messages, images) {
+  const { sys, lastUser } = buildVisionParts(messages, images);
   const priorConvo = messages.filter(m => m.role !== 'system' && m !== lastUser).map(m => ({
     role: m.role === 'assistant' ? 'model' : 'user',
     parts: [{ text: m.content }]
@@ -367,7 +378,7 @@ async function* streamGeminiVision(messages, images) {
   };
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:streamGenerateContent?alt=sse&key=${process.env.GEMINI_API_KEY}`;
   const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  if (!res.ok) { const err = await res.text(); const e = new Error(`Gemini Vision ${res.status}: ${err.slice(0, 200)}`); e.status = res.status; throw e; }
+  if (!res.ok) { const err = await res.text(); const e = new Error(`Gemini Vision ${res.status}`); e.status = res.status; throw e; }
   const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = '';
   while (true) {
     const { done, value } = await reader.read(); if (done) break;
@@ -381,6 +392,60 @@ async function* streamGeminiVision(messages, images) {
     }
   }
 }
+
+// OpenRouter Vision (OpenAI format)
+async function* streamOpenRouterVision(messages, images) {
+  const userMsgs = messages.filter(m => m.role === 'user');
+  const lastUser = userMsgs[userMsgs.length - 1];
+  const convo = messages.map(m => {
+    if (m === lastUser) {
+      const content = [{ type: 'text', text: lastUser.content || 'Analyse the attached files.' }];
+      for (const img of images) {
+        content.push({ type: 'image_url', image_url: { url: `data:${img.mime};base64,${img.data}` } });
+      }
+      return { role: 'user', content };
+    }
+    if (m.role === 'user') return { role: 'user', content: m.content };
+    if (m.role === 'assistant') return { role: 'assistant', content: m.content };
+    return null;
+  }).filter(Boolean);
+
+  yield* sseOpenAI(
+    'https://openrouter.ai/api/v1/chat/completions',
+    { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`, 'HTTP-Referer': 'https://deeprwa.agentdomains.co', 'X-Title': 'DeepRWA' },
+    { model: 'inclusionai/ling-3.0-flash-vl:free', messages: convo, stream: true, temperature: 0.7, max_tokens: 4096 }
+  );
+}
+
+// NVIDIA Vision (OpenAI format)
+async function* streamNVIDIAVision(messages, images) {
+  const userMsgs = messages.filter(m => m.role === 'user');
+  const lastUser = userMsgs[userMsgs.length - 1];
+  const convo = messages.map(m => {
+    if (m === lastUser) {
+      const content = [{ type: 'text', text: lastUser.content || 'Analyse the attached files.' }];
+      for (const img of images) {
+        content.push({ type: 'image_url', image_url: { url: `data:${img.mime};base64,${img.data}` } });
+      }
+      return { role: 'user', content };
+    }
+    if (m.role === 'user') return { role: 'user', content: m.content };
+    if (m.role === 'assistant') return { role: 'assistant', content: m.content };
+    return null;
+  }).filter(Boolean);
+
+  yield* sseOpenAI(
+    'https://integrate.api.nvidia.com/v1/chat/completions',
+    { Authorization: `Bearer ${process.env.NVIDIA_API_KEY}` },
+    { model: 'meta/llama-3.2-11b-vision-instruct', messages: convo, stream: true, temperature: 0.7, max_tokens: 4096 }
+  );
+}
+
+const VISION_PROVIDERS = [
+  { name: 'Gemini Vision', fn: streamGeminiVision },
+  { name: 'OpenRouter Vision', fn: streamOpenRouterVision },
+  { name: 'NVIDIA Vision', fn: streamNVIDIAVision }
+];
 
 const PROVIDERS = [
   { name: 'Groq', fn: streamGroq },
@@ -427,17 +492,16 @@ async function generateChatTitle(firstMessage) {
 }
 
 // ============ ROUTES ============
-app.get('/health', (req, res) => res.json({ status: 'ok', service: 'DeepRWA', version: '2.3.1', time: new Date().toISOString() }));
+app.get('/health', (req, res) => res.json({ status: 'ok', service: 'DeepRWA', version: '2.4.0', time: new Date().toISOString() }));
 
 app.get('/api/config', (req, res) => res.json({
-  name: 'DeepRWA', tagline: 'Your AI guide to Rwanda', version: '2.3.1',
+  name: 'DeepRWA', tagline: 'Your AI guide to Rwanda', version: '2.4.0',
   supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null
 }));
 
 app.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nSitemap: https://deeprwa.agentdomains.co/sitemap.xml\n`));
 app.get('/sitemap.xml', (req, res) => res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>https://deeprwa.agentdomains.co/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>\n</urlset>`));
 
-// Debug email test
 app.get('/api/debug/test-email', async (req, res) => {
   const to = req.query.to;
   if (!to) return res.status(400).json({ error: 'Add ?to=email' });
@@ -534,7 +598,6 @@ app.post('/api/auth/resend-login-code', async (req, res) => {
   res.json({ pendingToken: newToken });
 });
 
-// ---- 2FA login ----
 app.post('/api/auth/verify-2fa', async (req, res) => {
   const { twofaToken, code } = req.body || {};
   if (!twofaToken || !code) return res.status(400).json({ error: 'Token and code required' });
@@ -549,7 +612,6 @@ app.post('/api/auth/verify-2fa', async (req, res) => {
   res.json({ accessToken, user: { id: payload.userId, email: payload.email } });
 });
 
-// ---- Me ----
 app.get('/api/auth/me', requireAuth, async (req, res) => {
   if (!supabaseConfigured) return res.status(503).json({ error: 'Not configured' });
   const { data } = await supabase.from('profiles').select('*').eq('id', req.userId).maybeSingle();
@@ -783,7 +845,7 @@ app.delete('/api/auth/sessions-all-others', requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
-// ---- FILE UPLOAD (10 MB max) ----
+// ---- FILE UPLOAD (10 MB) ----
 app.post('/api/upload', requireAuth, async (req, res) => {
   if (!supabaseConfigured) return res.status(503).json({ error: 'Not configured' });
   const { name, type, data } = req.body || {};
@@ -874,22 +936,43 @@ async function streamChatResponse(messages, res, conversationId, images) {
     }
   }
 
+  // When images present, try vision providers in order
+  if (images && images.length) {
+    let visionText = '';
+    let visionStarted = false;
+    for (const vp of VISION_PROVIDERS) {
+      try {
+        visionText = '';
+        visionStarted = false;
+        const msgsWithNote = messages; // unchanged — vision providers handle images natively
+        for await (const chunk of vp.fn(msgsWithNote, images)) {
+          visionStarted = true;
+          visionText += chunk;
+          send({ text: chunk });
+        }
+        if (visionStarted && visionText.trim()) {
+          if (conversationId && supabase) {
+            await supabase.from('messages').insert({ conversation_id: conversationId, role: 'assistant', content: visionText });
+          }
+          return done();
+        }
+        throw new Error('empty');
+      } catch (e) {
+        console.warn(`[fail] ${vp.name}: ${e.message}`);
+        continue;
+      }
+    }
+    // All vision providers failed — add note so text-only models don't deny images
+    console.warn('All vision providers failed — falling back with file note');
+    const note = `\n\n[${images.length} file(s) attached — vision service temporarily unavailable]`;
+    const lastUserIdx = messages.length - 1;
+    if (messages[lastUserIdx] && messages[lastUserIdx].role === 'user') {
+      messages = messages.map((m, i) => i === lastUserIdx ? { ...m, content: m.content + note } : m);
+    }
+  }
+
   const full = [{ role: 'system', content: SYSTEM_PROMPT }, ...messages];
   let lastErr = null;
-
-  if (images && images.length) {
-    try {
-      let fullText = '';
-      for await (const chunk of streamGeminiVision(full, images)) {
-        fullText += chunk;
-        send({ text: chunk });
-      }
-      if (conversationId && fullText && supabase) {
-        await supabase.from('messages').insert({ conversation_id: conversationId, role: 'assistant', content: fullText });
-      }
-      return done();
-    } catch (e) { lastErr = e; console.warn('[fail] Gemini Vision:', e.message); }
-  }
 
   for (const p of PROVIDERS) {
     try {
@@ -922,13 +1005,26 @@ app.get('/api/conversations/:id/messages', requireAuth, async (req, res) => {
   res.json({ messages: data || [] });
 });
 
+// Fixed: scoped to user's conversations only
 app.get('/api/files', requireAuth, async (req, res) => {
   if (!supabaseConfigured) return res.status(503).json({ files: [] });
-  const { data } = await supabase.from('messages').select('files, created_at, role').not('files', 'is', null).order('created_at', { ascending: false });
+  const { data: convs } = await supabase.from('conversations').select('id').eq('user_id', req.userId);
+  const convIds = (convs || []).map(c => c.id);
+  if (!convIds.length) return res.json({ files: [] });
+  const { data } = await supabase
+    .from('messages')
+    .select('files, created_at, role')
+    .in('conversation_id', convIds)
+    .not('files', 'is', null)
+    .order('created_at', { ascending: false });
   const all = [];
   for (const row of (data || [])) {
     if (Array.isArray(row.files)) {
-      for (const f of row.files) all.push({ ...f, created_at: row.created_at, role: row.role });
+      for (const f of row.files) {
+        if (f && (f.url || f.public_url)) {
+          all.push({ ...f, created_at: row.created_at, role: row.role });
+        }
+      }
     }
   }
   res.json({ files: all });
