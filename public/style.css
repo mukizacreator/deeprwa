@@ -242,6 +242,7 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
 .modal-actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 1rem; }
 .link-btn { background: transparent; border: none; color: var(--accent); font-family: inherit; font-size: 0.83rem; cursor: pointer; padding: 0; margin-top: 0.5rem; text-align: center; display: block; margin-left: auto; margin-right: auto; }
 .link-btn:hover { text-decoration: underline; }
+.link-btn:disabled { opacity: 0.35; cursor: not-allowed; text-decoration: none; pointer-events: none; }
 .share-link-row { display: flex; gap: 0.5rem; margin-top: 1rem; }
 .share-link-row input { flex: 1; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-family: ui-monospace, monospace; font-size: 0.82rem; padding: 0.6rem 0.8rem; outline: none; }
 .share-link-row .btn-primary { width: auto; padding: 0.6rem 1.2rem; margin: 0; }
