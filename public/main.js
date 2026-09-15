@@ -1,4 +1,4 @@
-// DeepRWA — Complete frontend logic (rev.2.9.0)
+// DeepRWA — Complete frontend logic (rev.3.0.0)
 
 // ============ CLIENT ID ============
 function getOrCreateClientId() {
@@ -299,7 +299,7 @@ function renderUser() {
 function toggleAccountDropdown(anchor) {
   if (!accountDropdown.classList.contains('hidden')) { accountDropdown.classList.add('hidden'); return; }
   const rect = anchor.getBoundingClientRect();
-  accountDropdown.style.left = rect.left + 'px';
+  accountDropdown.style.left = Math.max(8, rect.left) + 'px';
   accountDropdown.style.bottom = (window.innerHeight - rect.top + 4) + 'px';
   accountDropdown.classList.remove('hidden');
   refreshIcons();
@@ -349,11 +349,7 @@ sidebarNav.addEventListener('click', (e) => {
 
 // ============ CHAT LIST ============
 function renderChatList() {
-  if (state.view === 'files') {
-    updateMultiBar();
-    renderFilesList();
-    return;
-  }
+  if (state.view === 'files') { updateMultiBar(); renderFilesList(); return; }
   filesMultiBar.classList.add('hidden');
   if (!state.chats.length) {
     sidebarContent.innerHTML = `<div class="sidebar-empty"><p>No chats yet</p><span>Start a conversation with DeepRWA</span></div>`;
@@ -508,10 +504,7 @@ function openFileMenu(idx, rect) {
         title: 'Delete this file?',
         text: `"${f.name || 'File'}" will be removed from your Files list.`,
         confirmLabel: 'Delete',
-        onConfirm: async () => {
-          await deleteFiles([f]);
-          toast('File deleted', 'success');
-        }
+        onConfirm: async () => { await deleteFiles([f]); toast('File deleted', 'success'); }
       });
     }
   });
@@ -606,8 +599,8 @@ function openChatMenu(id, rect) {
   if (!chat) return;
   const menu = document.createElement('div');
   menu.className = 'chat-menu';
-  menu.style.left = Math.max(8, rect.left - 140) + 'px';
-  menu.style.top = rect.bottom + 4 + 'px';
+  menu.style.left = Math.max(8, Math.min(rect.left - 140, window.innerWidth - 170)) + 'px';
+  menu.style.top = Math.min(rect.bottom + 4, window.innerHeight - 160) + 'px';
   menu.innerHTML = `
     <button data-act="pin"><i data-lucide="pin"></i>${chat.pinned ? 'Unpin' : 'Pin'}</button>
     <button data-act="share"><i data-lucide="share-2"></i>Share</button>
@@ -972,10 +965,7 @@ chatEl.addEventListener('click', async (e) => {
     action.classList.toggle('active');
     action.closest('.msg-actions').querySelector('[data-action="like"]')?.classList.remove('active');
   } else if (act === 'edit') {
-    if (state.isGenerating) {
-      toast('Please wait for the current response to finish, or stop it first', 'info');
-      return;
-    }
+    if (state.isGenerating) { toast('Please wait for the current response to finish, or stop it first', 'info'); return; }
     const m = state.messages[idx];
     state.editingMessageId = m.id; state.editingValue = m.content; renderMessages();
     setTimeout(() => { const ta = document.getElementById('editTextarea'); if (ta) { ta.focus(); ta.style.height = ta.scrollHeight + 'px'; } }, 0);
@@ -1008,62 +998,6 @@ function fileToDataURL(file) {
     reader.readAsDataURL(file);
   });
 }
-async function uploadAttachmentsToServer() {
-  if (!state.user || !state.attachments.length) return null;
-  const uploaded = [];
-  for (const att of state.attachments) {
-    try {
-      if (att.file.size > 10 * 1024 * 1024) { toast(`${att.name} is over 10 MB — kept locally`, 'error'); uploaded.push({ name: att.name, type: att.type, url: att.url }); continue; }
-      const base64 = await fileToBase64(att.file);
-      const res = await fetch('/api/upload', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ name: att.name, type: att.type, data: base64 }) });
-      if (res.ok) { const d = await res.json(); uploaded.push({ name: d.name, type: d.type, url: d.url }); }
-      else { uploaded.push({ name: att.name, type: att.type, url: att.url }); }
-    } catch { uploaded.push({ name: att.name, type: att.type, url: att.url }); }
-  }
-  return uploaded;
-}
-async function attachmentsToDataUrls(attachments) {
-  const out = [];
-  for (const att of attachments) {
-    try {
-      if (att.file.size > 5 * 1024 * 1024) { out.push({ name: att.name, type: att.type, dataUrl: att.url }); continue; }
-      const dataUrl = await fileToDataURL(att.file);
-      out.push({ name: att.name, type: att.type, dataUrl });
-    } catch {}
-  }
-  return out;
-}
-async function collectAttachmentsForAI(attachments) {
-  const out = [];
-  for (const a of attachments) {
-    try {
-      if (a.type.startsWith('image/') && a.file.size < 4 * 1024 * 1024) out.push({ name: a.name, mime: a.type, data: await fileToBase64(a.file) });
-      else if (a.type === 'application/pdf' && a.file.size < 6 * 1024 * 1024) out.push({ name: a.name, mime: 'application/pdf', data: await fileToBase64(a.file) });
-      else if (a.type === 'text/plain' || a.type === 'text/markdown' || a.type === 'text/csv' || a.type === 'application/json') {
-        const text = await a.file.text();
-        out.push({ name: a.name, mime: 'text/plain', data: btoa(unescape(encodeURIComponent(text.slice(0, 30000)))) });
-      }
-    } catch {}
-  }
-  return out;
-}
-
-// Snapshot-based helpers — take explicit array (immune to state.attachments being cleared)
-async function collectAttachmentsForAISnapshot(attachments) {
-  const out = [];
-  for (const a of attachments) {
-    try {
-      if (a.type.startsWith('image/') && a.file.size < 4 * 1024 * 1024) out.push({ name: a.name, mime: a.type, data: await fileToBase64(a.file) });
-      else if (a.type === 'application/pdf' && a.file.size < 6 * 1024 * 1024) out.push({ name: a.name, mime: 'application/pdf', data: await fileToBase64(a.file) });
-      else if (a.type === 'text/plain' || a.type === 'text/markdown' || a.type === 'text/csv' || a.type === 'application/json') {
-        const text = await a.file.text();
-        out.push({ name: a.name, mime: 'text/plain', data: btoa(unescape(encodeURIComponent(text.slice(0, 30000)))) });
-      }
-    } catch {}
-  }
-  return out;
-}
-
 async function uploadAttachmentsSnapshot(attachments) {
   if (!state.user || !attachments.length) return null;
   const uploaded = [];
@@ -1078,7 +1012,6 @@ async function uploadAttachmentsSnapshot(attachments) {
   }
   return uploaded;
 }
-
 async function attachmentsToDataUrlsSnapshot(attachments) {
   const out = [];
   for (const att of attachments) {
@@ -1090,7 +1023,20 @@ async function attachmentsToDataUrlsSnapshot(attachments) {
   }
   return out;
 }
-
+async function collectAttachmentsForAISnapshot(attachments) {
+  const out = [];
+  for (const a of attachments) {
+    try {
+      if (a.type.startsWith('image/') && a.file.size < 4 * 1024 * 1024) out.push({ name: a.name, mime: a.type, data: await fileToBase64(a.file) });
+      else if (a.type === 'application/pdf' && a.file.size < 6 * 1024 * 1024) out.push({ name: a.name, mime: 'application/pdf', data: await fileToBase64(a.file) });
+      else if (a.type === 'text/plain' || a.type === 'text/markdown' || a.type === 'text/csv' || a.type === 'application/json') {
+        const text = await a.file.text();
+        out.push({ name: a.name, mime: 'text/plain', data: btoa(unescape(encodeURIComponent(text.slice(0, 30000)))) });
+      }
+    } catch {}
+  }
+  return out;
+}
 async function requestTitle(text) {
   try {
     const res = await fetch('/api/chat/title', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: text }) });
@@ -1106,7 +1052,6 @@ formEl.addEventListener('submit', async (e) => {
   const text = inputEl.value.trim();
   if (!text && !state.attachments.length) return;
 
-  // ── IMMEDIATE UI: lock, snapshot, clear composer, render message ──
   state.isGenerating = true;
   inputEl.disabled = true;
   updateSendButton();
@@ -1120,16 +1065,13 @@ formEl.addEventListener('submit', async (e) => {
     }
     const isFirstMessage = isNewChat || chat.title === 'New chat' || !chat.messages.length;
 
-    // 1. Snapshot attachments BEFORE clearing composer
     const attachmentsSnapshot = [...state.attachments];
     const localFiles = attachmentsSnapshot.map(f => ({ name: f.name, type: f.type, url: f.url }));
 
-    // 2. Clear composer and welcome screen NOW
     inputEl.value = ''; autoGrow();
     state.attachments = []; renderFilePreviews();
     chatEl.querySelector('.welcome')?.remove();
 
-    // 3. Render user message immediately with local blob URLs
     const userMsg = { id: 'user_' + Date.now(), role: 'user', content: text, files: localFiles, _createdAt: nowISO() };
     state.messages.push(userMsg); chat.messages = state.messages;
 
@@ -1137,7 +1079,6 @@ formEl.addEventListener('submit', async (e) => {
     state.messages.push(assistantMsg);
     renderMessages();
 
-    // 4. Title in the background (non-blocking)
     if (isFirstMessage && text) {
       requestTitle(text).then(title => {
         if (!title) return;
@@ -1147,13 +1088,11 @@ formEl.addEventListener('submit', async (e) => {
       }).catch(() => {});
     }
 
-    // 5. NOW process attachments (the slow part)
     const attachmentsForAI = await collectAttachmentsForAISnapshot(attachmentsSnapshot);
     let filesForMsg;
     if (state.user) filesForMsg = await uploadAttachmentsSnapshot(attachmentsSnapshot) || [];
     else filesForMsg = await attachmentsToDataUrlsSnapshot(attachmentsSnapshot);
 
-    // 6. Swap local blob URLs with persisted URLs
     userMsg.files = filesForMsg;
     renderMessages();
 
@@ -1171,11 +1110,8 @@ formEl.addEventListener('submit', async (e) => {
     if (state.user) payload.conversationId = isLocalId(chat.id) ? null : chat.id;
 
     let res;
-    try {
-      res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload), signal: state.abortController.signal });
-    } catch (fetchErr) {
-      throw new Error('NETWORK: ' + fetchErr.message);
-    }
+    try { res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload), signal: state.abortController.signal }); }
+    catch (fetchErr) { throw new Error('NETWORK: ' + fetchErr.message); }
     if (!res.ok || !res.body) throw new Error('Bad response: ' + res.status);
 
     const serverConvId = res.headers.get('X-Conversation-Id');
@@ -1555,7 +1491,7 @@ function renderForgotStep2() {
   $('fpVerify').onclick = async () => {
     const code = $('fpCode').value.trim();
     if (code.length !== 6) { toast('Enter the 6-digit code', 'error'); return; }
-    const btn = $('fpVerify'); setBtnLoading(btn, 'Verifying…');
+    const btn = $('fpVerify'); setBtnLoading(btn, 'Verifying code…');
     try {
       const res = await fetch('/api/auth/forgot-password-verify-code', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pendingToken: state.authModal.forgot.pendingToken, code }) });
       const data = await res.json();
@@ -1637,6 +1573,7 @@ function renderSettingsTab(tab) {
   refreshIcons();
 }
 
+// ============ ACCOUNT TAB — with granular button statuses ============
 function renderAccountTab() {
   settingsContent.innerHTML = `
     <h3>Account</h3>
@@ -1646,7 +1583,7 @@ function renderAccountTab() {
       <p>Current: <strong>${escapeHtml(state.user.email || '')}</strong></p>
       <button class="btn-secondary" id="changeEmailBtn">Change email</button>
       <div id="changeEmailArea" class="hidden" style="margin-top:1rem;">
-        <input type="email" id="newEmailInput" class="modal-input" placeholder="New email address" />
+        <input type="email" id="newEmailInput" class="modal-input" placeholder="New email address" autocomplete="email" />
         <button class="btn-primary" id="sendEmailCodeBtn" style="width:auto;padding:0.55rem 1rem;">Send code</button>
       </div>
     </div>
@@ -1669,32 +1606,76 @@ function renderAccountTab() {
       <button class="btn-danger" id="deleteAccBtn">Delete account</button>
     </div>`;
   refreshIcons(); attachPasswordToggles(settingsContent);
-  $('changeEmailBtn').onclick = () => { $('changeEmailArea').classList.toggle('hidden'); };
-  $('sendEmailCodeBtn').onclick = () => {
+
+  // Toggle change-email form
+  $('changeEmailBtn').onclick = () => { $('changeEmailArea').classList.toggle('hidden'); if (!$('changeEmailArea').classList.contains('hidden')) $('newEmailInput').focus(); };
+
+  // ── CHANGE EMAIL: verify email → send code ──
+  $('sendEmailCodeBtn').onclick = async () => {
     const newEmail = $('newEmailInput')?.value.trim();
+    const btn = $('sendEmailCodeBtn');
     if (!newEmail) { toast('Enter new email', 'error'); return; }
-    const btn = $('sendEmailCodeBtn'); setBtnLoading(btn, 'Sending code…');
+
+    // Step 1: Verify email (client-side checks)
+    setBtnLoading(btn, 'Verifying email…');
+    await new Promise(r => setTimeout(r, 250));
+
+    const EMAIL_RE = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/;
+    if (!EMAIL_RE.test(newEmail)) {
+      resetBtn(btn); toast('Invalid email format', 'error'); return;
+    }
+    if (newEmail.toLowerCase() === (state.user.email || '').toLowerCase()) {
+      resetBtn(btn); toast('New email must be different from your current one', 'error'); return;
+    }
+
+    // Step 2: Send code
+    setBtnLoading(btn, 'Sending code…');
     sendActionCode('change-email', { newEmail });
   };
-  $('changePwBtn').onclick = () => { $('changePwArea').classList.toggle('hidden'); };
+
+  // Toggle change-password form
+  $('changePwBtn').onclick = () => { $('changePwArea').classList.toggle('hidden'); if (!$('changePwArea').classList.contains('hidden')) $('currentPw').focus(); };
+
+  // ── CHANGE PASSWORD: verify current → send code ──
   $('sendPwCodeBtn').onclick = async () => {
     const current = $('currentPw').value, newPw = $('newPw').value, confirm = $('confirmPw').value;
-    if (!current || !newPw || !confirm) { toast('Fill all password fields', 'error'); return; }
-    if (newPw.length < 8) { toast('Password must be at least 8 characters', 'error'); return; }
-    if (newPw !== confirm) { toast('Passwords do not match', 'error'); return; }
-    if (current === newPw) { toast('New password must be different', 'error'); return; }
-    const btn = $('sendPwCodeBtn'); setBtnLoading(btn, 'Verifying password…');
+    const btn = $('sendPwCodeBtn');
+
+    // Step 1: Validate inputs (client)
+    setBtnLoading(btn, 'Checking fields…');
+    await new Promise(r => setTimeout(r, 200));
+
+    if (!current || !newPw || !confirm) { resetBtn(btn); toast('Fill all password fields', 'error'); return; }
+    if (newPw.length < 8) { resetBtn(btn); toast('Password must be at least 8 characters', 'error'); return; }
+    if (newPw !== confirm) { resetBtn(btn); toast('Passwords do not match', 'error'); return; }
+    if (current === newPw) { resetBtn(btn); toast('New password must be different', 'error'); return; }
+
+    // Step 2: Verify current password with server
+    setBtnLoading(btn, 'Verifying current password…');
     try {
-      const res = await fetch('/api/auth/verify-current-password', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ password: current }) });
+      const res = await fetch('/api/auth/verify-current-password', {
+        method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: current })
+      });
       if (!res.ok) { resetBtn(btn); toast('Current password is incorrect', 'error'); return; }
       state._pendingPw = { current, newPw };
+
+      // Step 3: Send code
       setBtnLoading(btn, 'Sending code…');
       sendActionCode('change-password');
     } catch { resetBtn(btn); toast('Network error', 'error'); }
   };
+
+  // ── DELETE ACCOUNT: send code → verify ──
   $('deleteAccBtn').onclick = () => confirmAction({
-    title: 'Delete your account?', text: 'This will permanently delete your account, chats, and files.', confirmLabel: 'Delete account',
-    onConfirm: () => { const btn = $('deleteAccBtn'); setBtnLoading(btn, 'Sending code…'); sendActionCode('delete-account'); }
+    title: 'Delete your account?',
+    text: 'This will permanently delete your account, chats, and files.',
+    confirmLabel: 'Delete account',
+    onConfirm: () => {
+      const btn = $('deleteAccBtn');
+      if (btn) setBtnLoading(btn, 'Sending code…');
+      sendActionCode('delete-account');
+    }
   });
 }
 
@@ -1709,14 +1690,19 @@ async function sendActionCode(action, extra = {}) {
 }
 
 function renderActionVerify(action, targetEmail) {
+  const headline = action === 'change-email' ? 'Verify new email' : action === 'change-password' ? 'Verify password change' : 'Verify account deletion';
+  const verifyLabel = action === 'change-email' ? 'Verify & change email' : action === 'change-password' ? 'Verify & change password' : 'Verify & delete';
+  const workingLabel = action === 'change-email' ? 'Changing email…' : action === 'change-password' ? 'Changing password…' : 'Deleting account…';
+
   settingsContent.innerHTML = `
-    <h3>${action === 'change-email' ? 'Verify new email' : action === 'change-password' ? 'Verify password change' : 'Verify account deletion'}</h3>
+    <h3>${headline}</h3>
     <p class="modal-sub">We sent a 6-digit code to <strong>${escapeHtml(targetEmail || '')}</strong></p>
     <input type="text" id="actCode" placeholder="000000" maxlength="6" class="modal-input code-input" inputmode="numeric" autocomplete="one-time-code" />
-    <button class="btn-primary" id="actVerify">Verify & ${action === 'change-email' ? 'change email' : action === 'change-password' ? 'change password' : 'delete'}</button>
+    <button class="btn-primary" id="actVerify">${verifyLabel}</button>
     <button class="link-btn" id="actResend">Resend code</button>
     <button class="link-btn" id="actBack">Back</button>`;
   refreshIcons(); $('actCode').focus();
+
   const resendBtn = $('actResend'); attachCountdown(resendBtn, 60);
   resendBtn.onclick = async () => {
     if (resendBtn.disabled) return;
@@ -1728,40 +1714,51 @@ function renderActionVerify(action, targetEmail) {
       attachCountdown(resendBtn, 60); toast('Code resent', 'success');
     } catch { toast('Network error', 'error'); }
   };
+
   $('actBack').onclick = () => renderAccountTab();
+
   $('actVerify').onclick = async () => {
     const code = $('actCode').value.trim();
     if (code.length !== 6) { toast('Enter 6-digit code', 'error'); return; }
-    const btn = $('actVerify'); setBtnLoading(btn, 'Verifying code…');
+    const btn = $('actVerify');
+
+    // Step 1: Verify code
+    setBtnLoading(btn, 'Verifying code…');
     try {
       const vres = await fetch('/api/auth/verify-action-code', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ pendingToken: state._pendingAction.token, code, action }) });
       const vdata = await vres.json();
       if (!vres.ok) { resetBtn(btn); toast(vdata.error || 'Invalid code', 'error'); return; }
+
+      // Step 2: Perform the action
+      setBtnLoading(btn, workingLabel);
+
       if (action === 'change-email') {
-        setBtnLoading(btn, 'Changing email…');
         const r = await fetch('/api/auth/change-email', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ grantedToken: vdata.grantedToken }) });
         const d = await r.json();
         if (!r.ok) { resetBtn(btn); toast(d.error || 'Failed', 'error'); return; }
-        state.user.email = d.newEmail; toast('Email changed to ' + d.newEmail, 'success');
+        state.user.email = d.newEmail;
+        toast('Email changed to ' + d.newEmail, 'success');
         renderUser(); renderAccountTab();
       } else if (action === 'change-password') {
-        setBtnLoading(btn, 'Changing password…');
         const pw = state._pendingPw || {};
         const r = await fetch('/api/auth/change-password', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ grantedToken: vdata.grantedToken, currentPassword: pw.current, newPassword: pw.newPw }) });
         const d = await r.json();
         if (!r.ok) { resetBtn(btn); toast(d.error || 'Failed', 'error'); return; }
-        state._pendingPw = null; toast('Password changed', 'success'); renderAccountTab();
+        state._pendingPw = null;
+        toast('Password changed', 'success');
+        renderAccountTab();
       } else if (action === 'delete-account') {
-        setBtnLoading(btn, 'Deleting account…');
         const r = await fetch('/api/auth/account', { method: 'DELETE', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ grantedToken: vdata.grantedToken }) });
         const d = await r.json();
         if (!r.ok) { resetBtn(btn); toast(d.error || 'Failed', 'error'); return; }
-        settingsModal.classList.add('hidden'); await forceSignOut('Account deleted');
+        settingsModal.classList.add('hidden');
+        await forceSignOut('Account deleted');
       }
     } catch { resetBtn(btn); toast('Network error', 'error'); }
   };
 }
 
+// ============ SECURITY TAB — with granular statuses ============
 function renderSecurityTab() {
   const enabled = state.user.totp_enabled;
   settingsContent.innerHTML = `
@@ -1797,15 +1794,25 @@ async function setup2FA() {
     refreshIcons();
     $('copySecret').onclick = async () => { try { await navigator.clipboard.writeText(data.secret); toast('Secret copied', 'success', 2000); } catch {} };
     $('cancel2fa').onclick = () => renderSecurityTab();
+
     $('confirm2faBtn').onclick = async () => {
       const code = $('faSetupCode').value.trim();
       if (code.length !== 6) { toast('Enter the 6-digit code', 'error'); return; }
-      const btn = $('confirm2faBtn'); setBtnLoading(btn, 'Verifying…');
+      const btn = $('confirm2faBtn');
+
+      // Step 1: Verify code
+      setBtnLoading(btn, 'Verifying code…');
+      await new Promise(r => setTimeout(r, 200));
+
+      // Step 2: Enable 2FA
+      setBtnLoading(btn, 'Enabling 2FA…');
       try {
         const r = await fetch('/api/auth/2fa/enable', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) });
         const d = await r.json();
         if (!r.ok) { resetBtn(btn); toast(d.error || 'Invalid code', 'error'); return; }
-        state.user.totp_enabled = true; toast('2FA enabled', 'success'); renderSecurityTab();
+        state.user.totp_enabled = true;
+        toast('2FA enabled', 'success');
+        renderSecurityTab();
       } catch { resetBtn(btn); toast('Network error', 'error'); }
     };
   } catch { toast('Network error', 'error'); renderSecurityTab(); }
@@ -1823,16 +1830,26 @@ async function disable2FA() {
   $('confirmDisableBtn').onclick = async () => {
     const code = $('faDisableCode').value.trim();
     if (code.length !== 6) { toast('Enter the 6-digit code', 'error'); return; }
-    const btn = $('confirmDisableBtn'); setBtnLoading(btn, 'Disabling…');
+    const btn = $('confirmDisableBtn');
+
+    // Step 1: Verify code
+    setBtnLoading(btn, 'Verifying code…');
+    await new Promise(r => setTimeout(r, 200));
+
+    // Step 2: Disable
+    setBtnLoading(btn, 'Disabling 2FA…');
     try {
       const r = await fetch('/api/auth/2fa/disable', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) });
       const d = await r.json();
       if (!r.ok) { resetBtn(btn); toast(d.error || 'Invalid code', 'error'); return; }
-      state.user.totp_enabled = false; toast('2FA disabled', 'success'); renderSecurityTab();
+      state.user.totp_enabled = false;
+      toast('2FA disabled', 'success');
+      renderSecurityTab();
     } catch { resetBtn(btn); toast('Network error', 'error'); }
   };
 }
 
+// ============ SESSIONS TAB ============
 async function renderSessionsTab() {
   settingsContent.innerHTML = `<h3>Sessions</h3><p class="modal-sub">Loading…</p>`;
   try {
@@ -1864,11 +1881,13 @@ async function renderSessionsTab() {
       btn.onclick = () => confirmAction({
         title: 'Log out this session?', text: 'That device will need to log in again.', confirmLabel: 'Log out',
         onConfirm: async () => {
+          const orig = btn.textContent;
+          btn.disabled = true; btn.textContent = 'Logging out…';
           try {
             await fetch(`/api/auth/sessions/${btn.dataset.logoutSession}`, { method: 'DELETE', headers: authHeaders() });
             toast('Session logged out', 'success');
             renderSessionsTab();
-          } catch { toast('Failed', 'error'); }
+          } catch { btn.disabled = false; btn.textContent = orig; toast('Failed', 'error'); }
         }
       });
     });
@@ -1876,11 +1895,13 @@ async function renderSessionsTab() {
     if (allBtn) allBtn.onclick = () => confirmAction({
       title: 'Log out all other sessions?', text: 'All devices except this one will be signed out.', confirmLabel: 'Log out all',
       onConfirm: async () => {
+        const orig = allBtn.textContent;
+        allBtn.disabled = true; allBtn.textContent = 'Logging out all…';
         try {
           await fetch('/api/auth/sessions-all-others', { method: 'DELETE', headers: authHeaders() });
           toast('All other sessions logged out', 'success');
           renderSessionsTab();
-        } catch { toast('Failed', 'error'); }
+        } catch { allBtn.disabled = false; allBtn.textContent = orig; toast('Failed', 'error'); }
       }
     });
   } catch { settingsContent.innerHTML = `<h3>Sessions</h3><p class="modal-sub">Could not load sessions.</p>`; }
@@ -1912,13 +1933,7 @@ async function shareChat(chatId) {
       msgs = (d.messages || []).map(m => ({ id: m.id, role: m.role, content: m.content, files: m.files || [] }));
       (d.messages || []).forEach(m => {
         if (m.role === 'user' && m.versions && m.versions.length > 0) {
-          state.messageVersions[m.id] = {
-            versions: m.versions,
-            files: m.version_files || [],
-            aiReplies: m.ai_replies || [],
-            aiFiles: m.ai_files || [],
-            currentIndex: m.current_version_index || 0
-          };
+          state.messageVersions[m.id] = { versions: m.versions, files: m.version_files || [], aiReplies: m.ai_replies || [], aiFiles: m.ai_files || [], currentIndex: m.current_version_index || 0 };
         }
       });
     } catch {}
