@@ -43,6 +43,11 @@
       <button class="nav-item" data-view="files"><i data-lucide="folder"></i><span>Files</span></button>
     </nav>
 
+    <div class="files-actions hidden" id="filesActions">
+      <button class="files-action-btn" id="filesSelectAllBtn"><i data-lucide="check-square"></i><span>Select all</span></button>
+      <button class="files-action-btn danger" id="filesDeleteBtn"><i data-lucide="trash-2"></i><span>Delete</span></button>
+    </div>
+
     <div class="sidebar-content" id="sidebarContent"></div>
 
     <div class="sidebar-footer" id="sidebarFooter">
@@ -88,7 +93,7 @@
   </div>
 </div>
 
-<!-- PROFILE MODAL (separate, info only) -->
+<!-- PROFILE MODAL -->
 <div class="modal-backdrop hidden" id="profileModal">
   <div class="modal">
     <button class="modal-close" id="profileModalClose"><i data-lucide="x"></i></button>
@@ -96,7 +101,7 @@
   </div>
 </div>
 
-<!-- SETTINGS MODAL (tabs: Account, Security, Sessions) -->
+<!-- SETTINGS MODAL -->
 <div class="modal-backdrop hidden" id="settingsModal">
   <div class="modal modal-settings">
     <button class="modal-close" id="settingsModalClose"><i data-lucide="x"></i></button>
@@ -160,7 +165,7 @@
   </div>
 </div>
 
-<!-- FILE PREVIEW MODAL (view images/docs full-size) -->
+<!-- FILE VIEW MODAL -->
 <div class="modal-backdrop hidden" id="fileViewModal">
   <div class="modal modal-file-view">
     <button class="modal-close" id="fileViewModalClose"><i data-lucide="x"></i></button>
