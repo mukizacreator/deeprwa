@@ -1,5 +1,20 @@
-// DeepRWA — Full frontend logic
+// DeepRWA — Complete frontend logic
 
+// ============ CLIENT ID ============
+function getOrCreateClientId() {
+  const key = 'deeprwa_client_id';
+  let id = localStorage.getItem(key);
+  if (!id || !/^c_[a-f0-9]{32}$/.test(id)) {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    id = 'c_' + Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+    localStorage.setItem(key, id);
+  }
+  return id;
+}
+const CLIENT_ID = getOrCreateClientId();
+
+// ============ STATE ============
 const state = {
   user: null,
   token: localStorage.getItem('deeprwa_token') || null,
@@ -11,12 +26,15 @@ const state = {
   attachments: [],
   editingMessageId: null,
   editingValue: '',
-  editingSelection: null,
   messageVersions: {},
   view: 'chats',
-  config: {}
+  authModal: { mode: 'login', pendingToken: null, forgot: { email: null, pendingToken: null, grantedToken: null } },
+  settingsTab: 'profile',
+  sessionCheckInterval: null,
+  lastSessionCheck: 0
 };
 
+// ============ DOM HELPERS ============
 const $ = (id) => document.getElementById(id);
 const chatEl = $('chat');
 const formEl = $('composer');
@@ -27,17 +45,21 @@ const sidebar = $('sidebar');
 const sidebarBackdrop = $('sidebarBackdrop');
 const menuBtn = $('menuBtn');
 const expandBtn = $('expandBtn');
-const sidebarClose = $('sidebarClose');
 const sidebarCollapseBtn = $('sidebarCollapseBtn');
 const attachBtn = $('attachBtn');
 const fileInput = $('fileInput');
 const filePreviews = $('filePreviews');
 const sidebarNav = $('sidebarNav');
 const sidebarContent = $('sidebarContent');
-const loginBtn = $('loginBtn');
+const sidebarFooter = $('sidebarFooter');
 const authModal = $('authModal');
 const authModalBody = $('authModalBody');
 const authModalClose = $('authModalClose');
+const settingsModal = $('settingsModal');
+const settingsModalClose = $('settingsModalClose');
+const settingsSidebar = $('settingsSidebar');
+const settingsContent = $('settingsContent');
+const accountDropdown = $('accountDropdown');
 const shareModal = $('shareModal');
 const shareModalClose = $('shareModalClose');
 const shareLinkInput = $('shareLinkInput');
@@ -51,11 +73,10 @@ const confirmTitle = $('confirmTitle');
 const confirmText = $('confirmText');
 const confirmCancel = $('confirmCancel');
 const confirmOk = $('confirmOk');
+const toastContainer = $('toastContainer');
 
+// ============ UTILS ============
 function refreshIcons() { if (window.lucide) window.lucide.createIcons(); }
-refreshIcons();
-
-// ============= HELPERS =============
 function escapeHtml(t) { return String(t || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function escapeHtmlOutsideCode(text) {
   const lines = (text || '').split('\n'); let inCode = false;
@@ -71,49 +92,219 @@ function renderMarkdown(text) {
   catch { return safe.replace(/\n/g, '<br>'); }
 }
 function scrollBottom() { chatEl.scrollTop = chatEl.scrollHeight; }
-function authHeaders() { return state.token ? { 'Authorization': `Bearer ${state.token}` } : {}; }
+function authHeaders() {
+  const h = { 'X-Client-Id': CLIENT_ID };
+  if (state.token) h['Authorization'] = `Bearer ${state.token}`;
+  return h;
+}
 function isLocalId(id) { return typeof id === 'string' && id.startsWith('local_'); }
 function makeLocalId() { return 'local_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
 function nowISO() { return new Date().toISOString(); }
-
-// ============= INIT =============
-async function init() {
-  try {
-    state.config = await fetch('/api/config').then(r => r.json());
-  } catch {}
-  if (state.token) {
-    try {
-      const res = await fetch('/api/auth/me', { headers: authHeaders() });
-      if (res.ok) { const d = await res.json(); state.user = d.user; renderUser(); await loadConversations(); }
-      else { state.token = null; localStorage.removeItem('deeprwa_token'); renderUser(); }
-    } catch { renderUser(); }
-  } else { renderUser(); }
-  renderWelcome();
-  updateSendButton();
-  inputEl.focus();
+function formatDate(iso) {
+  if (!iso) return '';
+  try { return new Date(iso).toLocaleString(); } catch { return ''; }
+}
+function timeAgo(iso) {
+  if (!iso) return '';
+  const diff = Date.now() - new Date(iso).getTime();
+  const s = Math.floor(diff / 1000);
+  if (s < 60) return 'just now';
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 30) return `${d}d ago`;
+  return new Date(iso).toLocaleDateString();
 }
 
-function renderUser() {
-  if (state.user) {
-    loginBtn.innerHTML = `<i data-lucide="log-out"></i><span>Log out</span>`;
-    loginBtn.onclick = () => {
-      state.token = null; state.user = null;
-      localStorage.removeItem('deeprwa_token');
-      state.chats = []; state.activeChatId = null; state.messages = [];
-      renderUser(); renderChatList(); renderWelcome();
-    };
-  } else {
-    loginBtn.innerHTML = `<i data-lucide="log-in"></i><span>Log in</span>`;
-    loginBtn.onclick = () => openAuthModal('login');
-  }
+// ============ TOASTS ============
+function toast(message, type = 'info', duration = 3500) {
+  const icons = { success: 'check-circle', error: 'alert-circle', info: 'info' };
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.innerHTML = `<i data-lucide="${icons[type]}"></i><span>${escapeHtml(message)}</span>`;
+  toastContainer.appendChild(el);
+  refreshIcons();
+  setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity 0.25s'; }, duration - 300);
+  setTimeout(() => el.remove(), duration);
+}
+
+// ============ PASSWORD TOGGLE HELPER ============
+function passwordFieldHTML(id, placeholder, autocomplete = 'current-password') {
+  return `
+    <div class="input-wrap">
+      <input type="password" id="${id}" placeholder="${placeholder}" class="modal-input" autocomplete="${autocomplete}" />
+      <button type="button" class="input-toggle" data-toggle="${id}" aria-label="Show password">
+        <i data-lucide="eye"></i>
+      </button>
+    </div>`;
+}
+function attachPasswordToggles(root = document) {
+  root.querySelectorAll('[data-toggle]').forEach(btn => {
+    if (btn._wired) return;
+    btn._wired = true;
+    btn.addEventListener('click', () => {
+      const inp = document.getElementById(btn.dataset.toggle);
+      if (!inp) return;
+      const isPw = inp.type === 'password';
+      inp.type = isPw ? 'text' : 'password';
+      btn.innerHTML = `<i data-lucide="${isPw ? 'eye-off' : 'eye'}"></i>`;
+      refreshIcons();
+    });
+  });
+}
+
+// ============ BUTTON STATE HELPER ============
+function setBtnLoading(btn, text) {
+  if (!btn) return;
+  if (!btn._originalHTML) btn._originalHTML = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = `<span class="spinner"></span><span>${escapeHtml(text)}</span>`;
+}
+function resetBtn(btn) {
+  if (!btn || !btn._originalHTML) return;
+  btn.disabled = false;
+  btn.innerHTML = btn._originalHTML;
   refreshIcons();
 }
 
-// ============= SIDEBAR =============
+// ============ COUNTDOWN ============
+function attachCountdown(btn, seconds = 60) {
+  if (!btn) return;
+  if (btn._cdInterval) clearInterval(btn._cdInterval);
+  const original = btn.dataset.originalText || btn.textContent.trim();
+  btn.dataset.originalText = original;
+  let remaining = seconds;
+  btn.disabled = true;
+  btn.textContent = `Resend in ${remaining}s`;
+  btn._cdInterval = setInterval(() => {
+    remaining--;
+    if (remaining <= 0) {
+      clearInterval(btn._cdInterval);
+      btn._cdInterval = null;
+      btn.disabled = false;
+      btn.textContent = original;
+    } else {
+      btn.textContent = `Resend in ${remaining}s`;
+    }
+  }, 1000);
+}
+
+// ============ INIT ============
+async function init() {
+  renderUser();
+  renderChatList();
+  renderWelcome();
+  updateSendButton();
+  inputEl.focus();
+
+  if (state.token) {
+    try {
+      const res = await fetch('/api/auth/me', { headers: authHeaders() });
+      if (res.ok) {
+        const d = await res.json();
+        state.user = d.user;
+        renderUser();
+        await loadConversations();
+      } else {
+        state.token = null;
+        localStorage.removeItem('deeprwa_token');
+        renderUser();
+      }
+    } catch {
+      renderUser();
+    }
+  }
+  startSessionCheck();
+}
+
+// ============ SESSION CHECK POLLING ============
+function startSessionCheck() {
+  if (state.sessionCheckInterval) clearInterval(state.sessionCheckInterval);
+  state.sessionCheckInterval = setInterval(() => {
+    if (!state.token) return;
+    const now = Date.now();
+    if (now - state.lastSessionCheck < 20000) return;
+    state.lastSessionCheck = now;
+    fetch('/api/auth/session-check', { headers: authHeaders() })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d && d.valid === false) forceSignOut('Signed out from another device'); })
+      .catch(() => {});
+  }, 60000);
+}
+
+async function forceSignOut(reason) {
+  state.token = null;
+  state.user = null;
+  state.chats = [];
+  state.activeChatId = null;
+  state.messages = [];
+  localStorage.removeItem('deeprwa_token');
+  renderUser();
+  renderChatList();
+  renderWelcome();
+  closeAllModals();
+  toast(reason || 'Signed out', 'info');
+}
+
+// ============ USER RENDERING ============
+function renderUser() {
+  if (state.user) {
+    const initial = (state.user.email || 'U')[0].toUpperCase();
+    sidebarFooter.innerHTML = `
+      <button class="auth-btn account" id="accountBtn">
+        <div class="account-info">
+          <div class="account-avatar">${escapeHtml(initial)}</div>
+          <span class="account-email">${escapeHtml(state.user.email || 'Account')}</span>
+        </div>
+        <i data-lucide="chevron-up"></i>
+      </button>`;
+    refreshIcons();
+    $('accountBtn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleAccountDropdown(e.currentTarget);
+    });
+  } else {
+    sidebarFooter.innerHTML = `
+      <button class="auth-btn" id="authBtn">
+        <i data-lucide="log-in"></i><span>Log in</span>
+      </button>`;
+    refreshIcons();
+    $('authBtn').addEventListener('click', () => openAuthModal('login'));
+  }
+}
+
+function toggleAccountDropdown(anchor) {
+  if (!accountDropdown.classList.contains('hidden')) { accountDropdown.classList.add('hidden'); return; }
+  const rect = anchor.getBoundingClientRect();
+  accountDropdown.style.left = rect.left + 'px';
+  accountDropdown.style.bottom = (window.innerHeight - rect.top + 4) + 'px';
+  accountDropdown.classList.remove('hidden');
+  refreshIcons();
+  const close = (ev) => {
+    if (!accountDropdown.contains(ev.target) && ev.target !== anchor) {
+      accountDropdown.classList.add('hidden');
+      document.removeEventListener('click', close);
+    }
+  };
+  setTimeout(() => document.addEventListener('click', close), 0);
+}
+
+accountDropdown.addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-action]');
+  if (!btn) return;
+  const act = btn.dataset.action;
+  accountDropdown.classList.add('hidden');
+  if (act === 'profile') openSettingsModal('profile');
+  else if (act === 'settings') openSettingsModal('account');
+  else if (act === 'logout') confirmLogout();
+});
+
+// ============ SIDEBAR ============
 function openSidebar() { sidebar.classList.add('open'); sidebarBackdrop.classList.add('show'); }
 function closeSidebar() { sidebar.classList.remove('open'); sidebarBackdrop.classList.remove('show'); }
 menuBtn.addEventListener('click', openSidebar);
-sidebarClose.addEventListener('click', closeSidebar);
 sidebarBackdrop.addEventListener('click', closeSidebar);
 sidebarCollapseBtn.addEventListener('click', () => {
   document.body.classList.add('sidebar-collapsed');
@@ -135,12 +326,9 @@ sidebarNav.addEventListener('click', (e) => {
   renderChatList();
 });
 
-// ============= CHAT LIST =============
+// ============ CHAT LIST ============
 function renderChatList() {
-  if (state.view === 'images') {
-    sidebarContent.innerHTML = `<div class="sidebar-empty"><p>No images yet</p><span>Images you send or generate will appear here</span></div>`;
-    return;
-  }
+  if (state.view === 'files') { renderFilesList(); return; }
   if (!state.chats.length) {
     sidebarContent.innerHTML = `<div class="sidebar-empty"><p>No chats yet</p><span>Start a conversation with DeepRWA</span></div>`;
     return;
@@ -150,10 +338,8 @@ function renderChatList() {
   const renderOne = (c) => `
     <div class="chat-item ${c.id === state.activeChatId ? 'active' : ''}" data-id="${c.id}">
       <i data-lucide="${c.pinned ? 'pin' : 'message-square'}" class="chat-item-icon"></i>
-      <span class="chat-item-title">${escapeHtml(c.title || 'New chat')}</span>
-      <button class="chat-item-menu" data-menu="${c.id}" aria-label="Menu">
-        <i data-lucide="more-horizontal"></i>
-      </button>
+      <span class="chat-item-title" title="${escapeHtml(c.title || 'New chat')}">${escapeHtml(c.title || 'New chat')}</span>
+      <button class="chat-item-menu" data-menu="${c.id}" aria-label="Menu"><i data-lucide="more-horizontal"></i></button>
     </div>`;
   let html = '';
   if (pinned.length) html += `<div class="sidebar-section">Pinned</div>` + pinned.map(renderOne).join('');
@@ -162,13 +348,46 @@ function renderChatList() {
   refreshIcons();
 }
 
-sidebarContent.addEventListener('click', async (e) => {
+function renderFilesList() {
+  if (!state.user) {
+    sidebarContent.innerHTML = `<div class="sidebar-empty"><p>Log in to view files</p><span>Your files will appear here</span></div>`;
+    return;
+  }
+  sidebarContent.innerHTML = `<div class="sidebar-empty"><p>Loading files…</p></div>`;
+  fetch('/api/files', { headers: authHeaders() })
+    .then(r => r.json())
+    .then(d => {
+      const files = d.files || [];
+      if (!files.length) {
+        sidebarContent.innerHTML = `<div class="sidebar-empty"><p>No files yet</p><span>Files you send or receive will appear here</span></div>`;
+        return;
+      }
+      sidebarContent.innerHTML = files.map(f => {
+        const isImg = (f.type || '').startsWith('image/');
+        const url = f.url || f.public_url || '';
+        return `<div class="file-item">
+          ${isImg && url
+            ? `<img src="${url}" class="file-thumb-sm" />`
+            : `<div class="file-thumb-sm"><i data-lucide="file-text"></i></div>`}
+          <div class="file-item-info">
+            <div class="file-item-name" title="${escapeHtml(f.name || 'file')}">${escapeHtml(f.name || 'file')}</div>
+            <div class="file-item-meta">${timeAgo(f.created_at)}</div>
+          </div>
+        </div>`;
+      }).join('');
+      refreshIcons();
+    })
+    .catch(() => {
+      sidebarContent.innerHTML = `<div class="sidebar-empty"><p>Could not load files</p></div>`;
+    });
+}
+
+sidebarContent.addEventListener('click', (e) => {
   const menuBtn = e.target.closest('.chat-item-menu');
   if (menuBtn) {
     e.stopPropagation();
-    const id = menuBtn.dataset.menu;
     const rect = menuBtn.getBoundingClientRect();
-    openChatMenu(id, rect);
+    openChatMenu(menuBtn.dataset.menu, rect);
     return;
   }
   const item = e.target.closest('.chat-item');
@@ -181,7 +400,7 @@ function openChatMenu(id, rect) {
   if (!chat) return;
   const menu = document.createElement('div');
   menu.className = 'chat-menu';
-  menu.style.left = rect.left - 140 + 'px';
+  menu.style.left = Math.max(8, rect.left - 140) + 'px';
   menu.style.top = rect.bottom + 4 + 'px';
   menu.innerHTML = `
     <button data-act="pin"><i data-lucide="pin"></i>${chat.pinned ? 'Unpin' : 'Pin'}</button>
@@ -199,7 +418,7 @@ function openChatMenu(id, rect) {
     if (act === 'pin') await togglePin(id);
     else if (act === 'share') await shareChat(id);
     else if (act === 'rename') openRenameModal(id);
-    else if (act === 'delete') confirmDelete(id);
+    else if (act === 'delete') askDelete(id);
   });
 }
 
@@ -207,21 +426,56 @@ async function togglePin(id) {
   const chat = state.chats.find(c => c.id === id); if (!chat) return;
   chat.pinned = !chat.pinned;
   if (state.user && !isLocalId(id)) {
-    await fetch(`/api/conversations/${id}`, {
-      method: 'PATCH',
-      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pinned: chat.pinned })
-    });
+    try {
+      await fetch(`/api/conversations/${id}`, {
+        method: 'PATCH',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pinned: chat.pinned })
+      });
+    } catch {}
   }
   renderChatList();
+}
+
+function askDelete(id) {
+  const chat = state.chats.find(c => c.id === id); if (!chat) return;
+  confirmAction({
+    title: 'Delete this chat?',
+    text: `"${chat.title || 'New chat'}" will be permanently removed. This cannot be undone.`,
+    confirmLabel: 'Delete',
+    onConfirm: async () => {
+      if (state.user && !isLocalId(id)) {
+        try { await fetch(`/api/conversations/${id}`, { method: 'DELETE', headers: authHeaders() }); } catch {}
+      }
+      state.chats = state.chats.filter(c => c.id !== id);
+      if (state.activeChatId === id) newChatSilent();
+      renderChatList();
+      toast('Chat deleted', 'success');
+    }
+  });
+}
+
+function confirmAction({ title, text, confirmLabel = 'Confirm', danger = true, onConfirm }) {
+  confirmTitle.textContent = title;
+  confirmText.textContent = text;
+  confirmOk.textContent = confirmLabel;
+  confirmOk.className = danger ? 'btn-danger' : 'btn-primary';
+  confirmModal.classList.remove('hidden');
+  const cleanup = () => { confirmOk.onclick = null; confirmCancel.onclick = null; };
+  confirmOk.onclick = async () => {
+    confirmModal.classList.add('hidden');
+    cleanup();
+    await onConfirm();
+  };
+  confirmCancel.onclick = () => { confirmModal.classList.add('hidden'); cleanup(); };
 }
 
 function openRenameModal(id) {
   const chat = state.chats.find(c => c.id === id); if (!chat) return;
   renameInput.value = chat.title || '';
   renameModal.classList.remove('hidden');
-  renameInput.focus();
   renameModal.dataset.id = id;
+  renameInput.focus(); renameInput.select();
 }
 renameModalClose.addEventListener('click', () => renameModal.classList.add('hidden'));
 renameSubmit.addEventListener('click', async () => {
@@ -231,34 +485,17 @@ renameSubmit.addEventListener('click', async () => {
   const chat = state.chats.find(c => c.id === id); if (!chat) return;
   chat.title = newTitle;
   if (state.user && !isLocalId(id)) {
-    await fetch(`/api/conversations/${id}`, {
-      method: 'PATCH',
-      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: newTitle })
-    });
+    try {
+      await fetch(`/api/conversations/${id}`, {
+        method: 'PATCH',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: newTitle })
+      });
+    } catch {}
   }
   renderChatList();
   renameModal.classList.add('hidden');
-});
-
-function confirmDelete(id) {
-  confirmTitle.textContent = 'Delete this chat?';
-  confirmText.textContent = 'This cannot be undone.';
-  confirmModal.classList.remove('hidden');
-  confirmModal.dataset.id = id;
-}
-confirmCancel.addEventListener('click', () => confirmModal.classList.add('hidden'));
-confirmOk.addEventListener('click', async () => {
-  const id = confirmModal.dataset.id;
-  confirmModal.classList.add('hidden');
-  const chat = state.chats.find(c => c.id === id);
-  if (!chat) return;
-  if (state.user && !isLocalId(id)) {
-    await fetch(`/api/conversations/${id}`, { method: 'DELETE', headers: authHeaders() });
-  }
-  state.chats = state.chats.filter(c => c.id !== id);
-  if (state.activeChatId === id) newChatSilent();
-  renderChatList();
+  toast('Chat renamed', 'success');
 });
 
 function newChatSilent() {
@@ -270,15 +507,13 @@ function newChatSilent() {
   updateSendButton();
 }
 
-// ============= NEW CHAT BUTTON =============
+// ============ NEW CHAT ============
 newChatBtn.addEventListener('click', () => {
   if (state.isGenerating) return;
   if (state.activeChatId) {
     const chat = state.chats.find(c => c.id === state.activeChatId);
     if (chat && (!chat.messages || !chat.messages.length) && !state.messages.length) {
-      inputEl.focus();
-      closeSidebar();
-      return;
+      inputEl.focus(); closeSidebar(); return;
     }
   }
   createNewChat();
@@ -286,12 +521,8 @@ newChatBtn.addEventListener('click', () => {
 
 function createNewChat() {
   const chat = {
-    id: makeLocalId(),
-    title: 'New chat',
-    messages: [],
-    pinned: false,
-    createdAt: nowISO(),
-    updatedAt: nowISO()
+    id: makeLocalId(), title: 'New chat', messages: [], pinned: false,
+    createdAt: nowISO(), updatedAt: nowISO()
   };
   state.chats.unshift(chat);
   state.activeChatId = chat.id;
@@ -306,7 +537,7 @@ function createNewChat() {
   closeSidebar();
 }
 
-// ============= WELCOME =============
+// ============ WELCOME ============
 function renderWelcome() {
   chatEl.innerHTML = `
     <div class="welcome">
@@ -330,7 +561,7 @@ chatEl.addEventListener('click', (e) => {
   formEl.requestSubmit();
 });
 
-// ============= SEND/STOP BUTTON =============
+// ============ SEND/STOP BUTTON ============
 function updateSendButton() {
   const hasText = inputEl.value.trim().length > 0;
   const hasFiles = state.attachments.length > 0;
@@ -364,7 +595,7 @@ function stopGeneration() {
   updateSendButton();
 }
 
-// ============= COMPOSER =============
+// ============ COMPOSER ============
 function autoGrow() {
   inputEl.style.height = '0px';
   const maxH = Math.min(window.innerHeight * 0.5, 400);
@@ -411,7 +642,7 @@ filePreviews.addEventListener('click', (e) => {
   renderFilePreviews(); updateSendButton();
 });
 
-// ============= MESSAGES RENDER =============
+// ============ MESSAGES ============
 function renderMessages() {
   if (!state.messages.length) { renderWelcome(); return; }
   chatEl.innerHTML = '';
@@ -421,6 +652,17 @@ function renderMessages() {
   });
   scrollBottom();
   refreshIcons();
+}
+
+function renderFilesInline(files) {
+  if (!files || !files.length) return '';
+  return `<div class="msg-files">${files.map(f => {
+    const isImg = (f.type || '').startsWith('image/');
+    const url = f.url || f.public_url || '';
+    return isImg && url
+      ? `<img src="${url}" class="msg-file-thumb" />`
+      : `<div class="msg-file-doc"><i data-lucide="file-text"></i><span>${escapeHtml(f.name || 'file')}</span></div>`;
+  }).join('')}</div>`;
 }
 
 function buildUserMessage(m, i) {
@@ -437,20 +679,19 @@ function buildUserMessage(m, i) {
         <textarea class="edit-textarea" id="editTextarea">${escapeHtml(state.editingValue)}</textarea>
         <div class="edit-actions">
           <button class="btn-secondary" id="editCancel"><i data-lucide="x"></i>Cancel</button>
-          <button class="btn-primary" id="editSend"><i data-lucide="send"></i>Send</button>
+          <button class="btn-primary" id="editSend" style="width:auto;padding:0.55rem 1rem;margin:0;"><i data-lucide="send"></i>Send</button>
         </div>
       </div>`;
     return wrap;
   }
 
-  const versionData = state.messageVersions[m.id];
-  const versionSwitcher = versionData && versionData.versions.length > 1
-    ? `<div class="version-switcher">
-        <button class="vs-btn" data-vs="prev" ${versionData.currentIndex === 0 ? 'disabled' : ''}><i data-lucide="chevron-left"></i></button>
-        <span class="vs-label">${versionData.currentIndex + 1} / ${versionData.versions.length}</span>
-        <button class="vs-btn" data-vs="next" ${versionData.currentIndex === versionData.versions.length - 1 ? 'disabled' : ''}><i data-lucide="chevron-right"></i></button>
-       </div>`
-    : '';
+  const v = state.messageVersions[m.id];
+  const switcher = v && v.versions.length > 1 ? `
+    <div class="version-switcher">
+      <button class="vs-btn" data-vs="prev" ${v.currentIndex === 0 ? 'disabled' : ''}><i data-lucide="chevron-left"></i></button>
+      <span class="vs-label">${v.currentIndex + 1} / ${v.versions.length}</span>
+      <button class="vs-btn" data-vs="next" ${v.currentIndex === v.versions.length - 1 ? 'disabled' : ''}><i data-lucide="chevron-right"></i></button>
+    </div>` : '';
 
   wrap.innerHTML = `
     ${renderFilesInline(m.files)}
@@ -459,19 +700,8 @@ function buildUserMessage(m, i) {
       <button class="msg-action" data-action="copy" title="Copy"><i data-lucide="copy"></i></button>
       <button class="msg-action" data-action="edit" title="Edit"><i data-lucide="pencil"></i></button>
     </div>
-    ${versionSwitcher}`;
+    ${switcher}`;
   return wrap;
-}
-
-function renderFilesInline(files) {
-  if (!files || !files.length) return '';
-  return `<div class="msg-files">${files.map(f => {
-    const isImg = (f.type || '').startsWith('image/');
-    const url = f.url || f.public_url || '';
-    return isImg
-      ? `<img src="${url}" class="msg-file-thumb" />`
-      : `<div class="msg-file-doc"><i data-lucide="file-text"></i><span>${escapeHtml(f.name || 'file')}</span></div>`;
-  }).join('')}</div>`;
 }
 
 function buildAssistantMessage(m, i) {
@@ -480,7 +710,6 @@ function buildAssistantMessage(m, i) {
   wrap.dataset.index = i;
   wrap.dataset.id = m.id || '';
   const content = m.content || '';
-  const showActions = !!content;
   wrap.innerHTML = `
     <div class="avatar"><img src="/av.png" alt="DeepRWA" /></div>
     <div class="assistant-body">
@@ -488,7 +717,7 @@ function buildAssistantMessage(m, i) {
       <div class="assistant-text">${content ? renderMarkdown(content) : ''}</div>
       ${renderFilesInline(m.files)}
       ${!content ? `<div class="thinking"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="thinking-label">Initializing…</span></div>` : ''}
-      <div class="msg-actions msg-actions-assistant ${showActions ? '' : 'hidden'}">
+      <div class="msg-actions msg-actions-assistant ${content ? '' : 'hidden'}">
         <button class="msg-action" data-action="copy" title="Copy"><i data-lucide="copy"></i></button>
         <button class="msg-action" data-action="like" title="Like"><i data-lucide="thumbs-up"></i></button>
         <button class="msg-action" data-action="dislike" title="Dislike"><i data-lucide="thumbs-down"></i></button>
@@ -498,22 +727,17 @@ function buildAssistantMessage(m, i) {
   return wrap;
 }
 
-// ============= MESSAGE ACTIONS =============
+// ============ MESSAGE ACTIONS ============
 chatEl.addEventListener('click', async (e) => {
-  // Version switcher
   const vs = e.target.closest('[data-vs]');
   if (vs) {
     const wrap = vs.closest('.msg-user');
-    const msgId = wrap.dataset.id;
-    const dir = vs.dataset.vs;
-    applyVersionChange(msgId, dir);
+    applyVersionChange(wrap.dataset.id, vs.dataset.vs);
     return;
   }
-  // Edit send/cancel
   if (e.target.closest('#editCancel')) {
     state.editingMessageId = null;
     state.editingValue = '';
-    state.editingSelection = null;
     renderMessages();
     return;
   }
@@ -522,7 +746,6 @@ chatEl.addEventListener('click', async (e) => {
     if (ta) await saveEditAndSend(ta.value);
     return;
   }
-  // Message actions
   const action = e.target.closest('.msg-action');
   if (!action) return;
   const msgEl = action.closest('.msg');
@@ -532,6 +755,7 @@ chatEl.addEventListener('click', async (e) => {
     const text = state.messages[idx]?.content || '';
     try { await navigator.clipboard.writeText(text); } catch {}
     action.classList.add('copied');
+    toast('Copied to clipboard', 'success', 2000);
     setTimeout(() => action.classList.remove('copied'), 1500);
   } else if (act === 'like') {
     action.classList.toggle('active');
@@ -543,7 +767,6 @@ chatEl.addEventListener('click', async (e) => {
     const m = state.messages[idx];
     state.editingMessageId = m.id;
     state.editingValue = m.content;
-    state.editingSelection = null;
     renderMessages();
     setTimeout(() => {
       const ta = document.getElementById('editTextarea');
@@ -554,24 +777,21 @@ chatEl.addEventListener('click', async (e) => {
   }
 });
 
-// Track cursor in edit textarea
 chatEl.addEventListener('input', (e) => {
   if (e.target.id === 'editTextarea') {
     state.editingValue = e.target.value;
-    state.editingSelection = { start: e.target.selectionStart, end: e.target.selectionEnd };
     e.target.style.height = '0px';
     e.target.style.height = e.target.scrollHeight + 'px';
   }
 });
 
-// ============= SEND MESSAGE =============
+// ============ SEND MESSAGE ============
 formEl.addEventListener('submit', async (e) => {
   e.preventDefault();
   if (state.isGenerating) return;
   const text = inputEl.value.trim();
   if (!text && !state.attachments.length) return;
 
-  // Ensure chat exists
   let chat = state.chats.find(c => c.id === state.activeChatId);
   let isNewChat = false;
   if (!chat) {
@@ -583,6 +803,7 @@ formEl.addEventListener('submit', async (e) => {
   }
 
   const filesForMsg = state.attachments.map(f => ({ name: f.name, type: f.type, url: f.url }));
+  const imagesForAI = await collectImagesBase64(state.attachments);
   const isFirstMessage = isNewChat || chat.title === 'New chat' || !chat.messages.length;
 
   inputEl.value = '';
@@ -598,24 +819,13 @@ formEl.addEventListener('submit', async (e) => {
 
   const assistantMsg = { id: 'asst_' + Date.now(), role: 'assistant', content: '', files: [] };
   state.messages.push(assistantMsg);
-
   renderMessages();
 
-  // Title generation for first message
   if (isFirstMessage && text) {
-    if (state.user && !isLocalId(chat.id)) {
-      // Server generates on /api/chat below; refresh after
-    } else {
-      fetch('/api/chat/title', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text })
-      }).then(r => r.json()).then(d => {
-        if (d.title) {
-          const c = state.chats.find(x => x.id === chat.id);
-          if (c) { c.title = d.title; renderChatList(); }
-        }
-      }).catch(() => {});
+    const title = await requestTitle(text);
+    if (title) {
+      chat.title = title;
+      renderChatList();
     }
   }
 
@@ -627,7 +837,10 @@ formEl.addEventListener('submit', async (e) => {
   let fullText = '';
   try {
     const endpoint = state.user ? '/api/chat' : '/api/chat/guest';
-    const payload = { messages: state.messages.map(m => ({ role: m.role, content: m.content })) };
+    const payload = {
+      messages: state.messages.map(m => ({ role: m.role, content: m.content })),
+      images: imagesForAI
+    };
     if (state.user) payload.conversationId = isLocalId(chat.id) ? null : chat.id;
 
     const res = await fetch(endpoint, {
@@ -640,8 +853,6 @@ formEl.addEventListener('submit', async (e) => {
 
     const serverConvId = res.headers.get('X-Conversation-Id');
     if (serverConvId && isLocalId(chat.id)) {
-      // Upgrade local ID to server ID
-      const oldId = chat.id;
       chat.id = serverConvId;
       state.activeChatId = serverConvId;
       renderChatList();
@@ -649,17 +860,13 @@ formEl.addEventListener('submit', async (e) => {
 
     const reader = res.body.getReader();
     const dec = new TextDecoder();
-    let buf = '';
-    let firstChunk = true;
-
+    let buf = '', firstChunk = true;
     while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+      const { done, value } = await reader.read(); if (done) break;
       buf += dec.decode(value, { stream: true });
       let idx;
       while ((idx = buf.indexOf('\n')) !== -1) {
-        const line = buf.slice(0, idx).trim();
-        buf = buf.slice(idx + 1);
+        const line = buf.slice(0, idx).trim(); buf = buf.slice(idx + 1);
         if (!line.startsWith('data:')) continue;
         const p = line.slice(5).trim();
         if (p === '[DONE]') break;
@@ -668,8 +875,7 @@ formEl.addEventListener('submit', async (e) => {
           if (j.text) {
             if (firstChunk) {
               firstChunk = false;
-              const t = chatEl.querySelector('.msg-assistant:last-of-type .thinking');
-              if (t) t.remove();
+              chatEl.querySelector(`.msg-assistant[data-id="${assistantMsg.id}"] .thinking`)?.remove();
             }
             fullText += j.text;
             assistantMsg.content = fullText;
@@ -683,10 +889,8 @@ formEl.addEventListener('submit', async (e) => {
 
     if (fullText) {
       assistantMsg.content = fullText;
-      // Show assistant actions
       const actEl = chatEl.querySelector(`.msg-assistant[data-id="${assistantMsg.id}"] .msg-actions-assistant`);
       if (actEl) actEl.classList.remove('hidden');
-      // Refresh conversation list from server if logged in
       if (state.user) await loadConversations();
     } else {
       assistantMsg.content = 'No response received.';
@@ -694,11 +898,7 @@ formEl.addEventListener('submit', async (e) => {
     }
   } catch (err) {
     if (err.name === 'AbortError') {
-      if (fullText) {
-        assistantMsg.content = fullText + '\n\n*[stopped]*';
-      } else {
-        assistantMsg.content = '*Stopped.*';
-      }
+      assistantMsg.content = fullText ? fullText + '\n\n*[stopped]*' : '*Stopped.*';
       renderMessages();
     } else {
       console.error(err);
@@ -714,7 +914,48 @@ formEl.addEventListener('submit', async (e) => {
   }
 });
 
-// ============= EDIT & VERSIONS =============
+async function collectImagesBase64(attachments) {
+  const images = [];
+  for (const a of attachments) {
+    if (a.type.startsWith('image/') && a.file.size < 4 * 1024 * 1024) {
+      try {
+        const data = await fileToBase64(a.file);
+        images.push({ mime: a.type, data });
+      } catch {}
+    } else if (a.type === 'application/pdf') {
+      // Skip PDF for now (would need PDF text extraction)
+    } else if (a.type === 'text/plain' || a.type === 'text/markdown' || a.type === 'text/csv') {
+      try {
+        const text = await a.file.text();
+        images.push({ mime: 'text/plain', data: btoa(unescape(encodeURIComponent(text.slice(0, 20000)))) });
+      } catch {}
+    }
+  }
+  return images;
+}
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+async function requestTitle(text) {
+  try {
+    const res = await fetch('/api/chat/title', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text })
+    });
+    if (!res.ok) return null;
+    const d = await res.json();
+    return d.title || null;
+  } catch { return null; }
+}
+
+// ============ EDIT & VERSIONS ============
 async function saveEditAndSend(newText) {
   const trimmed = newText.trim();
   if (!trimmed) return;
@@ -724,21 +965,19 @@ async function saveEditAndSend(newText) {
 
   const userMsg = state.messages[editIdx];
   const nextMsg = state.messages[editIdx + 1];
-  const isAssistantNext = nextMsg && nextMsg.role === 'assistant';
+  const isAsst = nextMsg && nextMsg.role === 'assistant';
 
-  // Init or grab version record
   if (!state.messageVersions[editId]) {
     state.messageVersions[editId] = {
       versions: [userMsg.content],
       files: [userMsg.files || []],
-      aiReplies: [isAssistantNext ? nextMsg.content : ''],
-      aiFiles: [isAssistantNext ? (nextMsg.files || []) : []],
+      aiReplies: [isAsst ? nextMsg.content : ''],
+      aiFiles: [isAsst ? (nextMsg.files || []) : []],
       currentIndex: 0
     };
   }
   const v = state.messageVersions[editId];
 
-  // Push new version slot
   if (v.versions[v.versions.length - 1] !== trimmed) {
     v.versions.push(trimmed);
     v.files.push(userMsg.files || []);
@@ -746,28 +985,20 @@ async function saveEditAndSend(newText) {
     v.aiFiles.push([]);
   }
   v.currentIndex = v.versions.length - 1;
-
-  // Update user message locally
   userMsg.content = trimmed;
   userMsg.files = v.files[v.currentIndex];
 
-  // Truncate history after the edit point
   state.messages = state.messages.slice(0, editIdx + 1);
   const chat = state.chats.find(c => c.id === state.activeChatId);
   if (chat) chat.messages = state.messages;
 
-  // Reset edit state
   state.editingMessageId = null;
   state.editingValue = '';
-  state.editingSelection = null;
 
-  // Push placeholder assistant
   const assistantMsg = { id: 'asst_' + Date.now(), role: 'assistant', content: '', files: [] };
   state.messages.push(assistantMsg);
-
   renderMessages();
 
-  // Stream the new AI reply
   state.isGenerating = true;
   inputEl.disabled = true;
   updateSendButton();
@@ -777,7 +1008,9 @@ async function saveEditAndSend(newText) {
   try {
     const endpoint = state.user ? '/api/chat' : '/api/chat/guest';
     const payload = {
-      messages: state.messages.filter(m => m.role === 'user' || (m.role === 'assistant' && m.content)).map(m => ({ role: m.role, content: m.content }))
+      messages: state.messages
+        .filter(m => m.role === 'user' || (m.role === 'assistant' && m.content))
+        .map(m => ({ role: m.role, content: m.content }))
     };
     if (state.user && chat && !isLocalId(chat.id)) payload.conversationId = chat.id;
 
@@ -790,16 +1023,13 @@ async function saveEditAndSend(newText) {
     if (!res.ok || !res.body) throw new Error('Bad response');
     const reader = res.body.getReader();
     const dec = new TextDecoder();
-    let buf = '';
-    let firstChunk = true;
+    let buf = '', firstChunk = true;
     while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+      const { done, value } = await reader.read(); if (done) break;
       buf += dec.decode(value, { stream: true });
       let idx;
       while ((idx = buf.indexOf('\n')) !== -1) {
-        const line = buf.slice(0, idx).trim();
-        buf = buf.slice(idx + 1);
+        const line = buf.slice(0, idx).trim(); buf = buf.slice(idx + 1);
         if (!line.startsWith('data:')) continue;
         const p = line.slice(5).trim();
         if (p === '[DONE]') break;
@@ -808,8 +1038,7 @@ async function saveEditAndSend(newText) {
           if (j.text) {
             if (firstChunk) {
               firstChunk = false;
-              const t = chatEl.querySelector(`.msg-assistant[data-id="${assistantMsg.id}"] .thinking`);
-              if (t) t.remove();
+              chatEl.querySelector(`.msg-assistant[data-id="${assistantMsg.id}"] .thinking`)?.remove();
             }
             fullText += j.text;
             assistantMsg.content = fullText;
@@ -820,42 +1049,17 @@ async function saveEditAndSend(newText) {
         } catch {}
       }
     }
-
     v.aiReplies[v.currentIndex] = fullText;
     v.aiFiles[v.currentIndex] = [];
-
-    // Sync to backend if logged in
-    if (state.user && chat && !isLocalId(chat.id) && userMsg.id && !userMsg.id.startsWith('user_')) {
-      try {
-        await fetch(`/api/chat/messages/${userMsg.id}/sync-versions`, {
-          method: 'POST',
-          headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            userMessageContent: userMsg.content,
-            userMessageFiles: userMsg.files || [],
-            versions: v.versions,
-            versionFiles: v.files,
-            aiReplies: v.aiReplies,
-            aiFiles: v.aiFiles,
-            currentVersionIndex: v.currentIndex,
-            assistantContent: fullText,
-            assistantFiles: []
-          })
-        });
-        await loadConversations();
-      } catch (e) { console.warn('sync failed', e); }
-    }
-
     renderMessages();
   } catch (err) {
     if (err.name === 'AbortError') {
       v.aiReplies[v.currentIndex] = fullText || '*Stopped.*';
-      renderMessages();
     } else {
       console.error(err);
       v.aiReplies[v.currentIndex] = 'Something went wrong.';
-      renderMessages();
     }
+    renderMessages();
   } finally {
     state.isGenerating = false;
     inputEl.disabled = false;
@@ -865,36 +1069,32 @@ async function saveEditAndSend(newText) {
 }
 
 function applyVersionChange(msgId, dir) {
-  const v = state.messageVersions[msgId];
-  if (!v) return;
+  const v = state.messageVersions[msgId]; if (!v) return;
   const newIdx = dir === 'prev' ? Math.max(0, v.currentIndex - 1) : Math.min(v.versions.length - 1, v.currentIndex + 1);
   if (newIdx === v.currentIndex) return;
   v.currentIndex = newIdx;
-
   const msgIdx = state.messages.findIndex(m => m.id === msgId);
   if (msgIdx < 0) return;
   state.messages[msgIdx].content = v.versions[newIdx];
   state.messages[msgIdx].files = v.files[newIdx];
-
-  const nextMsg = state.messages[msgIdx + 1];
-  if (nextMsg && nextMsg.role === 'assistant') {
-    nextMsg.content = v.aiReplies[newIdx] || '';
-    nextMsg.files = v.aiFiles[newIdx] || [];
+  const next = state.messages[msgIdx + 1];
+  if (next && next.role === 'assistant') {
+    next.content = v.aiReplies[newIdx] || '';
+    next.files = v.aiFiles[newIdx] || [];
   }
   renderMessages();
 }
 
-// ============= LOAD CONVERSATIONS =============
+// ============ LOAD CONVERSATIONS ============
 async function loadConversations() {
   if (!state.user) return;
   try {
     const res = await fetch('/api/conversations', { headers: authHeaders() });
     const data = await res.json();
     const serverChats = (data.conversations || []).map(c => ({
-      id: c.id, title: c.title, pinned: c.pinned,
-      messages: [], createdAt: c.created_at, updatedAt: c.updated_at
+      id: c.id, title: c.title, pinned: c.pinned, messages: [],
+      createdAt: c.created_at, updatedAt: c.updated_at
     }));
-    // Preserve local chats that aren't yet on server
     const locals = state.chats.filter(c => isLocalId(c.id));
     state.chats = [...locals, ...serverChats];
     renderChatList();
@@ -917,7 +1117,7 @@ async function selectChat(id) {
       state.messages = (data.messages || []).map(m => ({
         id: m.id, role: m.role, content: m.content, files: m.files || []
       }));
-      // Rebuild version records
+      state.messageVersions = {};
       (data.messages || []).forEach(m => {
         if (m.role === 'user' && m.versions && m.versions.length > 0) {
           state.messageVersions[m.id] = {
@@ -939,83 +1139,686 @@ async function selectChat(id) {
   closeSidebar();
 }
 
-// ============= AUTH MODAL =============
-function openAuthModal(mode) { authModal.classList.remove('hidden'); mode === 'login' ? renderLoginModal() : renderSignupModal(); }
+// ============ AUTH MODAL ============
+function openAuthModal(mode) {
+  authModal.classList.remove('hidden');
+  authModal.dataset.mode = mode;
+  if (mode === 'login') renderLoginForm();
+  else if (mode === 'signup') renderSignupForm();
+}
 authModalClose.addEventListener('click', () => authModal.classList.add('hidden'));
 authModal.addEventListener('click', (e) => { if (e.target === authModal) authModal.classList.add('hidden'); });
 
-function renderLoginModal() {
+function renderLoginForm() {
   authModalBody.innerHTML = `
     <h3>Log in to DeepRWA</h3>
     <p class="modal-sub">Save your chats and access them anywhere.</p>
-    <input type="email" id="authEmail" placeholder="Email" class="modal-input" />
-    <input type="password" id="authPassword" placeholder="Password" class="modal-input" />
+    <input type="email" id="authEmail" placeholder="Email" class="modal-input" autocomplete="email" />
+    ${passwordFieldHTML('authPassword', 'Password')}
     <button class="btn-primary" id="authSubmit">Log in</button>
-    <p class="modal-switch">Don't have an account? <a href="#" id="switchSignup">Sign up</a></p>`;
+    <button class="link-btn" id="forgotLink">Forgot password?</button>
+    <p class="modal-switch">Don't have an account? <a id="switchSignup">Sign up</a></p>`;
   refreshIcons();
-  document.getElementById('switchSignup').onclick = (e) => { e.preventDefault(); renderSignupModal(); };
-  document.getElementById('authSubmit').onclick = async () => {
-    const email = document.getElementById('authEmail').value;
-    const password = document.getElementById('authPassword').value;
-    if (!email || !password) return;
-    const res = await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) });
-    const data = await res.json();
-    if (!res.ok) { alert(data.error); return; }
-    renderVerifyCodeModal(data.pendingToken, 'login');
-  };
-}
-
-function renderSignupModal() {
-  authModalBody.innerHTML = `
-    <h3>Create your DeepRWA account</h3>
-    <p class="modal-sub">Save chats, access from any device.</p>
-    <input type="email" id="authEmail" placeholder="Email" class="modal-input" />
-    <input type="password" id="authPassword" placeholder="Password (min 6)" class="modal-input" />
-    <input type="password" id="authConfirm" placeholder="Confirm password" class="modal-input" />
-    <button class="btn-primary" id="authSubmit">Create account</button>
-    <p class="modal-switch">Already have an account? <a href="#" id="switchLogin">Log in</a></p>`;
-  refreshIcons();
-  document.getElementById('switchLogin').onclick = (e) => { e.preventDefault(); renderLoginModal(); };
-  document.getElementById('authSubmit').onclick = async () => {
-    const email = document.getElementById('authEmail').value;
-    const password = document.getElementById('authPassword').value;
-    const confirm = document.getElementById('authConfirm').value;
-    if (password !== confirm) { alert('Passwords do not match'); return; }
-    const res = await fetch('/api/auth/signup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) });
-    const data = await res.json();
-    if (!res.ok) { alert(data.error); return; }
-    renderVerifyCodeModal(data.pendingToken, 'signup');
-  };
-}
-
-function renderVerifyCodeModal(pendingToken, type) {
-  authModalBody.innerHTML = `
-    <h3>Enter verification code</h3>
-    <p class="modal-sub">We sent a 6-digit code to your email.</p>
-    <input type="text" id="verifyCode" placeholder="000000" maxlength="6" class="modal-input code-input" />
-    <button class="btn-primary" id="verifySubmit">Verify</button>`;
-  refreshIcons();
-  document.getElementById('verifySubmit').onclick = async () => {
-    const code = document.getElementById('verifyCode').value;
-    const endpoint = type === 'login' ? '/api/auth/verify-login' : '/api/auth/confirm-signup';
-    const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pendingToken, code }) });
-    const data = await res.json();
-    if (!res.ok) { alert(data.error); return; }
-    state.token = data.accessToken;
-    state.user = data.user;
-    localStorage.setItem('deeprwa_token', data.accessToken);
-    authModal.classList.add('hidden');
-    renderUser();
-    await loadConversations();
-    // Sync active local chat if it had messages
-    const active = state.chats.find(c => c.id === state.activeChatId);
-    if (active && isLocalId(active.id) && state.messages.length) {
-      // Will be re-created server-side on next send
+  attachPasswordToggles(authModalBody);
+  $('switchSignup').onclick = (e) => { e.preventDefault(); renderSignupForm(); };
+  $('forgotLink').onclick = (e) => { e.preventDefault(); renderForgotStep1(); };
+  $('authSubmit').onclick = async () => {
+    const email = $('authEmail').value.trim();
+    const password = $('authPassword').value;
+    if (!email || !password) { toast('Enter email and password', 'error'); return; }
+    const btn = $('authSubmit');
+    setBtnLoading(btn, 'Logging in…');
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      });
+      const data = await res.json();
+      if (!res.ok) { resetBtn(btn); toast(data.error || 'Login failed', 'error'); return; }
+      state.authModal.pendingToken = data.pendingToken;
+      renderVerifyCodeForm('login', data.requires2fa);
+    } catch (err) {
+      resetBtn(btn); toast('Network error', 'error');
     }
   };
 }
 
-// ============= SHARE =============
+function renderSignupForm() {
+  authModalBody.innerHTML = `
+    <h3>Create your DeepRWA account</h3>
+    <p class="modal-sub">Save chats, access from any device.</p>
+    <input type="email" id="authEmail" placeholder="Email" class="modal-input" autocomplete="email" />
+    <input type="text" id="authName" placeholder="Full name (optional)" class="modal-input" autocomplete="name" />
+    ${passwordFieldHTML('authPassword', 'Password (min 8, letters + numbers)', 'new-password')}
+    ${passwordFieldHTML('authConfirm', 'Confirm password', 'new-password')}
+    <button class="btn-primary" id="authSubmit">Create account</button>
+    <p class="modal-switch">Already have an account? <a id="switchLogin">Log in</a></p>`;
+  refreshIcons();
+  attachPasswordToggles(authModalBody);
+  $('switchLogin').onclick = (e) => { e.preventDefault(); renderLoginForm(); };
+  $('authSubmit').onclick = async () => {
+    const email = $('authEmail').value.trim();
+    const fullName = $('authName').value.trim();
+    const password = $('authPassword').value;
+    const confirm = $('authConfirm').value;
+    if (!email || !password) { toast('Fill all required fields', 'error'); return; }
+    if (password !== confirm) { toast('Passwords do not match', 'error'); return; }
+    if (password.length < 8) { toast('Password must be at least 8 characters', 'error'); return; }
+    const btn = $('authSubmit');
+    setBtnLoading(btn, 'Sending code…');
+    try {
+      const res = await fetch('/api/auth/signup', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, fullName })
+      });
+      const data = await res.json();
+      if (!res.ok) { resetBtn(btn); toast(data.error || 'Signup failed', 'error'); return; }
+      state.authModal.pendingToken = data.pendingToken;
+      renderVerifyCodeForm('signup', false);
+    } catch {
+      resetBtn(btn); toast('Network error', 'error');
+    }
+  };
+}
+
+function renderVerifyCodeForm(type, needs2fa) {
+  authModalBody.innerHTML = `
+    <h3>${type === 'signup' ? 'Verify your email' : 'Enter login code'}</h3>
+    <p class="modal-sub">We sent a 6-digit code to your email.</p>
+    <input type="text" id="verifyCode" placeholder="000000" maxlength="6" class="modal-input code-input" inputmode="numeric" />
+    <button class="btn-primary" id="verifySubmit">Verify</button>
+    <button class="link-btn" id="resendBtn">Resend code</button>`;
+  refreshIcons();
+  const codeInput = $('verifyCode');
+  codeInput.focus();
+  const resendBtn = $('resendBtn');
+  attachCountdown(resendBtn, 60);
+  resendBtn.onclick = async () => {
+    if (resendBtn.disabled) return;
+    const endpoint = type === 'signup' ? '/api/auth/resend-verification' : '/api/auth/resend-login-code';
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pendingToken: state.authModal.pendingToken })
+      });
+      const data = await res.json();
+      if (!res.ok) { toast(data.error || 'Could not resend', 'error'); return; }
+      state.authModal.pendingToken = data.pendingToken;
+      attachCountdown(resendBtn, 60);
+      toast('Code resent', 'success');
+    } catch { toast('Network error', 'error'); }
+  };
+  $('verifySubmit').onclick = async () => {
+    const code = codeInput.value.trim();
+    if (code.length !== 6) { toast('Enter the 6-digit code', 'error'); return; }
+    const btn = $('verifySubmit');
+    setBtnLoading(btn, 'Verifying…');
+    const endpoint = type === 'signup' ? '/api/auth/confirm-signup' : '/api/auth/verify-login';
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pendingToken: state.authModal.pendingToken, code })
+      });
+      const data = await res.json();
+      if (!res.ok) { resetBtn(btn); toast(data.error || 'Invalid code', 'error'); return; }
+      if (data.requires2fa) { render2FALoginForm(data.twofaToken); return; }
+      state.token = data.accessToken;
+      state.user = data.user;
+      localStorage.setItem('deeprwa_token', data.accessToken);
+      authModal.classList.add('hidden');
+      renderUser();
+      await loadConversations();
+      toast(type === 'signup' ? 'Welcome to DeepRWA!' : 'Logged in', 'success');
+    } catch {
+      resetBtn(btn); toast('Network error', 'error');
+    }
+  };
+}
+
+function render2FALoginForm(twofaToken) {
+  authModalBody.innerHTML = `
+    <h3>Two-factor authentication</h3>
+    <p class="modal-sub">Enter the 6-digit code from your authenticator app.</p>
+    <input type="text" id="faCode" placeholder="000000" maxlength="6" class="modal-input code-input" inputmode="numeric" />
+    <button class="btn-primary" id="faSubmit">Verify</button>`;
+  refreshIcons();
+  $('faCode').focus();
+  $('faSubmit').onclick = async () => {
+    const code = $('faCode').value.trim();
+    const btn = $('faSubmit');
+    setBtnLoading(btn, 'Verifying…');
+    try {
+      const res = await fetch('/api/auth/verify-2fa', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ twofaToken, code })
+      });
+      const data = await res.json();
+      if (!res.ok) { resetBtn(btn); toast(data.error || 'Invalid code', 'error'); return; }
+      state.token = data.accessToken;
+      state.user = data.user;
+      localStorage.setItem('deeprwa_token', data.accessToken);
+      authModal.classList.add('hidden');
+      renderUser();
+      await loadConversations();
+      toast('Logged in', 'success');
+    } catch { resetBtn(btn); toast('Network error', 'error'); }
+  };
+}
+
+// ============ FORGOT PASSWORD (3 steps) ============
+function renderForgotStep1() {
+  authModalBody.innerHTML = `
+    <h3>Reset your password</h3>
+    <p class="modal-sub">Enter the email address registered to your account.</p>
+    <input type="email" id="fpEmail" placeholder="Email" class="modal-input" />
+    <button class="btn-primary" id="fpSubmit">Send code</button>
+    <button class="link-btn" id="fpBack">Back to login</button>`;
+  refreshIcons();
+  $('fpBack').onclick = (e) => { e.preventDefault(); renderLoginForm(); };
+  $('fpSubmit').onclick = async () => {
+    const email = $('fpEmail').value.trim();
+    if (!email) { toast('Enter your email', 'error'); return; }
+    const btn = $('fpSubmit');
+    setBtnLoading(btn, 'Sending code…');
+    try {
+      const res = await fetch('/api/auth/forgot-password-request', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email })
+      });
+      const data = await res.json();
+      if (!res.ok) { resetBtn(btn); toast(data.error || 'Failed', 'error'); return; }
+      state.authModal.forgot.email = email;
+      state.authModal.forgot.pendingToken = data.pendingToken;
+      renderForgotStep2();
+    } catch { resetBtn(btn); toast('Network error', 'error'); }
+  };
+}
+
+function renderForgotStep2() {
+  authModalBody.innerHTML = `
+    <h3>Enter verification code</h3>
+    <p class="modal-sub">We sent a 6-digit code to ${escapeHtml(state.authModal.forgot.email)}</p>
+    <input type="text" id="fpCode" placeholder="000000" maxlength="6" class="modal-input code-input" inputmode="numeric" />
+    <button class="btn-primary" id="fpVerify">Verify code</button>
+    <button class="link-btn" id="fpResend">Resend code</button>`;
+  refreshIcons();
+  $('fpCode').focus();
+  const resendBtn = $('fpResend');
+  attachCountdown(resendBtn, 60);
+  resendBtn.onclick = async () => {
+    if (resendBtn.disabled) return;
+    try {
+      const res = await fetch('/api/auth/resend-forgot-password-code', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pendingToken: state.authModal.forgot.pendingToken })
+      });
+      const data = await res.json();
+      if (!res.ok) { toast(data.error || 'Failed', 'error'); return; }
+      state.authModal.forgot.pendingToken = data.pendingToken;
+      attachCountdown(resendBtn, 60);
+      toast('Code resent', 'success');
+    } catch { toast('Network error', 'error'); }
+  };
+  $('fpVerify').onclick = async () => {
+    const code = $('fpCode').value.trim();
+    if (code.length !== 6) { toast('Enter the 6-digit code', 'error'); return; }
+    const btn = $('fpVerify');
+    setBtnLoading(btn, 'Verifying…');
+    try {
+      const res = await fetch('/api/auth/forgot-password-verify-code', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pendingToken: state.authModal.forgot.pendingToken, code })
+      });
+      const data = await res.json();
+      if (!res.ok) { resetBtn(btn); toast(data.error || 'Invalid code', 'error'); return; }
+      state.authModal.forgot.grantedToken = data.grantedToken;
+      renderForgotStep3();
+    } catch { resetBtn(btn); toast('Network error', 'error'); }
+  };
+}
+
+function renderForgotStep3() {
+  authModalBody.innerHTML = `
+    <h3>Set new password</h3>
+    <p class="modal-sub">Choose a new password different from your current one.</p>
+    ${passwordFieldHTML('fpNew', 'New password (min 8, letters + numbers)', 'new-password')}
+    ${passwordFieldHTML('fpConfirm', 'Confirm new password', 'new-password')}
+    <button class="btn-primary" id="fpReset">Reset password</button>`;
+  refreshIcons();
+  attachPasswordToggles(authModalBody);
+  $('fpReset').onclick = async () => {
+    const newPassword = $('fpNew').value;
+    const confirm = $('fpConfirm').value;
+    if (newPassword.length < 8) { toast('Password must be at least 8 characters', 'error'); return; }
+    if (newPassword !== confirm) { toast('Passwords do not match', 'error'); return; }
+    const btn = $('fpReset');
+    setBtnLoading(btn, 'Resetting password…');
+    try {
+      const res = await fetch('/api/auth/reset-password', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ grantedToken: state.authModal.forgot.grantedToken, newPassword })
+      });
+      const data = await res.json();
+      if (!res.ok) { resetBtn(btn); toast(data.error || 'Failed', 'error'); return; }
+      toast('Password reset. Log in with your new password.', 'success');
+      renderLoginForm();
+    } catch { resetBtn(btn); toast('Network error', 'error'); }
+  };
+}
+
+// ============ SETTINGS MODAL ============
+function openSettingsModal(tab = 'profile') {
+  if (!state.user) return;
+  state.settingsTab = tab;
+  settingsModal.classList.remove('hidden');
+  settingsSidebar.querySelectorAll('.settings-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+  renderSettingsTab(tab);
+}
+settingsModalClose.addEventListener('click', () => settingsModal.classList.add('hidden'));
+settingsModal.addEventListener('click', (e) => { if (e.target === settingsModal) settingsModal.classList.add('hidden'); });
+settingsSidebar.addEventListener('click', (e) => {
+  const tab = e.target.closest('.settings-tab'); if (!tab) return;
+  settingsSidebar.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
+  tab.classList.add('active');
+  state.settingsTab = tab.dataset.tab;
+  renderSettingsTab(state.settingsTab);
+});
+
+function renderSettingsTab(tab) {
+  if (tab === 'profile') renderProfileTab();
+  else if (tab === 'account') renderAccountTab();
+  else if (tab === 'security') renderSecurityTab();
+  else if (tab === 'sessions') renderSessionsTab();
+  refreshIcons();
+}
+
+// ---- PROFILE TAB ----
+function renderProfileTab() {
+  const u = state.user;
+  settingsContent.innerHTML = `
+    <h3>Profile</h3>
+    <p class="modal-sub">Your account information.</p>
+    <div class="settings-section">
+      <h4>Email</h4>
+      <p>${escapeHtml(u.email || '')}</p>
+    </div>
+    <div class="settings-divider"></div>
+    <div class="settings-section">
+      <h4>Member since</h4>
+      <p>${formatDate(u.created_at) || 'Recently'}</p>
+    </div>
+    <div class="settings-divider"></div>
+    <div class="settings-section">
+      <h4>Two-factor authentication</h4>
+      <p><span class="status-badge ${u.totp_enabled ? 'on' : 'off'}">${u.totp_enabled ? 'Enabled' : 'Disabled'}</span></p>
+    </div>`;
+}
+
+// ---- ACCOUNT TAB ----
+function renderAccountTab() {
+  settingsContent.innerHTML = `
+    <h3>Account</h3>
+    <p class="modal-sub">Manage your email, password, and account.</p>
+
+    <div class="settings-section">
+      <h4>Change email</h4>
+      <p>Current: <strong>${escapeHtml(state.user.email || '')}</strong></p>
+      <button class="btn-secondary" id="changeEmailBtn">Change email</button>
+      <div id="changeEmailArea" class="hidden" style="margin-top:1rem;">
+        <input type="email" id="newEmailInput" class="modal-input" placeholder="New email address" />
+        <button class="btn-primary" id="sendEmailCodeBtn" style="width:auto;padding:0.55rem 1rem;">Send code</button>
+      </div>
+    </div>
+
+    <div class="settings-divider"></div>
+
+    <div class="settings-section">
+      <h4>Change password</h4>
+      <p>Update your account password.</p>
+      <button class="btn-secondary" id="changePwBtn">Change password</button>
+      <div id="changePwArea" class="hidden" style="margin-top:1rem;">
+        ${passwordFieldHTML('currentPw', 'Current password')}
+        ${passwordFieldHTML('newPw', 'New password (min 8, letters + numbers)', 'new-password')}
+        ${passwordFieldHTML('confirmPw', 'Confirm new password', 'new-password')}
+        <button class="btn-primary" id="sendPwCodeBtn" style="width:auto;padding:0.55rem 1rem;">Send code</button>
+      </div>
+    </div>
+
+    <div class="settings-divider"></div>
+
+    <div class="settings-section danger-zone">
+      <h4>Danger zone</h4>
+      <p>Permanently delete your account and all associated data. This action cannot be undone.</p>
+      <button class="btn-danger" id="deleteAccBtn">Delete account</button>
+    </div>`;
+  refreshIcons();
+  attachPasswordToggles(settingsContent);
+
+  $('changeEmailBtn').onclick = () => {
+    $('changeEmailArea').classList.toggle('hidden');
+  };
+  $('sendEmailCodeBtn').onclick = () => sendActionCode('change-email', { newEmail: $('newEmailInput')?.value.trim() });
+  $('changePwBtn').onclick = () => {
+    $('changePwArea').classList.toggle('hidden');
+  };
+  $('sendPwCodeBtn').onclick = async () => {
+    const current = $('currentPw').value;
+    const newPw = $('newPw').value;
+    const confirm = $('confirmPw').value;
+    if (!current || !newPw || !confirm) { toast('Fill all password fields', 'error'); return; }
+    if (newPw.length < 8) { toast('Password must be at least 8 characters', 'error'); return; }
+    if (newPw !== confirm) { toast('Passwords do not match', 'error'); return; }
+    if (current === newPw) { toast('New password must be different', 'error'); return; }
+    const btn = $('sendPwCodeBtn');
+    setBtnLoading(btn, 'Verifying…');
+    try {
+      const res = await fetch('/api/auth/verify-current-password', {
+        method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: current })
+      });
+      if (!res.ok) { resetBtn(btn); toast('Current password is incorrect', 'error'); return; }
+      state._pendingPw = { current, newPw };
+      sendActionCode('change-password');
+    } catch { resetBtn(btn); toast('Network error', 'error'); }
+  };
+  $('deleteAccBtn').onclick = () => {
+    confirmAction({
+      title: 'Delete your account?',
+      text: 'This will permanently delete your account, chats, and files. This action cannot be undone.',
+      confirmLabel: 'Delete account',
+      onConfirm: () => sendActionCode('delete-account')
+    });
+  };
+}
+
+async function sendActionCode(action, extra = {}) {
+  try {
+    const res = await fetch('/api/auth/send-action-code', {
+      method: 'POST',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, ...extra })
+    });
+    const data = await res.json();
+    if (!res.ok) { toast(data.error || 'Failed', 'error'); return; }
+    state._pendingAction = { action, token: data.pendingToken, targetEmail: data.targetEmail };
+    renderActionVerify(action, data.targetEmail);
+  } catch { toast('Network error', 'error'); }
+}
+
+function renderActionVerify(action, targetEmail) {
+  settingsContent.innerHTML = `
+    <h3>${action === 'change-email' ? 'Verify new email' : action === 'change-password' ? 'Verify password change' : 'Verify account deletion'}</h3>
+    <p class="modal-sub">We sent a 6-digit code to <strong>${escapeHtml(targetEmail || '')}</strong></p>
+    <input type="text" id="actCode" placeholder="000000" maxlength="6" class="modal-input code-input" inputmode="numeric" />
+    <button class="btn-primary" id="actVerify">Verify & ${action === 'change-email' ? 'change email' : action === 'change-password' ? 'change password' : 'delete'}</button>
+    <button class="link-btn" id="actResend">Resend code</button>
+    <button class="link-btn" id="actBack">Back</button>`;
+  refreshIcons();
+  $('actCode').focus();
+  const resendBtn = $('actResend');
+  attachCountdown(resendBtn, 60);
+  resendBtn.onclick = async () => {
+    if (resendBtn.disabled) return;
+    try {
+      const res = await fetch('/api/auth/resend-action-code', {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pendingToken: state._pendingAction.token })
+      });
+      const data = await res.json();
+      if (!res.ok) { toast(data.error || 'Failed', 'error'); return; }
+      state._pendingAction.token = data.pendingToken;
+      attachCountdown(resendBtn, 60);
+      toast('Code resent', 'success');
+    } catch { toast('Network error', 'error'); }
+  };
+  $('actBack').onclick = () => renderAccountTab();
+  $('actVerify').onclick = async () => {
+    const code = $('actCode').value.trim();
+    if (code.length !== 6) { toast('Enter 6-digit code', 'error'); return; }
+    const btn = $('actVerify');
+    setBtnLoading(btn, 'Verifying…');
+    try {
+      const vres = await fetch('/api/auth/verify-action-code', {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pendingToken: state._pendingAction.token, code, action })
+      });
+      const vdata = await vres.json();
+      if (!vres.ok) { resetBtn(btn); toast(vdata.error || 'Invalid code', 'error'); return; }
+
+      if (action === 'change-email') {
+        setBtnLoading(btn, 'Changing email…');
+        const r = await fetch('/api/auth/change-email', {
+          method: 'POST',
+          headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ grantedToken: vdata.grantedToken })
+        });
+        const d = await r.json();
+        if (!r.ok) { resetBtn(btn); toast(d.error || 'Failed', 'error'); return; }
+        state.user.email = d.newEmail;
+        toast('Email changed to ' + d.newEmail, 'success');
+        renderUser();
+        renderProfileTab();
+      } else if (action === 'change-password') {
+        setBtnLoading(btn, 'Changing password…');
+        const pw = state._pendingPw || {};
+        const r = await fetch('/api/auth/change-password', {
+          method: 'POST',
+          headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ grantedToken: vdata.grantedToken, currentPassword: pw.current, newPassword: pw.newPw })
+        });
+        const d = await r.json();
+        if (!r.ok) { resetBtn(btn); toast(d.error || 'Failed', 'error'); return; }
+        state._pendingPw = null;
+        toast('Password changed', 'success');
+        renderProfileTab();
+      } else if (action === 'delete-account') {
+        setBtnLoading(btn, 'Deleting account…');
+        const r = await fetch('/api/auth/account', {
+          method: 'DELETE',
+          headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ grantedToken: vdata.grantedToken })
+        });
+        const d = await r.json();
+        if (!r.ok) { resetBtn(btn); toast(d.error || 'Failed', 'error'); return; }
+        settingsModal.classList.add('hidden');
+        await forceSignOut('Account deleted');
+      }
+    } catch { resetBtn(btn); toast('Network error', 'error'); }
+  };
+}
+
+// ---- SECURITY TAB ----
+function renderSecurityTab() {
+  const enabled = state.user.totp_enabled;
+  settingsContent.innerHTML = `
+    <h3>Security</h3>
+    <p class="modal-sub">Two-factor authentication adds an extra layer of security.</p>
+    <div class="settings-section">
+      <h4>Authenticator app</h4>
+      <p>Status: <span class="status-badge ${enabled ? 'on' : 'off'}">${enabled ? 'Enabled' : 'Disabled'}</span></p>
+      ${enabled
+        ? `<button class="btn-danger" id="disable2faBtn">Disable 2FA</button>`
+        : `<button class="btn-primary" id="enable2faBtn" style="width:auto;padding:0.55rem 1rem;">Enable 2FA</button>`}
+    </div>`;
+  refreshIcons();
+  if (enabled) {
+    $('disable2faBtn').onclick = () => disable2FA();
+  } else {
+    $('enable2faBtn').onclick = () => setup2FA();
+  }
+}
+
+async function setup2FA() {
+  settingsContent.innerHTML = `<h3>Setting up 2FA…</h3><p class="modal-sub">Generating secure key.</p>`;
+  try {
+    const res = await fetch('/api/auth/2fa/setup', { method: 'POST', headers: authHeaders() });
+    const data = await res.json();
+    if (!res.ok) { toast(data.error || 'Failed', 'error'); renderSecurityTab(); return; }
+    settingsContent.innerHTML = `
+      <h3>Enable 2FA</h3>
+      <p class="modal-sub">Scan this QR code with your authenticator app (Google Authenticator, Authy, 1Password, etc.)</p>
+      <div class="qr-wrap"><img src="${data.qrDataUrl}" alt="QR code" /></div>
+      <p style="font-size:0.83rem;color:var(--text-muted);margin-bottom:0.5rem;">Or enter this key manually:</p>
+      <div class="secret-box">
+        <code>${escapeHtml(data.secret)}</code>
+        <button class="btn-secondary" id="copySecret" style="padding:0.4rem 0.7rem;font-size:0.8rem;">Copy</button>
+      </div>
+      <div style="margin-top:1rem;">
+        <input type="text" id="faSetupCode" placeholder="Enter 6-digit code from app" maxlength="6" class="modal-input code-input" inputmode="numeric" />
+        <button class="btn-primary" id="confirm2faBtn">Verify & enable</button>
+      </div>
+      <button class="link-btn" id="cancel2fa">Cancel</button>`;
+    refreshIcons();
+    $('copySecret').onclick = async () => {
+      try { await navigator.clipboard.writeText(data.secret); toast('Secret copied', 'success', 2000); } catch {}
+    };
+    $('cancel2fa').onclick = () => renderSecurityTab();
+    $('confirm2faBtn').onclick = async () => {
+      const code = $('faSetupCode').value.trim();
+      if (code.length !== 6) { toast('Enter the 6-digit code', 'error'); return; }
+      const btn = $('confirm2faBtn');
+      setBtnLoading(btn, 'Verifying…');
+      try {
+        const r = await fetch('/api/auth/2fa/enable', {
+          method: 'POST',
+          headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code })
+        });
+        const d = await r.json();
+        if (!r.ok) { resetBtn(btn); toast(d.error || 'Invalid code', 'error'); return; }
+        state.user.totp_enabled = true;
+        toast('2FA enabled', 'success');
+        renderSecurityTab();
+      } catch { resetBtn(btn); toast('Network error', 'error'); }
+    };
+  } catch { toast('Network error', 'error'); renderSecurityTab(); }
+}
+
+async function disable2FA() {
+  settingsContent.innerHTML = `
+    <h3>Disable 2FA</h3>
+    <p class="modal-sub">Enter the 6-digit code from your authenticator app to confirm.</p>
+    <input type="text" id="faDisableCode" placeholder="000000" maxlength="6" class="modal-input code-input" inputmode="numeric" />
+    <button class="btn-danger" id="confirmDisableBtn">Disable 2FA</button>
+    <button class="link-btn" id="cancelDisable">Cancel</button>`;
+  refreshIcons();
+  $('cancelDisable').onclick = () => renderSecurityTab();
+  $('confirmDisableBtn').onclick = async () => {
+    const code = $('faDisableCode').value.trim();
+    if (code.length !== 6) { toast('Enter the 6-digit code', 'error'); return; }
+    const btn = $('confirmDisableBtn');
+    setBtnLoading(btn, 'Disabling…');
+    try {
+      const r = await fetch('/api/auth/2fa/disable', {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code })
+      });
+      const d = await r.json();
+      if (!r.ok) { resetBtn(btn); toast(d.error || 'Invalid code', 'error'); return; }
+      state.user.totp_enabled = false;
+      toast('2FA disabled', 'success');
+      renderSecurityTab();
+    } catch { resetBtn(btn); toast('Network error', 'error'); }
+  };
+}
+
+// ---- SESSIONS TAB ----
+async function renderSessionsTab() {
+  settingsContent.innerHTML = `<h3>Sessions</h3><p class="modal-sub">Loading…</p>`;
+  try {
+    const res = await fetch('/api/auth/sessions', { headers: authHeaders() });
+    const data = await res.json();
+    const sessions = data.sessions || [];
+    const current = sessions.find(s => s.current);
+    const others = sessions.filter(s => !s.current);
+    settingsContent.innerHTML = `
+      <h3>Sessions</h3>
+      <p class="modal-sub">Devices currently signed in to your account.</p>
+      ${current ? `
+        <div class="settings-section">
+          <h4>This device</h4>
+          <div class="session-item session-current">
+            <div class="session-info">
+              <div class="session-device">${escapeHtml(current.device || 'Current device')}</div>
+              <div class="session-meta">${escapeHtml(current.ip || '')} · Active ${timeAgo(current.last_active)}</div>
+            </div>
+          </div>
+        </div>` : ''}
+      <div class="settings-divider"></div>
+      <div class="settings-section">
+        <h4>Other sessions (${others.length})</h4>
+        ${others.length === 0
+          ? `<p>No other active sessions.</p>`
+          : others.map(s => `
+              <div class="session-item">
+                <div class="session-info">
+                  <div class="session-device">${escapeHtml(s.device || 'Unknown device')}</div>
+                  <div class="session-meta">${escapeHtml(s.ip || '')} · Active ${timeAgo(s.last_active)}</div>
+                </div>
+                <button class="btn-secondary" data-logout-session="${s.id}" style="padding:0.4rem 0.7rem;font-size:0.8rem;">Log out</button>
+              </div>`).join('')}
+        ${others.length > 0 ? `<button class="btn-danger" id="logoutAllBtn" style="width:auto;padding:0.55rem 1rem;margin-top:0.5rem;">Log out all other sessions</button>` : ''}
+      </div>`;
+    refreshIcons();
+    settingsContent.querySelectorAll('[data-logout-session]').forEach(btn => {
+      btn.onclick = () => confirmAction({
+        title: 'Log out this session?',
+        text: 'That device will need to log in again.',
+        confirmLabel: 'Log out',
+        onConfirm: async () => {
+          try {
+            await fetch(`/api/auth/sessions/${btn.dataset.logoutSession}`, { method: 'DELETE', headers: authHeaders() });
+            toast('Session logged out', 'success');
+            renderSessionsTab();
+          } catch { toast('Failed', 'error'); }
+        }
+      });
+    });
+    const allBtn = $('logoutAllBtn');
+    if (allBtn) allBtn.onclick = () => confirmAction({
+      title: 'Log out all other sessions?',
+      text: 'All devices except this one will be signed out.',
+      confirmLabel: 'Log out all',
+      onConfirm: async () => {
+        try {
+          await fetch('/api/auth/sessions-all-others', { method: 'DELETE', headers: authHeaders() });
+          toast('All other sessions logged out', 'success');
+          renderSessionsTab();
+        } catch { toast('Failed', 'error'); }
+      }
+    });
+  } catch {
+    settingsContent.innerHTML = `<h3>Sessions</h3><p class="modal-sub">Could not load sessions.</p>`;
+  }
+}
+
+// ============ LOGOUT ============
+function confirmLogout() {
+  confirmAction({
+    title: 'Log out?',
+    text: 'You will need to log in again to access your chats.',
+    confirmLabel: 'Log out',
+    danger: false,
+    onConfirm: () => {
+      state.token = null;
+      state.user = null;
+      state.chats = [];
+      state.activeChatId = null;
+      state.messages = [];
+      localStorage.removeItem('deeprwa_token');
+      renderUser();
+      renderChatList();
+      renderWelcome();
+      settingsModal.classList.add('hidden');
+      toast('Logged out', 'info');
+    }
+  });
+}
+
+// ============ SHARE ============
 async function shareChat(chatId) {
   const chat = state.chats.find(c => c.id === chatId); if (!chat) return;
   let msgs = chat.messages || [];
@@ -1026,21 +1829,17 @@ async function shareChat(chatId) {
       msgs = (d.messages || []).map(m => ({ role: m.role, content: m.content, files: m.files || [] }));
     } catch {}
   }
-  if (!msgs.length) { alert('Nothing to share in this chat yet.'); return; }
+  if (!msgs.length) { toast('Nothing to share yet', 'error'); return; }
   await postShare(msgs);
 }
-
 async function shareSingleMessage(idx) {
   const msg = state.messages[idx]; if (!msg) return;
   const msgs = [msg];
-  // Include preceding user message for context
   const prev = state.messages[idx - 1];
   if (prev && prev.role === 'user') msgs.unshift(prev);
   await postShare(msgs);
 }
-
 async function postShare(msgs) {
-  // Enrich with version data
   const enriched = msgs.map(m => {
     const out = { role: m.role, content: m.content, files: m.files || [] };
     if (m.id && state.messageVersions[m.id]) {
@@ -1053,19 +1852,16 @@ async function postShare(msgs) {
     }
     return out;
   }).filter(m => (m.content && m.content.trim()) || (m.files && m.files.length));
-
   try {
     const res = await fetch('/api/share/guest', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ messages: enriched })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
     showShareModal(data.url);
-  } catch (e) { alert('Could not create share link: ' + e.message); }
+  } catch (e) { toast('Could not create share link', 'error'); }
 }
-
 function showShareModal(url) {
   shareLinkInput.value = url;
   shareModal.classList.remove('hidden');
@@ -1075,8 +1871,18 @@ shareModal.addEventListener('click', (e) => { if (e.target === shareModal) share
 copyShareLink.addEventListener('click', async () => {
   try { await navigator.clipboard.writeText(shareLinkInput.value); } catch {}
   copyShareLink.textContent = 'Copied!';
+  toast('Link copied', 'success', 2000);
   setTimeout(() => copyShareLink.textContent = 'Copy', 1500);
 });
 
-// ============= BOOT =============
+function closeAllModals() {
+  authModal.classList.add('hidden');
+  settingsModal.classList.add('hidden');
+  shareModal.classList.add('hidden');
+  renameModal.classList.add('hidden');
+  confirmModal.classList.add('hidden');
+  accountDropdown.classList.add('hidden');
+}
+
+// ============ BOOT ============
 init();
