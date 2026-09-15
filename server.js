@@ -1,4 +1,4 @@
-// DeepRWA — Complete backend
+// DeepRWA — Complete backend (rev.2.7.0)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -104,7 +104,6 @@ async function sendEmailCode(toEmail, code, purpose = 'verification') {
     return true;
   } catch (err) {
     console.error(`❌ Retry also failed for ${toEmail}: ${err.message || err}`);
-    if (err.response?.body) console.error('Brevo response:', JSON.stringify(err.response.body));
     return false;
   }
 }
@@ -170,11 +169,16 @@ async function trackSession(userId, req) {
   const ip = (req.headers['x-forwarded-for'] || req.ip || 'Unknown').split(',')[0].trim();
   try {
     if (clientId) {
-      const { data: ex } = await supabase.from('sessions').select('id').eq('user_id', userId).eq('client_id', clientId).maybeSingle();
-      if (ex) { await supabase.from('sessions').update({ device: ua.substring(0, 120), ip, user_agent: ua, last_active: new Date().toISOString() }).eq('id', ex.id); return; }
+      const { data: ex } = await supabase.from('sessions').select('id, revoked').eq('user_id', userId).eq('client_id', clientId).maybeSingle();
+      if (ex) {
+        // Reactivate revoked session on fresh login
+        await supabase.from('sessions').update({ device: ua.substring(0, 120), ip, user_agent: ua, last_active: new Date().toISOString(), revoked: false }).eq('id', ex.id);
+        console.log(`📌 Session updated for ${userId.slice(0,8)} (client: ${clientId.slice(0,12)}…)`);
+        return;
+      }
     }
-    await supabase.from('sessions').insert({ user_id: userId, client_id: clientId, device: ua.substring(0, 120), user_agent: ua, ip });
-    console.log(`📌 Session tracked for ${userId} (client: ${clientId || 'none'})`);
+    await supabase.from('sessions').insert({ user_id: userId, client_id: clientId, device: ua.substring(0, 120), user_agent: ua, ip, revoked: false });
+    console.log(`📌 Session created for ${userId.slice(0,8)} (client: ${(clientId||'none').slice(0,12)}…)`);
   } catch (e) { console.warn('session track failed', e.message); }
 }
 
@@ -197,22 +201,28 @@ const SYSTEM_PROMPT = `You are **DeepRWA** — a professional, world-class AI as
 You answer **only** questions about Rwanda. Everything about Rwanda is in scope.
 If the user asks about **any other country** or a topic unrelated to Rwanda, reply exactly: "I am specialised only in topics about Rwanda. I cannot answer questions about other countries or topics."
 
+## FILE SCOPE (critical)
+Files (images, PDFs, text) uploaded by the user are subject to the same scope rule:
+- If the file content is about Rwanda (history, people, culture, news, geography, products, prices, etc.), analyse it fully.
+- If the file content is clearly NOT about Rwanda (e.g. a business directory of Kenya, a European scholarship, non-Rwandan exam notes), politely decline: "The file you uploaded appears to be about [topic], which is outside my scope. I'm specialised only in Rwanda. Please upload something Rwanda-related, or ask me a question about Rwanda."
+- Never analyse unrelated files in depth, even if the user insists. Briefly acknowledge you can't help with it.
+
 ## GREETINGS AND SMALL TALK
 Greetings, thanks, goodbyes, "how are you", "who are you", "who made you" are NOT out of scope. Respond warmly and briefly, then invite a Rwanda-related question.
 
 ## LANGUAGE RULE
 Always reply in the **exact language the user wrote in**.
 
-## FILES AND ATTACHMENTS (critical)
-When a user message contains images, PDFs, or text files, the images/PDFs are provided to you natively and text content is embedded in the message. There may also be a note like "[N file(s) attached: filename]".
-- NEVER say "I don't see any document" or "I don't see any image" when such a note or attachment is present.
-- If you can see the content, describe it or answer the question.
-- If the note is there but you truly cannot extract content, say: "I received your file(s), but couldn't read their contents."
+## FORMATTING (critical)
+- NEVER use horizontal rules / horizontal lines (---, ___, <hr>). They look unprofessional.
+- Use headings (##, ###) and bullet lists instead.
+- Use **bold** for emphasis.
+- Markdown only. No raw HTML.
 
 ## RULES
 1. Accuracy first.
 2. If you cannot find a definitive answer, say so politely. Never invent facts.
-3. Be concise. Use Markdown. No raw HTML.
+3. Be concise. Use Markdown.
 4. Respectful tone always.
 
 ## STYLE
@@ -243,15 +253,14 @@ const cooldown = new Map();
 function isCooling(k) { const u = cooldown.get(k); if (!u) return false; if (Date.now() > u) { cooldown.delete(k); return false; } return true; }
 function setCooldown(k, ms) { cooldown.set(k, Date.now() + ms); }
 
-// CRITICAL: Strip `files` and other unsupported fields before sending to any provider
 function sanitizeForProvider(messages) {
   return messages.map(m => {
     if (m.role === 'system') return { role: 'system', content: m.content };
-    return { role: m.role, content: m.content }; // No files property!
+    return { role: m.role, content: m.content };
   });
 }
 
-async function* sseOpenAI(url, headers, body, timeoutMs = 45000) {
+async function* sseOpenAI(url, headers, body, timeoutMs = 30000) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -276,25 +285,25 @@ async function* sseOpenAI(url, headers, body, timeoutMs = 45000) {
 async function* streamGroq(msgs) {
   const k = 'groq'; if (isCooling(k)) throw new Error('cooling');
   const sanitized = sanitizeForProvider(msgs);
-  try { yield* sseOpenAI('https://api.groq.com/openai/v1/chat/completions', { Authorization: `Bearer ${process.env.GROQ_API_KEY}` }, { model: 'openai/gpt-oss-120b', messages: sanitized, stream: true, temperature: 0.7, max_completion_tokens: 4096 }); }
+  try { yield* sseOpenAI('https://api.groq.com/openai/v1/chat/completions', { Authorization: `Bearer ${process.env.GROQ_API_KEY}` }, { model: 'openai/gpt-oss-120b', messages: sanitized, stream: true, temperature: 0.7, max_completion_tokens: 2048 }); }
   catch (e) { setCooldown(k, e.status === 429 ? 120000 : 300000); throw e; }
 }
 async function* streamOpenRouter(msgs) {
   const k = 'or'; if (isCooling(k)) throw new Error('cooling');
   const sanitized = sanitizeForProvider(msgs);
-  try { yield* sseOpenAI('https://openrouter.ai/api/v1/chat/completions', { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`, 'HTTP-Referer': 'https://deeprwa.agentdomains.co', 'X-Title': 'DeepRWA' }, { model: 'openrouter/free', messages: sanitized, stream: true, temperature: 0.7, max_tokens: 4096 }); }
+  try { yield* sseOpenAI('https://openrouter.ai/api/v1/chat/completions', { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`, 'HTTP-Referer': 'https://deeprwa.agentdomains.co', 'X-Title': 'DeepRWA' }, { model: 'openrouter/free', messages: sanitized, stream: true, temperature: 0.7, max_tokens: 2048 }); }
   catch (e) { setCooldown(k, e.status === 429 ? 120000 : 300000); throw e; }
 }
 async function* streamNVIDIA(msgs) {
   const k = 'nv'; if (isCooling(k)) throw new Error('cooling');
   const sanitized = sanitizeForProvider(msgs);
-  try { yield* sseOpenAI('https://integrate.api.nvidia.com/v1/chat/completions', { Authorization: `Bearer ${process.env.NVIDIA_API_KEY}` }, { model: 'nvidia/nemotron-3-super-120b-a12b', messages: sanitized, stream: true, temperature: 0.7, max_tokens: 4096 }); }
+  try { yield* sseOpenAI('https://integrate.api.nvidia.com/v1/chat/completions', { Authorization: `Bearer ${process.env.NVIDIA_API_KEY}` }, { model: 'nvidia/nemotron-3-super-120b-a12b', messages: sanitized, stream: true, temperature: 0.7, max_tokens: 2048 }); }
   catch (e) { setCooldown(k, e.status === 429 ? 120000 : 300000); throw e; }
 }
 async function* streamPollinations(msgs) {
   const k = 'poll'; if (isCooling(k)) throw new Error('cooling');
   const sanitized = sanitizeForProvider(msgs);
-  try { yield* sseOpenAI('https://text.pollinations.ai/openai', {}, { model: 'openai', messages: sanitized, stream: true, temperature: 0.7, max_tokens: 4096 }); }
+  try { yield* sseOpenAI('https://text.pollinations.ai/openai', {}, { model: 'openai', messages: sanitized, stream: true, temperature: 0.7, max_tokens: 2048 }); }
   catch (e) { setCooldown(k, 120000); throw e; }
 }
 async function* streamCloudflare(msgs) {
@@ -323,7 +332,7 @@ async function* streamGemini(msgs) {
   const sanitized = sanitizeForProvider(msgs);
   const sys = sanitized.filter(m => m.role === 'system').map(m => m.content).join('\n');
   const convo = sanitized.filter(m => m.role !== 'system').map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
-  const body = { contents: convo, systemInstruction: sys ? { parts: [{ text: sys }] } : undefined, generationConfig: { temperature: 0.7, maxOutputTokens: 4096 } };
+  const body = { contents: convo, systemInstruction: sys ? { parts: [{ text: sys }] } : undefined, generationConfig: { temperature: 0.7, maxOutputTokens: 2048 } };
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:streamGenerateContent?alt=sse&key=${process.env.GEMINI_API_KEY}`;
   try {
     const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -343,7 +352,6 @@ async function* streamGemini(msgs) {
   } catch (e) { setCooldown(k, e.status === 429 ? 120000 : 300000); throw e; }
 }
 
-// Vision: Gemini primary (images + PDFs), then OpenRouter + NVIDIA for images only
 async function* streamGeminiVision(messages, attachments) {
   const sanitized = sanitizeForProvider(messages);
   const sys = sanitized.filter(m => m.role === 'system').map(m => m.content).join('\n');
@@ -352,7 +360,7 @@ async function* streamGeminiVision(messages, attachments) {
   const priorConvo = sanitized.filter(m => m.role !== 'system' && m !== lastUser).map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
   const parts = [{ text: lastUser?.content || 'Analyse the attached file(s).' }];
   for (const f of attachments) parts.push({ inline_data: { mime_type: f.mime, data: f.data } });
-  const body = { contents: [...priorConvo, { role: 'user', parts }], systemInstruction: sys ? { parts: [{ text: sys }] } : undefined, generationConfig: { temperature: 0.7, maxOutputTokens: 4096 } };
+  const body = { contents: [...priorConvo, { role: 'user', parts }], systemInstruction: sys ? { parts: [{ text: sys }] } : undefined, generationConfig: { temperature: 0.7, maxOutputTokens: 2048 } };
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:streamGenerateContent?alt=sse&key=${process.env.GEMINI_API_KEY}`;
   const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   if (!res.ok) { const e = new Error(`Gemini Vision ${res.status}`); e.status = res.status; throw e; }
@@ -389,7 +397,7 @@ async function* streamOpenRouterVision(messages, attachments) {
   yield* sseOpenAI(
     'https://openrouter.ai/api/v1/chat/completions',
     { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`, 'HTTP-Referer': 'https://deeprwa.agentdomains.co', 'X-Title': 'DeepRWA' },
-    { model: 'inclusionai/ling-3.0-flash-vl:free', messages: convo, stream: true, temperature: 0.7, max_tokens: 4096 }
+    { model: 'inclusionai/ling-3.0-flash-vl:free', messages: convo, stream: true, temperature: 0.7, max_tokens: 2048 }
   );
 }
 
@@ -412,7 +420,7 @@ async function* streamNVIDIAVision(messages, attachments) {
   yield* sseOpenAI(
     'https://integrate.api.nvidia.com/v1/chat/completions',
     { Authorization: `Bearer ${process.env.NVIDIA_API_KEY}` },
-    { model: 'meta/llama-3.2-11b-vision-instruct', messages: convo, stream: true, temperature: 0.7, max_tokens: 4096 }
+    { model: 'meta/llama-3.2-11b-vision-instruct', messages: convo, stream: true, temperature: 0.7, max_tokens: 2048 }
   );
 }
 
@@ -424,38 +432,74 @@ const VISION_PROVIDERS = [
 const PROVIDERS = [
   { name: 'Groq', fn: streamGroq },
   { name: 'Gemini', fn: streamGemini },
-  { name: 'OpenRouter', fn: streamOpenRouter },
   { name: 'Cloudflare', fn: streamCloudflare },
+  { name: 'OpenRouter', fn: streamOpenRouter },
   { name: 'NVIDIA', fn: streamNVIDIA },
   { name: 'Pollinations', fn: streamPollinations }
 ];
 
-// ============ TITLE ============
+// ============ TITLE (improved — tries 2 providers) ============
 async function generateChatTitle(firstMessage) {
   if (!firstMessage) return 'New chat';
   if (isGreeting(firstMessage)) return 'Greeting';
   if (isIdentityQuestion(firstMessage)) return 'About DeepRWA';
-  const t = String(firstMessage).slice(0, 400);
+
+  const textOnly = String(firstMessage).slice(0, 400);
+  const prompt = [
+    { role: 'system', content: 'You generate short, descriptive chat titles. Reply with ONLY 2-5 words. No quotes, no prefix, no period. Examples: "Rwandan History", "Kigali Hotels", "Coffee Prices Rwanda"' },
+    { role: 'user', content: textOnly }
+  ];
+
+  // Try Groq first
   try {
     const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'openai/gpt-oss-120b', messages: [{ role: 'system', content: 'Generate a concise 2-5 word title. Reply with ONLY the title.' }, { role: 'user', content: t }], max_completion_tokens: 40, reasoning_effort: 'none', temperature: 0.3 })
+      body: JSON.stringify({ model: 'openai/gpt-oss-120b', messages: prompt, max_completion_tokens: 25, reasoning_effort: 'none', temperature: 0.3 })
     });
-    if (!res.ok) throw new Error();
-    const data = await res.json();
-    let title = (data.choices?.[0]?.message?.content || '').trim().replace(/^["'`\s]+|["'`\s]+$/g, '').split('\n')[0].trim();
-    if (!title || title.length > 60) title = t.split(/\s+/).slice(0, 6).join(' ');
-    return title || 'New chat';
-  } catch { return t.split(/\s+/).slice(0, 6).join(' ') || 'New chat'; }
+    if (res.ok) {
+      const data = await res.json();
+      let t = (data.choices?.[0]?.message?.content || '').trim()
+        .replace(/^["'`\s]+|["'`\s]+$/g, '')
+        .replace(/^Title:\s*/i, '')
+        .split('\n')[0].trim()
+        .replace(/[.!?,;:]+$/, '');
+      if (t && t.length <= 60 && t.toLowerCase() !== textOnly.toLowerCase().slice(0, 60)) return t;
+    }
+  } catch (e) { console.warn('[title] Groq failed:', e.message); }
+
+  // Try Gemini as fallback
+  try {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
+    const res = await fetch(url, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: `Give a 2-5 word title for this chat. Reply ONLY with the title, no punctuation. Message: "${textOnly}"` }] }],
+        generationConfig: { temperature: 0.3, maxOutputTokens: 30 }
+      })
+    });
+    if (res.ok) {
+      const data = await res.json();
+      let t = (data.candidates?.[0]?.content?.parts?.[0]?.text || '').trim()
+        .replace(/^["'`\s]+|["'`\s]+$/g, '')
+        .replace(/^Title:\s*/i, '')
+        .split('\n')[0].trim()
+        .replace(/[.!?,;:]+$/, '');
+      if (t && t.length <= 60 && t.toLowerCase() !== textOnly.toLowerCase().slice(0, 60)) return t;
+    }
+  } catch (e) { console.warn('[title] Gemini failed:', e.message); }
+
+  // Last-resort: first 5 words
+  return textOnly.split(/\s+/).slice(0, 5).join(' ') || 'New chat';
 }
 
 // ============ ROUTES ============
-app.get('/health', (req, res) => res.json({ status: 'ok', service: 'DeepRWA', version: '2.6.0', time: new Date().toISOString() }));
-app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '2.6.0', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
+app.get('/health', (req, res) => res.json({ status: 'ok', service: 'DeepRWA', version: '2.7.0', time: new Date().toISOString() }));
+app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '2.7.0', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
 app.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nSitemap: https://deeprwa.agentdomains.co/sitemap.xml\n`));
 app.get('/sitemap.xml', (req, res) => res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>https://deeprwa.agentdomains.co/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>\n</urlset>`));
 
+// ---- AUTH: Signup ----
 app.post('/api/auth/signup', async (req, res) => {
   if (!supabaseConfigured) return res.status(503).json({ error: 'Auth not configured' });
   const { email, password, fullName } = req.body || {};
@@ -494,6 +538,7 @@ app.post('/api/auth/resend-verification', async (req, res) => {
   res.json({ pendingToken: newToken });
 });
 
+// ---- AUTH: Login ----
 app.post('/api/auth/login', async (req, res) => {
   const { email, password } = req.body || {};
   if (!isValidEmail(email)) return res.status(400).json({ error: 'Invalid email' });
@@ -546,6 +591,7 @@ app.get('/api/auth/me', requireAuth, async (req, res) => {
   res.json({ user: { id: req.userId, email: data?.email, display_name: data?.display_name, totp_enabled: data?.totp_enabled || false, created_at: data?.created_at } });
 });
 
+// ---- FORGOT PASSWORD ----
 app.post('/api/auth/forgot-password-request', async (req, res) => {
   const { email } = req.body || {};
   if (!isValidEmail(email)) return res.status(400).json({ error: 'Invalid email' });
@@ -589,6 +635,7 @@ app.post('/api/auth/reset-password', async (req, res) => {
   res.json({ success: true });
 });
 
+// ---- ACCOUNT ACTIONS ----
 app.post('/api/auth/send-action-code', requireAuth, async (req, res) => {
   const { action, newEmail } = req.body || {};
   if (!['change-email', 'change-password', 'delete-account'].includes(action)) return res.status(400).json({ error: 'Invalid action' });
@@ -671,6 +718,7 @@ app.delete('/api/auth/account', requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
+// ---- 2FA ----
 app.post('/api/auth/2fa/setup', requireAuth, async (req, res) => {
   const { data: profile } = await supabase.from('profiles').select('email, totp_enabled').eq('id', req.userId).maybeSingle();
   if (profile?.totp_enabled) return res.status(400).json({ error: '2FA already enabled' });
@@ -680,7 +728,6 @@ app.post('/api/auth/2fa/setup', requireAuth, async (req, res) => {
   await supabase.from('profiles').update({ totp_secret: secret }).eq('id', req.userId);
   res.json({ secret, qrDataUrl });
 });
-
 app.post('/api/auth/2fa/enable', requireAuth, async (req, res) => {
   const { code } = req.body || {};
   const { data: profile } = await supabase.from('profiles').select('totp_secret').eq('id', req.userId).maybeSingle();
@@ -689,7 +736,6 @@ app.post('/api/auth/2fa/enable', requireAuth, async (req, res) => {
   await supabase.from('profiles').update({ totp_enabled: true }).eq('id', req.userId);
   res.json({ success: true });
 });
-
 app.post('/api/auth/2fa/disable', requireAuth, async (req, res) => {
   const { code } = req.body || {};
   const { data: profile } = await supabase.from('profiles').select('totp_secret').eq('id', req.userId).maybeSingle();
@@ -699,40 +745,59 @@ app.post('/api/auth/2fa/disable', requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
+// ---- SESSIONS (with revoked flag) ----
 app.get('/api/auth/sessions', requireAuth, async (req, res) => {
   const clientId = req.headers['x-client-id'] || '';
-  const { data } = await supabase.from('sessions').select('*').eq('user_id', req.userId).order('last_active', { ascending: false });
-  res.json({ sessions: (data || []).map(s => ({ ...s, current: s.client_id === clientId })) });
+  const { data } = await supabase.from('sessions').select('*').eq('user_id', req.userId).eq('revoked', false).order('last_active', { ascending: false });
+  // Only show current device + others (current marked)
+  const sessions = (data || []).map(s => ({ ...s, current: s.client_id === clientId }));
+  res.json({ sessions });
 });
 
 app.get('/api/auth/session-check', requireAuth, async (req, res) => {
-  const clientId = req.headers['x-client-id'] || '';
-  const { data } = await supabase.from('sessions').select('id, client_id').eq('user_id', req.userId);
-  const byClient = clientId ? (data || []).find(s => s.client_id === clientId) : null;
-  if (byClient) { await supabase.from('sessions').update({ last_active: new Date().toISOString() }).eq('id', byClient.id); return res.json({ valid: true }); }
-  // If no session row yet but token is valid, DON'T sign out — just track it
-  if (!data || data.length === 0) {
-    await supabase.from('sessions').insert({ user_id: req.userId, client_id: clientId || null, device: 'Unknown', last_active: new Date().toISOString() });
+  const clientId = (req.headers['x-client-id'] || '').toString().trim().slice(0, 80) || null;
+  if (!clientId) return res.json({ valid: true }); // no way to track without client id — assume valid
+  const { data } = await supabase.from('sessions').select('id, revoked, last_active').eq('user_id', req.userId).eq('client_id', clientId).maybeSingle();
+  if (data) {
+    if (data.revoked === true) {
+      return res.json({ valid: false, reason: 'revoked' });
+    }
+    await supabase.from('sessions').update({ last_active: new Date().toISOString() }).eq('id', data.id);
     return res.json({ valid: true });
   }
-  return res.json({ valid: false });
+  // No row for this client_id — this device was either logged out (single) or never tracked. Insert a fresh row.
+  const ua = (req.headers['user-agent'] || 'Unknown').substring(0, 500);
+  const ip = (req.headers['x-forwarded-for'] || req.ip || 'Unknown').split(',')[0].trim();
+  await supabase.from('sessions').insert({ user_id: req.userId, client_id: clientId, device: ua.substring(0, 120), user_agent: ua, ip, revoked: false });
+  return res.json({ valid: true });
 });
 
 app.delete('/api/auth/sessions/:id', requireAuth, async (req, res) => {
   const clientId = req.headers['x-client-id'] || '';
   const { data: row } = await supabase.from('sessions').select('client_id').eq('id', req.params.id).eq('user_id', req.userId).maybeSingle();
   if (row && row.client_id === clientId) return res.status(400).json({ error: 'Log out via account menu' });
-  await supabase.from('sessions').delete().eq('id', req.params.id).eq('user_id', req.userId);
+  // Mark as revoked (soft delete) so session-check can detect it
+  await supabase.from('sessions').update({ revoked: true, last_active: new Date().toISOString() }).eq('id', req.params.id).eq('user_id', req.userId);
   res.json({ success: true });
 });
 
 app.delete('/api/auth/sessions-all-others', requireAuth, async (req, res) => {
   const clientId = req.headers['x-client-id'] || '';
-  if (clientId) await supabase.from('sessions').delete().eq('user_id', req.userId).neq('client_id', clientId);
-  else await supabase.from('sessions').delete().eq('user_id', req.userId);
+  if (!clientId) return res.status(400).json({ error: 'Missing client id' });
+  const { error } = await supabase.from('sessions').update({ revoked: true, last_active: new Date().toISOString() }).eq('user_id', req.userId).neq('client_id', clientId).eq('revoked', false);
+  if (error) return res.status(500).json({ error: error.message });
   res.json({ success: true });
 });
 
+// Delete single session that belongs to current device (self-logout cleanup)
+app.delete('/api/auth/sessions-current', requireAuth, async (req, res) => {
+  const clientId = req.headers['x-client-id'] || '';
+  if (!clientId) return res.json({ success: true });
+  await supabase.from('sessions').delete().eq('user_id', req.userId).eq('client_id', clientId);
+  res.json({ success: true });
+});
+
+// ---- FILE UPLOAD ----
 app.post('/api/upload', requireAuth, async (req, res) => {
   const { name, type, data } = req.body || {};
   if (!name || !type || !data) return res.status(400).json({ error: 'Missing file data' });
@@ -772,6 +837,7 @@ app.post('/api/chat/title', async (req, res) => {
   res.json({ title: await generateChatTitle(message) });
 });
 
+// ---- CHAT ----
 app.post('/api/chat/guest', async (req, res) => {
   const { messages, attachments } = req.body || {};
   if (!Array.isArray(messages) || !messages.length) return res.status(400).json({ error: 'messages required' });
@@ -809,51 +875,59 @@ async function streamChatResponse(messages, res, conversationId, attachments) {
   const lastUser = [...messages].reverse().find(m => m.role === 'user');
   const userText = lastUser?.content || '';
 
+  // Fast paths
   if ((!attachments || !attachments.length)) {
     if (isIdentityQuestion(userText)) { send({ text: IDENTITY_REPLY }); return done(); }
-    if (isGreeting(userText) && messages.length <= 2) {
-      send({ text: buildGreetingReply(userText) });
-      return done();
-    }
+    if (isGreeting(userText) && messages.length <= 2) { send({ text: buildGreetingReply(userText) }); return done(); }
   }
 
-  // If attachments present, try vision providers
+  let fullText = '';
+  let handled = false;
+
+  // Vision chain
   if (attachments && attachments.length) {
     for (const vp of VISION_PROVIDERS) {
       try {
-        let fullText = ''; let any = false;
-        for await (const chunk of vp.fn(messages, attachments)) { any = true; fullText += chunk; }
-        if (any && fullText.trim()) {
-          send({ text: fullText });
-          if (conversationId && supabase) await supabase.from('messages').insert({ conversation_id: conversationId, role: 'assistant', content: fullText });
-          return done();
-        }
+        const chunks = [];
+        for await (const chunk of vp.fn(messages, attachments)) chunks.push(chunk);
+        const t = chunks.join('');
+        if (t.trim()) { fullText = t; handled = true; break; }
       } catch (e) { console.warn(`[fail] ${vp.name}: ${e.message}`); continue; }
     }
-    // All vision failed — add note so text models don't deny
-    const names = attachments.map(a => a.name || a.mime).join(', ');
-    const note = `\n\n[${attachments.length} file(s) attached: ${names} — vision service temporarily unavailable]`;
-    const lastIdx = messages.length - 1;
-    if (messages[lastIdx]?.role === 'user') messages = messages.map((m, i) => i === lastIdx ? { ...m, content: m.content + note } : m);
   }
 
-  const sanitized = sanitizeForProvider(messages);
-  const full = [{ role: 'system', content: SYSTEM_PROMPT }, ...sanitized];
-  let lastErr = null;
-  for (const p of PROVIDERS) {
-    try {
-      let fullText = '';
-      for await (const chunk of p.fn(full)) { fullText += chunk; }
-      if (!fullText.trim()) throw new Error('empty');
-      send({ text: fullText });
-      if (conversationId && supabase) await supabase.from('messages').insert({ conversation_id: conversationId, role: 'assistant', content: fullText });
-      return done();
-    } catch (e) { lastErr = e; console.warn(`[fail] ${p.name}: ${e.message}`); continue; }
+  // Text chain
+  if (!handled) {
+    let mod = messages;
+    if (attachments && attachments.length) {
+      const names = attachments.map(a => a.name || a.mime).join(', ');
+      const note = `\n\n[${attachments.length} file(s) attached: ${names} — vision service unavailable]`;
+      const lastIdx = mod.length - 1;
+      if (mod[lastIdx]?.role === 'user') mod = mod.map((m, i) => i === lastIdx ? { ...m, content: m.content + note } : m);
+    }
+    const sanitized = sanitizeForProvider(mod);
+    const full = [{ role: 'system', content: SYSTEM_PROMPT }, ...sanitized];
+    let lastErr = null;
+    for (const p of PROVIDERS) {
+      try {
+        const chunks = [];
+        for await (const chunk of p.fn(full)) chunks.push(chunk);
+        const t = chunks.join('');
+        if (t.trim()) { fullText = t; handled = true; break; }
+      } catch (e) { lastErr = e; console.warn(`[fail] ${p.name}: ${e.message}`); continue; }
+    }
+    if (!handled) { send({ text: 'Sorry, all AI providers are temporarily unavailable. Please try again.' }); return done(); }
   }
-  send({ text: 'Sorry, all AI providers are temporarily unavailable. Please try again.' });
-  done();
+
+  // Send as a SINGLE event (fixes fragmentation)
+  send({ text: fullText });
+  if (conversationId && supabase) {
+    await supabase.from('messages').insert({ conversation_id: conversationId, role: 'assistant', content: fullText });
+  }
+  return done();
 }
 
+// ---- CONVERSATIONS ----
 app.get('/api/conversations', requireAuth, async (req, res) => {
   const { data } = await supabase.from('conversations').select('*').eq('user_id', req.userId).order('updated_at', { ascending: false });
   res.json({ conversations: data || [] });
@@ -887,18 +961,14 @@ app.post('/api/chat/messages/:id/sync-versions', requireAuth, async (req, res) =
   if (!msg || msg.role !== 'user') return res.status(404).json({ error: 'Message not found' });
   const { data: conv } = await supabase.from('conversations').select('user_id').eq('id', msg.conversation_id).single();
   if (!conv || conv.user_id !== req.userId) return res.status(403).json({ error: 'Not allowed' });
-  await supabase.from('messages').update({
-    content: userMessageContent, files: userMessageFiles || [],
-    versions: versions || [], version_files: versionFiles || [],
-    ai_replies: aiReplies || [], ai_files: aiFiles || [],
-    current_version_index: currentVersionIndex || 0
-  }).eq('id', id);
+  await supabase.from('messages').update({ content: userMessageContent, files: userMessageFiles || [], versions: versions || [], version_files: versionFiles || [], ai_replies: aiReplies || [], ai_files: aiFiles || [], current_version_index: currentVersionIndex || 0 }).eq('id', id);
   await supabase.from('messages').delete().eq('conversation_id', msg.conversation_id).gt('created_at', msg.created_at);
   const { data: newMsg } = await supabase.from('messages').insert({ conversation_id: msg.conversation_id, role: 'assistant', content: assistantContent, files: assistantFiles || [] }).select().single();
   await supabase.from('conversations').update({ updated_at: new Date().toISOString() }).eq('id', msg.conversation_id);
   res.json({ assistantMessageId: newMsg?.id });
 });
 
+// ---- SHARE ----
 app.post('/api/share/guest', async (req, res) => {
   const { messages } = req.body || {};
   if (!Array.isArray(messages)) return res.status(400).json({ error: 'messages required' });
@@ -910,13 +980,13 @@ app.post('/api/share/guest', async (req, res) => {
 
 app.get('/api/share/:token', async (req, res) => {
   const { token } = req.params;
+  const { data: guestShare } = await supabase.from('guest_shares').select('messages').eq('token', token).maybeSingle();
+  if (guestShare) return res.json({ type: 'chat', messages: guestShare.messages });
   const { data: sharedChat } = await supabase.from('shared_links').select('conversation_id').eq('token', token).maybeSingle();
   if (sharedChat) {
     const { data: messages } = await supabase.from('messages').select('*').eq('conversation_id', sharedChat.conversation_id).order('created_at');
     return res.json({ type: 'chat', messages: messages || [] });
   }
-  const { data: guestShare } = await supabase.from('guest_shares').select('messages').eq('token', token).maybeSingle();
-  if (guestShare) return res.json({ type: 'chat', messages: guestShare.messages });
   res.status(404).json({ error: 'Not found' });
 });
 
