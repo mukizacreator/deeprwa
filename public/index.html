@@ -43,9 +43,19 @@
       <button class="nav-item" data-view="files"><i data-lucide="folder"></i><span>Files</span></button>
     </nav>
 
-    <div class="files-actions hidden" id="filesActions">
-      <button class="files-action-btn" id="filesSelectAllBtn"><i data-lucide="check-square"></i><span>Select all</span></button>
-      <button class="files-action-btn danger" id="filesDeleteBtn"><i data-lucide="trash-2"></i><span>Delete</span></button>
+    <!-- Multi-select bar: only shown when a file's "Multi-select" is active AND there is at least one file -->
+    <div class="files-multiselect-bar hidden" id="filesMultiBar">
+      <button class="files-ms-btn" id="filesSelectAllBtn" aria-label="Select all">
+        <i data-lucide="square"></i><span>Select all</span>
+      </button>
+      <div class="files-ms-right">
+        <button class="files-ms-btn danger" id="filesDeleteSelectedBtn" aria-label="Delete selected">
+          <i data-lucide="trash-2"></i><span id="filesDeleteCountLabel">Delete</span>
+        </button>
+        <button class="files-ms-btn" id="filesCancelSelectBtn" aria-label="Cancel">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
     </div>
 
     <div class="sidebar-content" id="sidebarContent"></div>
@@ -177,4 +187,4 @@
 
 <script src="/main.js"></script>
 </body>
-</html>
+</html>b
