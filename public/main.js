@@ -1,4 +1,4 @@
-// DeepRWA — Complete frontend logic (guest = memory only, share = permanent)
+// DeepRWA — Complete frontend logic
 
 // ============ CLIENT ID ============
 function getOrCreateClientId() {
@@ -14,7 +14,7 @@ function getOrCreateClientId() {
 }
 const CLIENT_ID = getOrCreateClientId();
 
-// ============ STATE (guest data lives ONLY in memory) ============
+// ============ STATE ============
 const state = {
   user: null,
   token: localStorage.getItem('deeprwa_token') || null,
@@ -29,11 +29,11 @@ const state = {
   messageVersions: {},
   view: 'chats',
   authModal: { mode: 'login', pendingToken: null, forgot: { email: null, pendingToken: null, grantedToken: null } },
-  settingsTab: 'profile',
   sessionCheckInterval: null,
   lastSessionCheck: 0,
   _pendingAction: null,
-  _pendingPw: null
+  _pendingPw: null,
+  _reauthWarned: false
 };
 
 // ============ DOM ============
@@ -57,6 +57,9 @@ const sidebarFooter = $('sidebarFooter');
 const authModal = $('authModal');
 const authModalBody = $('authModalBody');
 const authModalClose = $('authModalClose');
+const profileModal = $('profileModal');
+const profileModalClose = $('profileModalClose');
+const profileModalBody = $('profileModalBody');
 const settingsModal = $('settingsModal');
 const settingsModalClose = $('settingsModalClose');
 const settingsSidebar = $('settingsSidebar');
@@ -75,6 +78,9 @@ const confirmTitle = $('confirmTitle');
 const confirmText = $('confirmText');
 const confirmCancel = $('confirmCancel');
 const confirmOk = $('confirmOk');
+const fileViewModal = $('fileViewModal');
+const fileViewModalClose = $('fileViewModalClose');
+const fileViewBody = $('fileViewBody');
 const toastContainer = $('toastContainer');
 
 // ============ UTILS ============
@@ -175,19 +181,14 @@ function attachCountdown(btn, seconds = 60) {
   btn.textContent = `Resend in ${remaining}s`;
   btn._cdInterval = setInterval(() => {
     remaining--;
-    if (remaining <= 0) {
-      clearInterval(btn._cdInterval); btn._cdInterval = null;
-      btn.disabled = false; btn.textContent = original;
-    } else btn.textContent = `Resend in ${remaining}s`;
+    if (remaining <= 0) { clearInterval(btn._cdInterval); btn._cdInterval = null; btn.disabled = false; btn.textContent = original; }
+    else btn.textContent = `Resend in ${remaining}s`;
   }, 1000);
 }
 
 // ============ INIT ============
 async function init() {
-  renderUser();
-  renderChatList();
-  renderWelcome();
-  updateSendButton();
+  renderUser(); renderChatList(); renderWelcome(); updateSendButton();
   inputEl.focus();
 
   if (state.token) {
@@ -213,11 +214,21 @@ function startSessionCheck() {
   state.sessionCheckInterval = setInterval(() => {
     if (!state.token) return;
     const now = Date.now();
-    if (now - state.lastSessionCheck < 20000) return;
+    if (now - state.lastSessionCheck < 30000) return;
     state.lastSessionCheck = now;
     fetch('/api/auth/session-check', { headers: authHeaders() })
       .then(r => r.ok ? r.json() : null)
-      .then(d => { if (d && d.valid === false) forceSignOut('Signed out from another device'); })
+      .then(d => {
+        if (d && d.valid === false) {
+          // Only sign out if we've been logged in for a while — prevents false positive at login
+          if (Date.now() - (state._loginAt || 0) > 30000) {
+            forceSignOut('Signed out from another device');
+          } else {
+            // Retry once on next tick
+            state.lastSessionCheck = 0;
+          }
+        }
+      })
       .catch(() => {});
   }, 60000);
 }
@@ -272,7 +283,7 @@ accountDropdown.addEventListener('click', (e) => {
   if (!btn) return;
   const act = btn.dataset.action;
   accountDropdown.classList.add('hidden');
-  if (act === 'profile') openSettingsModal('profile');
+  if (act === 'profile') openProfileModal();
   else if (act === 'settings') openSettingsModal('account');
   else if (act === 'logout') confirmLogout();
 });
@@ -304,9 +315,7 @@ sidebarNav.addEventListener('click', (e) => {
 function renderChatList() {
   if (state.view === 'files') { renderFilesList(); return; }
   if (!state.chats.length) {
-    sidebarContent.innerHTML = state.user
-      ? `<div class="sidebar-empty"><p>No chats yet</p><span>Start a conversation with DeepRWA</span></div>`
-      : `<div class="sidebar-empty"><p>No chats</p><span>Guest chats live only in this tab. Reload clears them.</span></div>`;
+    sidebarContent.innerHTML = `<div class="sidebar-empty"><p>No chats yet</p><span>Start a conversation with DeepRWA</span></div>`;
     return;
   }
   const pinned = state.chats.filter(c => c.pinned);
@@ -324,21 +333,19 @@ function renderChatList() {
   refreshIcons();
 }
 
-// FILES — guests see files from current session (memory); logged-in fetch from server
 function renderFilesList() {
   if (state.user) {
     sidebarContent.innerHTML = `<div class="sidebar-empty"><p>Loading files…</p></div>`;
     fetch('/api/files', { headers: authHeaders() })
       .then(r => r.json())
-      .then(d => renderFilesArray(d.files || []))
+      .then(d => renderFilesArray(d.files || [], false))
       .catch(() => { sidebarContent.innerHTML = `<div class="sidebar-empty"><p>Could not load files</p></div>`; });
     return;
   }
-  // Guest: scan all in-memory chats for files
+  // Guests: scan in-memory chats
   const files = [];
   for (const chat of state.chats) {
-    const msgs = chat.messages || [];
-    for (const m of msgs) {
+    for (const m of chat.messages || []) {
       if (Array.isArray(m.files)) {
         for (const f of m.files) {
           if (f && (f.dataUrl || f.url)) files.push({ ...f, created_at: m._createdAt || nowISO() });
@@ -367,12 +374,19 @@ function renderFilesArray(files, isGuest = false) {
         <div class="file-item-name" title="${escapeHtml(f.name || 'file')}">${escapeHtml(f.name || 'file')}</div>
         <div class="file-item-meta">${timeAgo(f.created_at)}</div>
       </div>`;
-    return url ? `<a class="file-item" href="${url}" target="_blank" rel="noopener">${inner}</a>` : `<div class="file-item">${inner}</div>`;
+    return url
+      ? `<button class="file-item" data-file-view='${escapeHtml(JSON.stringify({url, name: f.name, type: f.type}))}'>${inner}</button>`
+      : `<div class="file-item">${inner}</div>`;
   }).join('');
   refreshIcons();
 }
 
 sidebarContent.addEventListener('click', (e) => {
+  const fileBtn = e.target.closest('[data-file-view]');
+  if (fileBtn) {
+    try { const d = JSON.parse(fileBtn.dataset.fileView); showFileView(d.url, d.name, d.type); } catch {}
+    return;
+  }
   const menuBtn = e.target.closest('.chat-item-menu');
   if (menuBtn) { e.stopPropagation(); openChatMenu(menuBtn.dataset.menu, menuBtn.getBoundingClientRect()); return; }
   const item = e.target.closest('.chat-item');
@@ -419,7 +433,7 @@ function askDelete(id) {
   const chat = state.chats.find(c => c.id === id); if (!chat) return;
   confirmAction({
     title: 'Delete this chat?',
-    text: `"${chat.title || 'New chat'}" will be removed from this session.`,
+    text: `"${chat.title || 'New chat'}" will be removed.`,
     confirmLabel: 'Delete',
     onConfirm: async () => {
       if (state.user && !isLocalId(id)) {
@@ -434,8 +448,7 @@ function askDelete(id) {
 }
 
 function confirmAction({ title, text, confirmLabel = 'Confirm', danger = true, onConfirm }) {
-  confirmTitle.textContent = title;
-  confirmText.textContent = text;
+  confirmTitle.textContent = title; confirmText.textContent = text;
   confirmOk.textContent = confirmLabel;
   confirmOk.className = danger ? 'btn-danger' : 'btn-primary';
   confirmModal.classList.remove('hidden');
@@ -564,20 +577,50 @@ function renderFilePreviews() {
   filePreviews.hidden = false;
   filePreviews.innerHTML = state.attachments.map(f => {
     const isImg = f.type.startsWith('image/');
-    return `<div class="file-chip" data-id="${f.id}">
-      ${isImg ? `<img src="${f.url}" class="file-thumb" />` : `<div class="file-icon"><i data-lucide="file-text"></i></div>`}
+    return `<div class="file-chip" data-id="${f.id}" title="${escapeHtml(f.name)}">
+      ${isImg ? `<img src="${f.url}" class="file-thumb" data-preview-id="${f.id}" />` : `<div class="file-icon" data-preview-id="${f.id}"><i data-lucide="file-text"></i></div>`}
       <button type="button" class="file-remove" data-remove="${f.id}"><i data-lucide="x"></i></button>
     </div>`;
   }).join('');
   refreshIcons();
 }
 filePreviews.addEventListener('click', (e) => {
-  const btn = e.target.closest('[data-remove]'); if (!btn) return;
-  const id = btn.dataset.remove;
-  const i = state.attachments.findIndex(x => x.id === id);
-  if (i >= 0) { URL.revokeObjectURL(state.attachments[i].url); state.attachments.splice(i, 1); }
-  renderFilePreviews(); updateSendButton();
+  const removeBtn = e.target.closest('[data-remove]');
+  if (removeBtn) {
+    e.stopPropagation();
+    const id = removeBtn.dataset.remove;
+    const i = state.attachments.findIndex(x => x.id === id);
+    if (i >= 0) { URL.revokeObjectURL(state.attachments[i].url); state.attachments.splice(i, 1); }
+    renderFilePreviews(); updateSendButton();
+    return;
+  }
+  const previewEl = e.target.closest('[data-preview-id]');
+  if (previewEl) {
+    const att = state.attachments.find(x => x.id === previewEl.dataset.previewId);
+    if (att) showFileView(att.url, att.name, att.type);
+  }
 });
+
+// ============ FILE VIEW MODAL ============
+function showFileView(url, name, type) {
+  if (!url) return;
+  const isImg = (type || '').startsWith('image/');
+  const isPdf = type === 'application/pdf';
+  fileViewBody.innerHTML = `
+    <div class="file-view-header">
+      <span class="file-view-name">${escapeHtml(name || 'file')}</span>
+      <a href="${url}" target="_blank" rel="noopener" class="btn-secondary" style="padding:0.4rem 0.8rem;font-size:0.8rem;">Open in new tab <i data-lucide="external-link"></i></a>
+    </div>
+    <div class="file-view-content">
+      ${isImg ? `<img src="${url}" alt="${escapeHtml(name)}" class="file-view-img" />`
+        : isPdf ? `<iframe src="${url}" class="file-view-pdf" title="${escapeHtml(name)}"></iframe>`
+        : `<div class="file-view-other"><i data-lucide="file-text"></i><p>Preview not available for this file type.</p><a href="${url}" target="_blank" rel="noopener" class="btn-primary" style="width:auto;padding:0.6rem 1.2rem;">Open file</a></div>`}
+    </div>`;
+  fileViewModal.classList.remove('hidden');
+  refreshIcons();
+}
+fileViewModalClose.addEventListener('click', () => fileViewModal.classList.add('hidden'));
+fileViewModal.addEventListener('click', (e) => { if (e.target === fileViewModal) fileViewModal.classList.add('hidden'); });
 
 // ============ MESSAGES ============
 function renderMessages() {
@@ -595,10 +638,11 @@ function renderFilesInline(files) {
   return `<div class="msg-files">${files.map(f => {
     const isImg = (f.type || '').startsWith('image/');
     const url = f.url || f.dataUrl || f.public_url || '';
-    const inner = isImg && url
+    if (!url) return '';
+    const inner = isImg
       ? `<img src="${url}" class="msg-file-thumb" loading="lazy" alt="attachment" />`
       : `<div class="msg-file-doc"><i data-lucide="file-text"></i></div>`;
-    return url ? `<a href="${url}" target="_blank" rel="noopener">${inner}</a>` : `<div>${inner}</div>`;
+    return `<button class="msg-file-btn" data-msg-file='${escapeHtml(JSON.stringify({url, name: f.name, type: f.type}))}'>${inner}</button>`;
   }).join('')}</div>`;
 }
 
@@ -663,6 +707,11 @@ function buildAssistantMessage(m, i) {
 
 // ============ MESSAGE ACTIONS ============
 chatEl.addEventListener('click', async (e) => {
+  const fileBtn = e.target.closest('[data-msg-file]');
+  if (fileBtn) {
+    try { const d = JSON.parse(fileBtn.dataset.msgFile); showFileView(d.url, d.name, d.type); } catch {}
+    return;
+  }
   const vs = e.target.closest('[data-vs]');
   if (vs) { const wrap = vs.closest('.msg-user'); applyVersionChange(wrap.dataset.id, vs.dataset.vs); return; }
   if (e.target.closest('#editCancel')) { state.editingMessageId = null; state.editingValue = ''; renderMessages(); return; }
@@ -720,7 +769,7 @@ async function uploadAttachmentsToServer() {
   const uploaded = [];
   for (const att of state.attachments) {
     try {
-      if (att.file.size > 10 * 1024 * 1024) { toast(`${att.name} is over 10 MB — kept locally only`, 'error'); uploaded.push({ name: att.name, type: att.type, url: att.url }); continue; }
+      if (att.file.size > 10 * 1024 * 1024) { toast(`${att.name} is over 10 MB — kept locally`, 'error'); uploaded.push({ name: att.name, type: att.type, url: att.url }); continue; }
       const base64 = await fileToBase64(att.file);
       const res = await fetch('/api/upload', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ name: att.name, type: att.type, data: base64 }) });
       if (res.ok) { const d = await res.json(); uploaded.push({ name: d.name, type: d.type, url: d.url }); }
@@ -729,20 +778,17 @@ async function uploadAttachmentsToServer() {
   }
   return uploaded;
 }
-
-// Guest: convert attachments to data URLs so they can be shown AND shared
 async function attachmentsToDataUrls(attachments) {
   const out = [];
   for (const att of attachments) {
     try {
-      if (att.file.size > 3 * 1024 * 1024) continue; // 3 MB limit for data URLs in memory
+      if (att.file.size > 3 * 1024 * 1024) continue;
       const dataUrl = await fileToDataURL(att.file);
       out.push({ name: att.name, type: att.type, dataUrl });
     } catch {}
   }
   return out;
 }
-
 async function collectAttachmentsForAI(attachments) {
   const out = [];
   for (const a of attachments) {
@@ -759,7 +805,6 @@ async function collectAttachmentsForAI(attachments) {
   }
   return out;
 }
-
 async function requestTitle(text) {
   try {
     const res = await fetch('/api/chat/title', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: text }) });
@@ -784,11 +829,9 @@ formEl.addEventListener('submit', async (e) => {
 
   const attachmentsForAI = await collectAttachmentsForAI(state.attachments);
   let filesForMsg;
-  if (state.user) {
-    filesForMsg = await uploadAttachmentsToServer() || [];
-  } else {
-    filesForMsg = await attachmentsToDataUrls(state.attachments);
-  }
+  if (state.user) filesForMsg = await uploadAttachmentsToServer() || [];
+  else filesForMsg = await attachmentsToDataUrls(state.attachments);
+
   const isFirstMessage = isNewChat || chat.title === 'New chat' || !chat.messages.length;
 
   inputEl.value = ''; autoGrow();
@@ -796,8 +839,7 @@ formEl.addEventListener('submit', async (e) => {
   chatEl.querySelector('.welcome')?.remove();
 
   const userMsg = { id: 'user_' + Date.now(), role: 'user', content: text, files: filesForMsg, _createdAt: nowISO() };
-  state.messages.push(userMsg);
-  chat.messages = state.messages;
+  state.messages.push(userMsg); chat.messages = state.messages;
 
   const assistantMsg = { id: 'asst_' + Date.now(), role: 'assistant', content: '', files: [], _createdAt: nowISO() };
   state.messages.push(assistantMsg);
@@ -815,11 +857,7 @@ formEl.addEventListener('submit', async (e) => {
   try {
     const endpoint = state.user ? '/api/chat' : '/api/chat/guest';
     const payload = {
-      messages: state.messages.map(m => {
-        const out = { role: m.role, content: m.content };
-        if (m.role === 'user' && m.files) out.files = m.files;
-        return out;
-      }),
+      messages: state.messages.map(m => ({ role: m.role, content: m.content })), // NO files sent to LLM
       attachments: attachmentsForAI
     };
     if (state.user) payload.conversationId = isLocalId(chat.id) ? null : chat.id;
@@ -908,11 +946,7 @@ async function saveEditAndSend(newText) {
   let fullText = '';
   try {
     const endpoint = state.user ? '/api/chat' : '/api/chat/guest';
-    const payload = { messages: state.messages.filter(m => m.role === 'user' || (m.role === 'assistant' && m.content)).map(m => {
-      const out = { role: m.role, content: m.content };
-      if (m.role === 'user' && m.files) out.files = m.files;
-      return out;
-    }) };
+    const payload = { messages: state.messages.filter(m => m.role === 'user' || (m.role === 'assistant' && m.content)).map(m => ({ role: m.role, content: m.content })) };
     if (state.user && chat && !isLocalId(chat.id)) payload.conversationId = chat.id;
 
     const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload), signal: state.abortController.signal });
@@ -944,15 +978,6 @@ async function saveEditAndSend(newText) {
     v.aiReplies[v.currentIndex] = fullText;
     v.aiFiles[v.currentIndex] = [];
     renderMessages();
-
-    if (state.user && chat && !isLocalId(chat.id) && userMsg.id && !userMsg.id.startsWith('user_')) {
-      try {
-        await fetch(`/api/chat/messages/${userMsg.id}/sync-versions`, {
-          method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userMessageContent: userMsg.content, userMessageFiles: userMsg.files || [], versions: v.versions, versionFiles: v.files, aiReplies: v.aiReplies, aiFiles: v.aiFiles, currentVersionIndex: v.currentIndex, assistantContent: fullText, assistantFiles: [] })
-        });
-      } catch {}
-    }
   } catch (err) {
     if (err.name === 'AbortError') v.aiReplies[v.currentIndex] = fullText || '*Stopped.*';
     else { console.error(err); v.aiReplies[v.currentIndex] = 'Something went wrong.'; }
@@ -1043,7 +1068,11 @@ function renderLoginForm() {
     if (!email || !password) { toast('Enter email and password', 'error'); return; }
     const btn = $('authSubmit'); setBtnLoading(btn, 'Logging in…');
     try {
-      const res = await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) });
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Client-Id': CLIENT_ID }, // CRITICAL
+        body: JSON.stringify({ email, password })
+      });
       const data = await res.json();
       if (!res.ok) { resetBtn(btn); toast(data.error || 'Login failed', 'error'); return; }
       state.authModal.pendingToken = data.pendingToken;
@@ -1074,7 +1103,11 @@ function renderSignupForm() {
     if (password.length < 8) { toast('Password must be at least 8 characters', 'error'); return; }
     const btn = $('authSubmit'); setBtnLoading(btn, 'Sending code…');
     try {
-      const res = await fetch('/api/auth/signup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password, fullName }) });
+      const res = await fetch('/api/auth/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Client-Id': CLIENT_ID },
+        body: JSON.stringify({ email, password, fullName })
+      });
       const data = await res.json();
       if (!res.ok) { resetBtn(btn); toast(data.error || 'Signup failed', 'error'); return; }
       state.authModal.pendingToken = data.pendingToken;
@@ -1097,7 +1130,11 @@ function renderVerifyCodeForm(type) {
     if (resendBtn.disabled) return;
     const endpoint = type === 'signup' ? '/api/auth/resend-verification' : '/api/auth/resend-login-code';
     try {
-      const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pendingToken: state.authModal.pendingToken }) });
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Client-Id': CLIENT_ID },
+        body: JSON.stringify({ pendingToken: state.authModal.pendingToken })
+      });
       const data = await res.json();
       if (!res.ok) { toast(data.error || 'Could not resend', 'error'); return; }
       state.authModal.pendingToken = data.pendingToken;
@@ -1110,11 +1147,16 @@ function renderVerifyCodeForm(type) {
     const btn = $('verifySubmit'); setBtnLoading(btn, 'Verifying…');
     const endpoint = type === 'signup' ? '/api/auth/confirm-signup' : '/api/auth/verify-login';
     try {
-      const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pendingToken: state.authModal.pendingToken, code }) });
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Client-Id': CLIENT_ID }, // CRITICAL
+        body: JSON.stringify({ pendingToken: state.authModal.pendingToken, code })
+      });
       const data = await res.json();
       if (!res.ok) { resetBtn(btn); toast(data.error || 'Invalid code', 'error'); return; }
       if (data.requires2fa) { render2FALoginForm(data.twofaToken); return; }
       state.token = data.accessToken; state.user = data.user;
+      state._loginAt = Date.now(); // prevent false sign-out
       localStorage.setItem('deeprwa_token', data.accessToken);
       authModal.classList.add('hidden'); renderUser(); await loadConversations();
       toast(type === 'signup' ? 'Welcome to DeepRWA!' : 'Logged in', 'success');
@@ -1133,10 +1175,15 @@ function render2FALoginForm(twofaToken) {
     const code = $('faCode').value.trim();
     const btn = $('faSubmit'); setBtnLoading(btn, 'Verifying…');
     try {
-      const res = await fetch('/api/auth/verify-2fa', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ twofaToken, code }) });
+      const res = await fetch('/api/auth/verify-2fa', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Client-Id': CLIENT_ID },
+        body: JSON.stringify({ twofaToken, code })
+      });
       const data = await res.json();
       if (!res.ok) { resetBtn(btn); toast(data.error || 'Invalid code', 'error'); return; }
       state.token = data.accessToken; state.user = data.user;
+      state._loginAt = Date.now();
       localStorage.setItem('deeprwa_token', data.accessToken);
       authModal.classList.add('hidden'); renderUser(); await loadConversations();
       toast('Logged in', 'success');
@@ -1167,7 +1214,6 @@ function renderForgotStep1() {
     } catch { resetBtn(btn); toast('Network error', 'error'); }
   };
 }
-
 function renderForgotStep2() {
   authModalBody.innerHTML = `
     <h3>Enter verification code</h3>
@@ -1200,7 +1246,6 @@ function renderForgotStep2() {
     } catch { resetBtn(btn); toast('Network error', 'error'); }
   };
 }
-
 function renderForgotStep3() {
   authModalBody.innerHTML = `
     <h3>Set new password</h3>
@@ -1225,10 +1270,40 @@ function renderForgotStep3() {
   };
 }
 
-// ============ SETTINGS MODAL ============
-function openSettingsModal(tab = 'profile') {
+// ============ PROFILE MODAL (info only) ============
+function openProfileModal() {
   if (!state.user) return;
-  state.settingsTab = tab;
+  const u = state.user;
+  const initial = (u.email || 'U')[0].toUpperCase();
+  profileModalBody.innerHTML = `
+    <div class="profile-header">
+      <div class="profile-avatar">${escapeHtml(initial)}</div>
+      <h3>${escapeHtml(u.display_name || u.email || 'Your profile')}</h3>
+      <p class="modal-sub">${escapeHtml(u.email || '')}</p>
+    </div>
+    <div class="settings-section">
+      <h4>Member since</h4>
+      <p>${formatDate(u.created_at) || 'Recently'}</p>
+    </div>
+    <div class="settings-divider"></div>
+    <div class="settings-section">
+      <h4>Two-factor authentication</h4>
+      <p><span class="status-badge ${u.totp_enabled ? 'on' : 'off'}">${u.totp_enabled ? 'Enabled' : 'Disabled'}</span></p>
+    </div>
+    <div class="settings-divider"></div>
+    <div class="settings-section">
+      <h4>Account ID</h4>
+      <p style="font-family: ui-monospace, monospace; font-size: 0.75rem; word-break: break-all;">${escapeHtml(u.id || '')}</p>
+    </div>`;
+  profileModal.classList.remove('hidden');
+  refreshIcons();
+}
+profileModalClose.addEventListener('click', () => profileModal.classList.add('hidden'));
+profileModal.addEventListener('click', (e) => { if (e.target === profileModal) profileModal.classList.add('hidden'); });
+
+// ============ SETTINGS MODAL (Account, Security, Sessions) ============
+function openSettingsModal(tab = 'account') {
+  if (!state.user) return;
   settingsModal.classList.remove('hidden');
   settingsSidebar.querySelectorAll('.settings-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
   renderSettingsTab(tab);
@@ -1238,29 +1313,14 @@ settingsModal.addEventListener('click', (e) => { if (e.target === settingsModal)
 settingsSidebar.addEventListener('click', (e) => {
   const tab = e.target.closest('.settings-tab'); if (!tab) return;
   settingsSidebar.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
-  tab.classList.add('active'); state.settingsTab = tab.dataset.tab;
-  renderSettingsTab(state.settingsTab);
+  tab.classList.add('active');
+  renderSettingsTab(tab.dataset.tab);
 });
 function renderSettingsTab(tab) {
-  if (tab === 'profile') renderProfileTab();
-  else if (tab === 'account') renderAccountTab();
+  if (tab === 'account') renderAccountTab();
   else if (tab === 'security') renderSecurityTab();
   else if (tab === 'sessions') renderSessionsTab();
   refreshIcons();
-}
-
-function renderProfileTab() {
-  const u = state.user;
-  settingsContent.innerHTML = `
-    <h3>Profile</h3>
-    <p class="modal-sub">Your account information.</p>
-    <div class="settings-section"><h4>Email</h4><p>${escapeHtml(u.email || '')}</p></div>
-    <div class="settings-divider"></div>
-    <div class="settings-section"><h4>Member since</h4><p>${formatDate(u.created_at) || 'Recently'}</p></div>
-    <div class="settings-divider"></div>
-    <div class="settings-section"><h4>Two-factor authentication</h4>
-      <p><span class="status-badge ${u.totp_enabled ? 'on' : 'off'}">${u.totp_enabled ? 'Enabled' : 'Disabled'}</span></p>
-    </div>`;
 }
 
 function renderAccountTab() {
@@ -1357,21 +1417,20 @@ function renderActionVerify(action, targetEmail) {
       const vres = await fetch('/api/auth/verify-action-code', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ pendingToken: state._pendingAction.token, code, action }) });
       const vdata = await vres.json();
       if (!vres.ok) { resetBtn(btn); toast(vdata.error || 'Invalid code', 'error'); return; }
-
       if (action === 'change-email') {
         setBtnLoading(btn, 'Changing email…');
         const r = await fetch('/api/auth/change-email', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ grantedToken: vdata.grantedToken }) });
         const d = await r.json();
         if (!r.ok) { resetBtn(btn); toast(d.error || 'Failed', 'error'); return; }
         state.user.email = d.newEmail; toast('Email changed to ' + d.newEmail, 'success');
-        renderUser(); renderProfileTab();
+        renderUser(); renderAccountTab();
       } else if (action === 'change-password') {
         setBtnLoading(btn, 'Changing password…');
         const pw = state._pendingPw || {};
         const r = await fetch('/api/auth/change-password', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ grantedToken: vdata.grantedToken, currentPassword: pw.current, newPassword: pw.newPw }) });
         const d = await r.json();
         if (!r.ok) { resetBtn(btn); toast(d.error || 'Failed', 'error'); return; }
-        state._pendingPw = null; toast('Password changed', 'success'); renderProfileTab();
+        state._pendingPw = null; toast('Password changed', 'success'); renderAccountTab();
       } else if (action === 'delete-account') {
         setBtnLoading(btn, 'Deleting account…');
         const r = await fetch('/api/auth/account', { method: 'DELETE', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ grantedToken: vdata.grantedToken }) });
@@ -1508,7 +1567,7 @@ function confirmLogout() {
   });
 }
 
-// ============ SHARE (works for guest & logged-in; saves snapshot to server) ============
+// ============ SHARE ============
 async function shareChat(chatId) {
   const chat = state.chats.find(c => c.id === chatId); if (!chat) return;
   let msgs = chat.messages || [];
@@ -1538,14 +1597,8 @@ async function postShare(msgs) {
     }
     return out;
   }).filter(m => (m.content && m.content.trim()) || (m.files && m.files.length));
-
-  // Size sanity check
   const payloadStr = JSON.stringify({ messages: enriched });
-  if (payloadStr.length > 25 * 1024 * 1024) {
-    toast('Share is too large. Try without large files.', 'error');
-    return;
-  }
-
+  if (payloadStr.length > 25 * 1024 * 1024) { toast('Share is too large.', 'error'); return; }
   try {
     const res = await fetch('/api/share/guest', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payloadStr });
     const data = await res.json();
@@ -1566,10 +1619,12 @@ copyShareLink.addEventListener('click', async () => {
 
 function closeAllModals() {
   authModal.classList.add('hidden');
+  profileModal.classList.add('hidden');
   settingsModal.classList.add('hidden');
   shareModal.classList.add('hidden');
   renameModal.classList.add('hidden');
   confirmModal.classList.add('hidden');
+  fileViewModal.classList.add('hidden');
   accountDropdown.classList.add('hidden');
 }
 
