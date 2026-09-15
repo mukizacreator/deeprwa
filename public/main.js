@@ -1,4 +1,4 @@
-// DeepRWA — Complete frontend logic (rev.3.3.0)
+// DeepRWA — Complete frontend logic (rev.3.3.1)
 
 // ============ CLIENT ID ============
 function getOrCreateClientId() {
@@ -395,7 +395,6 @@ function updateChatsMultiBar() {
   chatsDeleteSelectedBtn.disabled = n === 0;
   chatsPinSelectedBtn.disabled = n === 0;
 
-  // Determine whether all-selected chats are pinned (to swap icon + tooltip)
   const selectedIds = Array.from(state._selectedChats);
   const allSelectedArePinned = selectedIds.length > 0 && selectedIds.every(id => {
     const c = state.chats.find(x => x.id === id);
@@ -617,7 +616,6 @@ function renderFilesArray(files, isGuest = false) {
 
 // ============ SIDEBAR INTERACTION ============
 sidebarContent.addEventListener('click', (e) => {
-  // Files: ⋮ menu
   const fileMenuBtn = e.target.closest('[data-file-menu]');
   if (fileMenuBtn) {
     e.stopPropagation();
@@ -625,14 +623,12 @@ sidebarContent.addEventListener('click', (e) => {
     return;
   }
 
-  // Files: open preview (but not when clicking the checkbox)
   const fileBtn = e.target.closest('[data-file-view]');
   if (fileBtn && !e.target.closest('.file-checkbox')) {
     try { const d = JSON.parse(fileBtn.dataset.fileView); showFileView(d.url, d.name, d.type); } catch {}
     return;
   }
 
-  // Chats: ⋮ menu
   const chatMenuBtn = e.target.closest('.chat-item-menu');
   if (chatMenuBtn) {
     e.stopPropagation();
@@ -640,11 +636,9 @@ sidebarContent.addEventListener('click', (e) => {
     return;
   }
 
-  // Chats: click on row
   const chatItem = e.target.closest('.chat-item');
   if (chatItem) {
     if (state._chatMultiSelectMode) {
-      // If the click was on the checkbox label, let the change handler deal with it.
       if (e.target.closest('.file-checkbox')) return;
       const id = chatItem.dataset.id;
       const chk = chatItem.querySelector('[data-chat-check]');
@@ -2104,7 +2098,10 @@ async function renderSessionsTab() {
 // ============ LOGOUT ============
 function confirmLogout() {
   confirmAction({
-    title: 'Log out?', text: 'You will need to log in again to access your chats.', confirmLabel: 'Log out', danger: false,
+    title: 'Log out?',
+    text: 'You will need to log in again to access your chats.',
+    confirmLabel: 'Log out',
+    danger: true,
     onConfirm: async () => {
       try { await fetch('/api/auth/sessions-current', { method: 'DELETE', headers: authHeaders() }); } catch {}
       state.token = null; state.user = null; state.chats = []; state.activeChatId = null; state.messages = [];
