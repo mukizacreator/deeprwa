@@ -1,4 +1,4 @@
-// DeepRWA — Complete frontend logic (rev.3.0.1)
+// DeepRWA — Complete frontend logic (rev.3.1.0)
 
 // ============ CLIENT ID ============
 function getOrCreateClientId() {
@@ -108,23 +108,18 @@ function escapeHtmlOutsideCode(text) {
     if (inCode) return line;
 
     let cleaned = line
-      // literal <br> / <hr> become real line breaks (marked's `breaks: true` renders them as <br>)
       .replace(/<br\s*\/?>/gi, '\n')
       .replace(/<hr\s*\/?>/gi, '\n')
-      // <a href="url" ...>text</a>  →  markdown [text](url)
       .replace(/<a\s+[^>]*?href\s*=\s*["']([^"']*)["'][^>]*?>(.*?)<\/a>/gi, '[$2]($1)')
-      // strip stray block / inline HTML tags the model shouldn't emit
       .replace(/<\/?(p|div|span|strong|em|b|i|u|ul|ol|li|blockquote|table|thead|tbody|tr|td|th|h[1-6]|section|article|header|footer|nav|aside|main|pre|code|sup|sub|small|mark|del|ins|figure|figcaption|picture|source|video|audio|canvas|iframe|form|input|button|select|textarea|label|fieldset|legend|details|summary|body|html|head|title|meta|link|script|style)[^>]*>/gi, '')
-      // strip HTML comments
       .replace(/<!--[\s\S]*?-->/g, '');
 
-    // Escape anything left so it can never be interpreted as HTML by the browser.
     return cleaned.replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }).join('\n');
 }
 
 // Renders markdown to safe HTML.
-// - removes <hr> (kept from original DeepRWA behaviour)
+// - removes <hr>
 // - forces every rendered link to open in a new tab, safely
 function renderMarkdown(text) {
   const safe = escapeHtmlOutsideCode(text || '');
@@ -135,10 +130,8 @@ function renderMarkdown(text) {
     return safe.replace(/\n/g, '<br>');
   }
 
-  // No horizontal rules ever
   html = html.replace(/<hr\s*\/?>/gi, '');
 
-  // Ensure every <a> opens in a new tab with safe rel attributes.
   html = html.replace(/<a\s+([^>]*?)>/gi, (_match, attrs) => {
     const cleanedAttrs = attrs
       .replace(/\btarget\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
@@ -521,8 +514,8 @@ function openFileMenu(idx, rect) {
   if (!f) return;
   const menu = document.createElement('div');
   menu.className = 'file-menu';
-  menu.style.left = Math.max(8, rect.left - 160) + 'px';
-  menu.style.top = rect.bottom + 4 + 'px';
+  menu.style.left = Math.max(8, Math.min(rect.left - 160, window.innerWidth - 200)) + 'px';
+  menu.style.top = Math.min(rect.bottom + 4, window.innerHeight - 120) + 'px';
   menu.innerHTML = `
     <button data-act="multi"><i data-lucide="check-square"></i>Multi-select</button>
     <button data-act="delete" class="danger"><i data-lucide="trash-2"></i>Delete</button>`;
@@ -639,8 +632,8 @@ function openChatMenu(id, rect) {
   if (!chat) return;
   const menu = document.createElement('div');
   menu.className = 'chat-menu';
-  menu.style.left = Math.max(8, Math.min(rect.left - 140, window.innerWidth - 170)) + 'px';
-  menu.style.top = Math.min(rect.bottom + 4, window.innerHeight - 160) + 'px';
+  menu.style.left = Math.max(8, Math.min(rect.left - 140, window.innerWidth - 200)) + 'px';
+  menu.style.top = Math.min(rect.bottom + 4, window.innerHeight - 200) + 'px';
   menu.innerHTML = `
     <button data-act="pin"><i data-lucide="pin"></i>${chat.pinned ? 'Unpin' : 'Pin'}</button>
     <button data-act="share"><i data-lucide="share-2"></i>Share</button>
@@ -852,7 +845,7 @@ function renderFilePreviews() {
     const isImg = f.type.startsWith('image/');
     return `<div class="file-chip" data-id="${f.id}" title="${escapeHtml(f.name)}">
       ${isImg ? `<img src="${f.url}" class="file-thumb" data-preview-id="${f.id}" />` : `<div class="file-icon" data-preview-id="${f.id}"><i data-lucide="file-text"></i></div>`}
-      <button type="button" class="file-remove" data-remove="${f.id}"><i data-lucide="x"></i></button>
+      <button type="button" class="file-remove" data-remove="${f.id}" aria-label="Remove"><i data-lucide="x"></i></button>
     </div>`;
   }).join('');
   refreshIcons();
@@ -940,16 +933,16 @@ function buildUserMessage(m, i) {
   const v = state.messageVersions[m.id];
   const switcher = v && v.versions.length > 1 ? `
     <div class="version-switcher">
-      <button class="vs-btn" data-vs="prev" ${v.currentIndex === 0 ? 'disabled' : ''}><i data-lucide="chevron-left"></i></button>
+      <button class="vs-btn" data-vs="prev" ${v.currentIndex === 0 ? 'disabled' : ''} aria-label="Previous"><i data-lucide="chevron-left"></i></button>
       <span class="vs-label">${v.currentIndex + 1} / ${v.versions.length}</span>
-      <button class="vs-btn" data-vs="next" ${v.currentIndex === v.versions.length - 1 ? 'disabled' : ''}><i data-lucide="chevron-right"></i></button>
+      <button class="vs-btn" data-vs="next" ${v.currentIndex === v.versions.length - 1 ? 'disabled' : ''} aria-label="Next"><i data-lucide="chevron-right"></i></button>
     </div>` : '';
   wrap.innerHTML = `
     ${renderFilesInline(m.files)}
     <div class="bubble">${escapeHtml(m.content).replace(/\n/g, '<br>')}</div>
     <div class="msg-actions msg-actions-user">
-      <button class="msg-action" data-action="copy" title="Copy"><i data-lucide="copy"></i></button>
-      <button class="msg-action" data-action="edit" title="Edit"><i data-lucide="pencil"></i></button>
+      <button class="msg-action" data-action="copy" title="Copy" aria-label="Copy"><i data-lucide="copy"></i></button>
+      <button class="msg-action" data-action="edit" title="Edit" aria-label="Edit"><i data-lucide="pencil"></i></button>
     </div>
     ${switcher}`;
   return wrap;
@@ -969,10 +962,10 @@ function buildAssistantMessage(m, i) {
       ${renderFilesInline(m.files)}
       ${!content ? `<div class="thinking"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="thinking-label">Initializing…</span></div>` : ''}
       <div class="msg-actions msg-actions-assistant ${content ? '' : 'hidden'}">
-        <button class="msg-action" data-action="copy" title="Copy"><i data-lucide="copy"></i></button>
-        <button class="msg-action" data-action="like" title="Like"><i data-lucide="thumbs-up"></i></button>
-        <button class="msg-action" data-action="dislike" title="Dislike"><i data-lucide="thumbs-down"></i></button>
-        <button class="msg-action" data-action="share" title="Share"><i data-lucide="share-2"></i></button>
+        <button class="msg-action" data-action="copy" title="Copy" aria-label="Copy"><i data-lucide="copy"></i></button>
+        <button class="msg-action" data-action="like" title="Like" aria-label="Like"><i data-lucide="thumbs-up"></i></button>
+        <button class="msg-action" data-action="dislike" title="Dislike" aria-label="Dislike"><i data-lucide="thumbs-down"></i></button>
+        <button class="msg-action" data-action="share" title="Share" aria-label="Share"><i data-lucide="share-2"></i></button>
       </div>
     </div>`;
   return wrap;
@@ -1471,7 +1464,7 @@ function render2FALoginForm(twofaToken) {
   authModalBody.innerHTML = `
     <h3>Two-factor authentication</h3>
     <p class="modal-sub">Enter the 6-digit code from your authenticator app.</p>
-    <input type="text" id="faCode" placeholder="000000" maxlength="6" class="modal-input code-input" inputmode="numeric" />
+    <input type="text" id="faCode" placeholder="000000" maxlength="6" class="modal-input code-input" inputmode="numeric" autocomplete="one-time-code" />
     <button class="btn-primary" id="faSubmit">Verify</button>`;
   refreshIcons(); $('faCode').focus();
   $('faSubmit').onclick = async () => {
@@ -1491,7 +1484,7 @@ function renderForgotStep1() {
   authModalBody.innerHTML = `
     <h3>Reset your password</h3>
     <p class="modal-sub">Enter the email registered to your account.</p>
-    <input type="email" id="fpEmail" placeholder="Email" class="modal-input" />
+    <input type="email" id="fpEmail" placeholder="Email" class="modal-input" autocomplete="email" />
     <button class="btn-primary" id="fpSubmit">Send code</button>
     <button class="link-btn" id="fpBack">Back to login</button>`;
   refreshIcons();
@@ -1613,7 +1606,7 @@ function renderSettingsTab(tab) {
   refreshIcons();
 }
 
-// ============ ACCOUNT TAB — with granular button statuses ============
+// ============ ACCOUNT TAB ============
 function renderAccountTab() {
   settingsContent.innerHTML = `
     <h3>Account</h3>
@@ -1647,16 +1640,13 @@ function renderAccountTab() {
     </div>`;
   refreshIcons(); attachPasswordToggles(settingsContent);
 
-  // Toggle change-email form
   $('changeEmailBtn').onclick = () => { $('changeEmailArea').classList.toggle('hidden'); if (!$('changeEmailArea').classList.contains('hidden')) $('newEmailInput').focus(); };
 
-  // ── CHANGE EMAIL: verify email → send code ──
   $('sendEmailCodeBtn').onclick = async () => {
     const newEmail = $('newEmailInput')?.value.trim();
     const btn = $('sendEmailCodeBtn');
     if (!newEmail) { toast('Enter new email', 'error'); return; }
 
-    // Step 1: Verify email (client-side checks)
     setBtnLoading(btn, 'Verifying email…');
     await new Promise(r => setTimeout(r, 250));
 
@@ -1668,20 +1658,16 @@ function renderAccountTab() {
       resetBtn(btn); toast('New email must be different from your current one', 'error'); return;
     }
 
-    // Step 2: Send code
     setBtnLoading(btn, 'Sending code…');
     sendActionCode('change-email', { newEmail });
   };
 
-  // Toggle change-password form
   $('changePwBtn').onclick = () => { $('changePwArea').classList.toggle('hidden'); if (!$('changePwArea').classList.contains('hidden')) $('currentPw').focus(); };
 
-  // ── CHANGE PASSWORD: verify current → send code ──
   $('sendPwCodeBtn').onclick = async () => {
     const current = $('currentPw').value, newPw = $('newPw').value, confirm = $('confirmPw').value;
     const btn = $('sendPwCodeBtn');
 
-    // Step 1: Validate inputs (client)
     setBtnLoading(btn, 'Checking fields…');
     await new Promise(r => setTimeout(r, 200));
 
@@ -1690,7 +1676,6 @@ function renderAccountTab() {
     if (newPw !== confirm) { resetBtn(btn); toast('Passwords do not match', 'error'); return; }
     if (current === newPw) { resetBtn(btn); toast('New password must be different', 'error'); return; }
 
-    // Step 2: Verify current password with server
     setBtnLoading(btn, 'Verifying current password…');
     try {
       const res = await fetch('/api/auth/verify-current-password', {
@@ -1700,13 +1685,11 @@ function renderAccountTab() {
       if (!res.ok) { resetBtn(btn); toast('Current password is incorrect', 'error'); return; }
       state._pendingPw = { current, newPw };
 
-      // Step 3: Send code
       setBtnLoading(btn, 'Sending code…');
       sendActionCode('change-password');
     } catch { resetBtn(btn); toast('Network error', 'error'); }
   };
 
-  // ── DELETE ACCOUNT: send code → verify ──
   $('deleteAccBtn').onclick = () => confirmAction({
     title: 'Delete your account?',
     text: 'This will permanently delete your account, chats, and files.',
@@ -1762,14 +1745,12 @@ function renderActionVerify(action, targetEmail) {
     if (code.length !== 6) { toast('Enter 6-digit code', 'error'); return; }
     const btn = $('actVerify');
 
-    // Step 1: Verify code
     setBtnLoading(btn, 'Verifying code…');
     try {
       const vres = await fetch('/api/auth/verify-action-code', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ pendingToken: state._pendingAction.token, code, action }) });
       const vdata = await vres.json();
       if (!vres.ok) { resetBtn(btn); toast(vdata.error || 'Invalid code', 'error'); return; }
 
-      // Step 2: Perform the action
       setBtnLoading(btn, workingLabel);
 
       if (action === 'change-email') {
@@ -1798,7 +1779,7 @@ function renderActionVerify(action, targetEmail) {
   };
 }
 
-// ============ SECURITY TAB — with granular statuses ============
+// ============ SECURITY TAB ============
 function renderSecurityTab() {
   const enabled = state.user.totp_enabled;
   settingsContent.innerHTML = `
@@ -1827,7 +1808,7 @@ async function setup2FA() {
       <p style="font-size:0.83rem;color:var(--text-muted);margin-bottom:0.5rem;">Or enter this key manually:</p>
       <div class="secret-box"><code>${escapeHtml(data.secret)}</code><button class="btn-secondary" id="copySecret" style="padding:0.4rem 0.7rem;font-size:0.8rem;">Copy</button></div>
       <div style="margin-top:1rem;">
-        <input type="text" id="faSetupCode" placeholder="Enter 6-digit code from app" maxlength="6" class="modal-input code-input" inputmode="numeric" />
+        <input type="text" id="faSetupCode" placeholder="Enter 6-digit code from app" maxlength="6" class="modal-input code-input" inputmode="numeric" autocomplete="one-time-code" />
         <button class="btn-primary" id="confirm2faBtn">Verify & enable</button>
       </div>
       <button class="link-btn" id="cancel2fa">Cancel</button>`;
@@ -1840,11 +1821,9 @@ async function setup2FA() {
       if (code.length !== 6) { toast('Enter the 6-digit code', 'error'); return; }
       const btn = $('confirm2faBtn');
 
-      // Step 1: Verify code
       setBtnLoading(btn, 'Verifying code…');
       await new Promise(r => setTimeout(r, 200));
 
-      // Step 2: Enable 2FA
       setBtnLoading(btn, 'Enabling 2FA…');
       try {
         const r = await fetch('/api/auth/2fa/enable', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) });
@@ -1862,7 +1841,7 @@ async function disable2FA() {
   settingsContent.innerHTML = `
     <h3>Disable 2FA</h3>
     <p class="modal-sub">Enter the 6-digit code from your authenticator app to confirm.</p>
-    <input type="text" id="faDisableCode" placeholder="000000" maxlength="6" class="modal-input code-input" inputmode="numeric" />
+    <input type="text" id="faDisableCode" placeholder="000000" maxlength="6" class="modal-input code-input" inputmode="numeric" autocomplete="one-time-code" />
     <button class="btn-danger" id="confirmDisableBtn">Disable 2FA</button>
     <button class="link-btn" id="cancelDisable">Cancel</button>`;
   refreshIcons();
@@ -1872,11 +1851,9 @@ async function disable2FA() {
     if (code.length !== 6) { toast('Enter the 6-digit code', 'error'); return; }
     const btn = $('confirmDisableBtn');
 
-    // Step 1: Verify code
     setBtnLoading(btn, 'Verifying code…');
     await new Promise(r => setTimeout(r, 200));
 
-    // Step 2: Disable
     setBtnLoading(btn, 'Disabling 2FA…');
     try {
       const r = await fetch('/api/auth/2fa/disable', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) });
