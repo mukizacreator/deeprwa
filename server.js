@@ -1,4 +1,4 @@
-// DeepRWA — Complete backend (rev.2.8.0)
+// DeepRWA — Complete backend (rev.2.8.2)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -172,12 +172,12 @@ async function trackSession(userId, req) {
       const { data: ex } = await supabase.from('sessions').select('id, revoked').eq('user_id', userId).eq('client_id', clientId).maybeSingle();
       if (ex) {
         await supabase.from('sessions').update({ device: ua.substring(0, 120), ip, user_agent: ua, last_active: new Date().toISOString(), revoked: false }).eq('id', ex.id);
-        console.log(`📌 Session updated for ${userId.slice(0,8)} (client: ${clientId.slice(0,12)}…)`);
+        console.log(`📌 Session updated for ${userId.slice(0,8)}`);
         return;
       }
     }
     await supabase.from('sessions').insert({ user_id: userId, client_id: clientId, device: ua.substring(0, 120), user_agent: ua, ip, revoked: false });
-    console.log(`📌 Session created for ${userId.slice(0,8)} (client: ${(clientId||'none').slice(0,12)}…)`);
+    console.log(`📌 Session created for ${userId.slice(0,8)}`);
   } catch (e) { console.warn('session track failed', e.message); }
 }
 
@@ -194,7 +194,8 @@ const SYSTEM_PROMPT = `You are **DeepRWA** — a professional, world-class AI as
 - Emmanuel graduated from **Karenge Adventist Secondary School (KASS)** with an Advanced Level certificate in **Computer System and Architecture (CSA)**.
 - Ornella graduated from **Lycée Saint Marcel de Rukara (LSM)** with an Advanced Level certificate in **Mathematics, Computer Science and Economics (MCE)**.
 - DeepRWA exists to make information about Rwanda easily accessible to everyone.
-- If a user asks about your platform, hosting, or creation, reply exactly: "I am DeepRWA, created by Emmanuel Mukiza under The Star🌟, specialised in information about Rwanda." — and nothing more.
+- If a user asks specifically "who are you", "who created you", "who made you", "what is your name", or similar *simple* identity questions, reply exactly: "I am DeepRWA, created by Emmanuel Mukiza under The Star🌟, specialised in information about Rwanda." — and nothing more.
+- If the user asks a longer, compound, or meta question (e.g. "Are you able to read files?", "Can you help me with X?", "What can you do?"), answer it like a normal professional assistant — do NOT paste the identity line.
 
 ## SCOPE
 You answer **only** questions about Rwanda. Everything about Rwanda is in scope.
@@ -204,10 +205,12 @@ If the user asks about **any other country** or a topic unrelated to Rwanda, rep
 Files (images, PDFs, text) uploaded by the user are subject to the same scope rule:
 - If the file content is about Rwanda, analyse it fully.
 - If the file content is clearly NOT about Rwanda, politely decline: "The file you uploaded appears to be about [topic], which is outside my scope. I'm specialised only in Rwanda. Please upload something Rwanda-related, or ask me a question about Rwanda."
-- Never analyse unrelated files in depth. Briefly acknowledge you can't help with it.
 
 ## GREETINGS AND SMALL TALK
-Greetings, thanks, goodbyes, "how are you", "who are you", "who made you" are NOT out of scope. Respond warmly and briefly, then invite a Rwanda-related question.
+Greetings, thanks, goodbyes, "how are you" are NOT out of scope. Respond warmly and briefly, then invite a Rwanda-related question.
+
+## META QUESTIONS ABOUT YOU
+Questions about your own capabilities (e.g. "Are you able to read files?", "What can you help with?", "Can you analyse documents?") are IN SCOPE — answer them truthfully and concisely as DeepRWA (you can read/analyse images, PDFs, text files; you answer about Rwanda; you can web search; etc.).
 
 ## LANGUAGE RULE
 Always reply in the **exact language the user wrote in**.
@@ -227,12 +230,38 @@ Always reply in the **exact language the user wrote in**.
 ## STYLE
 Warm, professional, concise, respectful.`;
 
-// ============ GREETINGS ============
+// ============ GREETINGS & IDENTITY (strict) ============
 const GREETING_EXACT = new Set(['hi','hello','hey','yo','hiya','howdy','sup','whats up',"what's up",'good morning','good afternoon','good evening','good night','thanks','thank you','thx','ty','bye','goodbye','see you','see ya','how are you',"how're you",'how are you doing','how do you do','muraho','mwaramutse','mwiriwe','amakuru','bite','bite se','bonjour','salut','bonsoir','coucou','comment ca va','comment ça va','ça va','ca va','jambo','habari','hujambo','sijambo','habari yako','nzuri','hola','olá','ciao','hallo','hei']);
-const IDENTITY_PATTERNS = [/\bwho\s+(are|r)\s+you\b/,/\bwhat\s+(are|r)\s+you\b/,/\bwho\s+made\s+you\b/,/\bwho\s+created\s+you\b/,/\bwho\s+built\s+you\b/,/\bwho\s+is\s+your\s+(creator|maker|owner|developer)\b/,/\bwhat\s+is\s+your\s+name\b/,/\byour\s+name\b/];
+// STRICT anchored patterns — the WHOLE message must be an identity question, not just contain one
+const IDENTITY_EXACT_PATTERNS = [
+  /^who\s+(are|r)\s+you$/,
+  /^what\s+(are|r)\s+you$/,
+  /^who\s+made\s+you$/,
+  /^who\s+created\s+you$/,
+  /^who\s+built\s+you$/,
+  /^who\s+designed\s+you$/,
+  /^who\s+developed\s+you$/,
+  /^who\s+is\s+your\s+(creator|maker|owner|developer)$/,
+  /^what\s+is\s+your\s+name$/,
+  /^your\s+name$/,
+  /^tell\s+me\s+about\s+(yourself|you)$/,
+  /^introduce\s+yourself$/,
+  /^who\s+am\s+i\s+talking\s+to$/
+];
 function normalise(t) { return String(t || '').toLowerCase().replace(/[’‘`]/g, "'").replace(/[^\p{L}\p{N}\s']/gu, ' ').replace(/\s+/g, ' ').trim(); }
-function isGreeting(t) { const n = normalise(t); if (!n) return false; if (GREETING_EXACT.has(n)) return true; if (n.length > 40) return false; return /^(hi|hey|hello|yo|muraho|bonjour|jambo|hola|ciao|hallo)\b/.test(n) && n.split(' ').length <= 4; }
-function isIdentityQuestion(t) { return IDENTITY_PATTERNS.some(r => r.test(normalise(t))); }
+function isGreeting(t) {
+  const n = normalise(t);
+  if (!n) return false;
+  if (n.length > 30) return false;
+  if (GREETING_EXACT.has(n)) return true;
+  return /^(hi|hey|hello|yo|muraho|bonjour|jambo|hola|ciao|hallo)\b/.test(n) && n.split(' ').length <= 3;
+}
+function isIdentityQuestion(t) {
+  const n = normalise(t);
+  if (!n) return false;
+  if (n.length > 60) return false;
+  return IDENTITY_EXACT_PATTERNS.some(r => r.test(n));
+}
 function buildGreetingReply(text) {
   const n = normalise(text);
   if (/\b(muraho|mwaramutse|mwiriwe|amakuru|bite)\b/.test(n)) return "Muraho! Ndine DeepRWA — umufasha wawe mu bya Rwanda. Mbaza ikibazo cyose ku Rwanda.";
@@ -247,16 +276,13 @@ function buildGreetingReply(text) {
 }
 const IDENTITY_REPLY = "I am DeepRWA, created by Emmanuel Mukiza under The Star🌟, specialised in information about Rwanda.";
 
-// ============ PROVIDER HELPERS ============
+// ============ PROVIDERS ============
 const cooldown = new Map();
 function isCooling(k) { const u = cooldown.get(k); if (!u) return false; if (Date.now() > u) { cooldown.delete(k); return false; } return true; }
 function setCooldown(k, ms) { cooldown.set(k, Date.now() + ms); }
 
 function sanitizeForProvider(messages) {
-  return messages.map(m => {
-    if (m.role === 'system') return { role: 'system', content: m.content };
-    return { role: m.role, content: m.content };
-  });
+  return messages.map(m => ({ role: m.role, content: m.content }));
 }
 
 async function* sseOpenAI(url, headers, body, timeoutMs = 30000) {
@@ -283,34 +309,29 @@ async function* sseOpenAI(url, headers, body, timeoutMs = 30000) {
 
 async function* streamGroq(msgs) {
   const k = 'groq'; if (isCooling(k)) throw new Error('cooling');
-  const sanitized = sanitizeForProvider(msgs);
-  try { yield* sseOpenAI('https://api.groq.com/openai/v1/chat/completions', { Authorization: `Bearer ${process.env.GROQ_API_KEY}` }, { model: 'openai/gpt-oss-120b', messages: sanitized, stream: true, temperature: 0.7, max_completion_tokens: 2048 }); }
+  try { yield* sseOpenAI('https://api.groq.com/openai/v1/chat/completions', { Authorization: `Bearer ${process.env.GROQ_API_KEY}` }, { model: 'openai/gpt-oss-120b', messages: sanitizeForProvider(msgs), stream: true, temperature: 0.7, max_completion_tokens: 2048 }); }
   catch (e) { setCooldown(k, e.status === 429 ? 120000 : 300000); throw e; }
 }
 async function* streamOpenRouter(msgs) {
   const k = 'or'; if (isCooling(k)) throw new Error('cooling');
-  const sanitized = sanitizeForProvider(msgs);
-  try { yield* sseOpenAI('https://openrouter.ai/api/v1/chat/completions', { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`, 'HTTP-Referer': 'https://deeprwa.agentdomains.co', 'X-Title': 'DeepRWA' }, { model: 'openrouter/free', messages: sanitized, stream: true, temperature: 0.7, max_tokens: 2048 }); }
+  try { yield* sseOpenAI('https://openrouter.ai/api/v1/chat/completions', { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`, 'HTTP-Referer': 'https://deeprwa.agentdomains.co', 'X-Title': 'DeepRWA' }, { model: 'openrouter/free', messages: sanitizeForProvider(msgs), stream: true, temperature: 0.7, max_tokens: 2048 }); }
   catch (e) { setCooldown(k, e.status === 429 ? 120000 : 300000); throw e; }
 }
 async function* streamNVIDIA(msgs) {
   const k = 'nv'; if (isCooling(k)) throw new Error('cooling');
-  const sanitized = sanitizeForProvider(msgs);
-  try { yield* sseOpenAI('https://integrate.api.nvidia.com/v1/chat/completions', { Authorization: `Bearer ${process.env.NVIDIA_API_KEY}` }, { model: 'nvidia/nemotron-3-super-120b-a12b', messages: sanitized, stream: true, temperature: 0.7, max_tokens: 2048 }); }
+  try { yield* sseOpenAI('https://integrate.api.nvidia.com/v1/chat/completions', { Authorization: `Bearer ${process.env.NVIDIA_API_KEY}` }, { model: 'nvidia/nemotron-3-super-120b-a12b', messages: sanitizeForProvider(msgs), stream: true, temperature: 0.7, max_tokens: 2048 }); }
   catch (e) { setCooldown(k, e.status === 429 ? 120000 : 300000); throw e; }
 }
 async function* streamPollinations(msgs) {
   const k = 'poll'; if (isCooling(k)) throw new Error('cooling');
-  const sanitized = sanitizeForProvider(msgs);
-  try { yield* sseOpenAI('https://text.pollinations.ai/openai', {}, { model: 'openai', messages: sanitized, stream: true, temperature: 0.7, max_tokens: 2048 }); }
+  try { yield* sseOpenAI('https://text.pollinations.ai/openai', {}, { model: 'openai', messages: sanitizeForProvider(msgs), stream: true, temperature: 0.7, max_tokens: 2048 }); }
   catch (e) { setCooldown(k, 120000); throw e; }
 }
 async function* streamCloudflare(msgs) {
   const k = 'cf'; if (isCooling(k)) throw new Error('cooling');
-  const sanitized = sanitizeForProvider(msgs);
   const url = `https://api.cloudflare.com/client/v4/accounts/${process.env.CF_ACCOUNT_ID}/ai/run/@cf/meta/llama-3.3-70b-instruct-fp8-fast`;
   try {
-    const res = await fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${process.env.CF_API_TOKEN}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: sanitized, stream: true }) });
+    const res = await fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${process.env.CF_API_TOKEN}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: sanitizeForProvider(msgs), stream: true }) });
     if (!res.ok) { const e = new Error(`CF HTTP ${res.status}`); e.status = res.status; throw e; }
     const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = '';
     while (true) {
@@ -351,7 +372,7 @@ async function* streamGemini(msgs) {
   } catch (e) { setCooldown(k, e.status === 429 ? 120000 : 300000); throw e; }
 }
 
-// ============ VISION PROVIDERS ============
+// ============ VISION ============
 async function* streamGeminiVision(messages, attachments) {
   const sanitized = sanitizeForProvider(messages);
   const sys = sanitized.filter(m => m.role === 'system').map(m => m.content).join('\n');
@@ -382,7 +403,6 @@ async function* streamOpenRouterVision(messages, attachments) {
   const images = attachments.filter(a => (a.mime || '').startsWith('image/'));
   if (!images.length) throw new Error('no images');
   const sanitized = sanitizeForProvider(messages);
-  // Build the multimodal content
   const lastIdx = sanitized.map(m => m.role).lastIndexOf('user');
   const content = [];
   content.push({ type: 'text', text: sanitized[lastIdx]?.content || 'Analyse the attached image(s).' });
@@ -391,7 +411,7 @@ async function* streamOpenRouterVision(messages, attachments) {
   yield* sseOpenAI(
     'https://openrouter.ai/api/v1/chat/completions',
     { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`, 'HTTP-Referer': 'https://deeprwa.agentdomains.co', 'X-Title': 'DeepRWA' },
-    { model: 'qwen/qwen2.5-vl-72b-instruct:free', messages: convo, stream: true, temperature: 0.7, max_tokens: 2048 },
+    { model: 'openrouter/free', messages: convo, stream: true, temperature: 0.7, max_tokens: 2048 },
     40000
   );
 }
@@ -428,22 +448,39 @@ const PROVIDERS = [
 ];
 
 // ============ TITLE ============
+function looksLikeCode(text) {
+  const t = String(text || '');
+  if (t.length < 20) return false;
+  const symbolCount = (t.match(/[{}()\[\]<>;=+\-*/%&|!?@#$^~`]/g) || []).length;
+  if (symbolCount > 15 && symbolCount / t.length > 0.05) return true;
+  const codeKeywords = /\b(function|const|let|var|return|import|export|class|def|async|await|fetch\s*\(|=>|===|!==|if\s*\(|for\s*\(|while\s*\()/;
+  return codeKeywords.test(t);
+}
+
 async function generateChatTitle(firstMessage) {
   if (!firstMessage) return 'New chat';
   if (isGreeting(firstMessage)) return 'Greeting';
   if (isIdentityQuestion(firstMessage)) return 'About DeepRWA';
 
-  const textOnly = String(firstMessage).slice(0, 400);
+  const fullText = String(firstMessage).slice(0, 500);
+
+  // If it clearly looks like code, return a sensible default (avoids LLM wasting tokens)
+  if (looksLikeCode(fullText)) {
+    const lang = fullText.match(/^\s*(const|let|var|function|def|class|import|from|#!/) /) ? 'Code' : 'Code help';
+    return lang;
+  }
+
   const prompt = [
-    { role: 'system', content: 'You generate short, descriptive chat titles. Reply with ONLY 2-5 words. No quotes, no prefix, no period.' },
-    { role: 'user', content: textOnly }
+    { role: 'system', content: 'You name chat conversations. Read the user\'s first message and reply with ONLY a 2-5 word title that describes the topic. Do NOT repeat the user\'s words. Do NOT use quotes, punctuation, or prefixes. Examples: "Rwandan History", "Kigali Hotels", "Coffee Prices Rwanda", "Volcanoes Park Visit", "Umuganda Culture"' },
+    { role: 'user', content: fullText.slice(0, 300) }
   ];
 
+  // Try Groq
   try {
     const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'openai/gpt-oss-120b', messages: prompt, max_completion_tokens: 25, reasoning_effort: 'none', temperature: 0.3 })
+      body: JSON.stringify({ model: 'openai/gpt-oss-120b', messages: prompt, max_completion_tokens: 25, reasoning_effort: 'none', temperature: 0.5 })
     });
     if (res.ok) {
       const data = await res.json();
@@ -452,33 +489,48 @@ async function generateChatTitle(firstMessage) {
         .replace(/^Title:\s*/i, '')
         .split('\n')[0].trim()
         .replace(/[.!?,;:]+$/, '');
-      if (t && t.length <= 60) return t;
+      if (t && t.length >= 3 && t.length <= 60) {
+        console.log(`[title] Groq: "${t}"`);
+        return t;
+      }
     }
-  } catch {}
+  } catch (e) { console.warn('[title] Groq failed:', e.message); }
 
+  // Try Gemini
   try {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
     const res = await fetch(url, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text: `Give a 2-5 word title for this chat. Reply ONLY with the title, no punctuation. Message: "${textOnly}"` }] }],
-        generationConfig: { temperature: 0.3, maxOutputTokens: 30 }
+        contents: [{ role: 'user', parts: [{ text: `Name this conversation in 2-5 words. Reply ONLY with the title. Do not repeat the user's words.\n\nMessage: "${fullText.slice(0, 300)}"` }] }],
+        generationConfig: { temperature: 0.5, maxOutputTokens: 30 }
       })
     });
     if (res.ok) {
       const data = await res.json();
       let t = (data.candidates?.[0]?.content?.parts?.[0]?.text || '').trim()
-        .replace(/^["'`\s]+|["'`\s]+$/g, '').split('\n')[0].trim().replace(/[.!?,;:]+$/, '');
-      if (t && t.length <= 60) return t;
+        .replace(/^["'`\s]+|["'`\s]+$/g, '')
+        .replace(/^Title:\s*/i, '')
+        .split('\n')[0].trim()
+        .replace(/[.!?,;:]+$/, '');
+      if (t && t.length >= 3 && t.length <= 60) {
+        console.log(`[title] Gemini: "${t}"`);
+        return t;
+      }
     }
-  } catch {}
+  } catch (e) { console.warn('[title] Gemini failed:', e.message); }
 
-  return textOnly.split(/\s+/).slice(0, 5).join(' ') || 'New chat';
+  // Fallback: first 5 meaningful words, filtering out stop words
+  const stop = new Set(['the','a','an','is','are','was','were','to','of','and','or','but','in','on','at','for','with','about','by','from','as','this','that','it','be','i','you','we','they','he','she','my','your','our']);
+  const words = fullText.replace(/\s+/g, ' ').split(' ').filter(w => w.length > 2 && !stop.has(w.toLowerCase())).slice(0, 5);
+  const fallback = words.join(' ').slice(0, 60).replace(/[.!?,;:]+$/, '');
+  console.log(`[title] fallback: "${fallback}"`);
+  return fallback || 'New chat';
 }
 
 // ============ ROUTES ============
-app.get('/health', (req, res) => res.json({ status: 'ok', service: 'DeepRWA', version: '2.8.0', time: new Date().toISOString() }));
-app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '2.8.0', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
+app.get('/health', (req, res) => res.json({ status: 'ok', service: 'DeepRWA', version: '2.8.2', time: new Date().toISOString() }));
+app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '2.8.2', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
 app.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nSitemap: https://deeprwa.agentdomains.co/sitemap.xml\n`));
 app.get('/sitemap.xml', (req, res) => res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>https://deeprwa.agentdomains.co/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>\n</urlset>`));
 
@@ -735,7 +787,6 @@ app.get('/api/auth/sessions', requireAuth, async (req, res) => {
   const sessions = (data || []).map(s => ({ ...s, current: s.client_id === clientId }));
   res.json({ sessions });
 });
-
 app.get('/api/auth/session-check', requireAuth, async (req, res) => {
   const clientId = (req.headers['x-client-id'] || '').toString().trim().slice(0, 80) || null;
   if (!clientId) return res.json({ valid: true });
@@ -750,7 +801,6 @@ app.get('/api/auth/session-check', requireAuth, async (req, res) => {
   await supabase.from('sessions').insert({ user_id: req.userId, client_id: clientId, device: ua.substring(0, 120), user_agent: ua, ip, revoked: false });
   return res.json({ valid: true });
 });
-
 app.delete('/api/auth/sessions/:id', requireAuth, async (req, res) => {
   const clientId = req.headers['x-client-id'] || '';
   const { data: row } = await supabase.from('sessions').select('client_id').eq('id', req.params.id).eq('user_id', req.userId).maybeSingle();
@@ -758,7 +808,6 @@ app.delete('/api/auth/sessions/:id', requireAuth, async (req, res) => {
   await supabase.from('sessions').update({ revoked: true, last_active: new Date().toISOString() }).eq('id', req.params.id).eq('user_id', req.userId);
   res.json({ success: true });
 });
-
 app.delete('/api/auth/sessions-all-others', requireAuth, async (req, res) => {
   const clientId = req.headers['x-client-id'] || '';
   if (!clientId) return res.status(400).json({ error: 'Missing client id' });
@@ -766,7 +815,6 @@ app.delete('/api/auth/sessions-all-others', requireAuth, async (req, res) => {
   if (error) return res.status(500).json({ error: error.message });
   res.json({ success: true });
 });
-
 app.delete('/api/auth/sessions-current', requireAuth, async (req, res) => {
   const clientId = req.headers['x-client-id'] || '';
   if (!clientId) return res.json({ success: true });
@@ -790,7 +838,7 @@ app.post('/api/upload', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// FILES LIST
+// FILES LIST (basic)
 app.get('/api/files', requireAuth, async (req, res) => {
   try {
     const { data: convs } = await supabase.from('conversations').select('id').eq('user_id', req.userId);
@@ -805,6 +853,7 @@ app.get('/api/files', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message, files: [] }); }
 });
 
+// FILES LIST with IDs
 app.get('/api/files-with-ids', requireAuth, async (req, res) => {
   try {
     const { data: convs } = await supabase.from('conversations').select('id').eq('user_id', req.userId);
@@ -819,6 +868,7 @@ app.get('/api/files-with-ids', requireAuth, async (req, res) => {
         });
       }
     }
+    console.log(`[files-with-ids] ${all.length} files for user ${req.userId.slice(0,8)}`);
     res.json({ files: all });
   } catch (e) { res.status(500).json({ error: e.message, files: [] }); }
 });
@@ -838,20 +888,21 @@ app.delete('/api/files/:messageId/:fileIndex', requireAuth, async (req, res) => 
   res.json({ success: true });
 });
 
-// CHAT TITLE
+// TITLE
 app.post('/api/chat/title', async (req, res) => {
   const { message } = req.body || {};
   if (!message) return res.status(400).json({ error: 'message required' });
   res.json({ title: await generateChatTitle(message) });
 });
 
-// CHAT
+// CHAT: guest
 app.post('/api/chat/guest', async (req, res) => {
   const { messages, attachments } = req.body || {};
   if (!Array.isArray(messages) || !messages.length) return res.status(400).json({ error: 'messages required' });
   await streamChatResponse(messages, res, null, attachments || []);
 });
 
+// CHAT: authenticated
 app.post('/api/chat', requireAuth, async (req, res) => {
   const { messages, conversationId, attachments } = req.body || {};
   if (!Array.isArray(messages) || !messages.length) return res.status(400).json({ error: 'messages required' });
@@ -862,10 +913,13 @@ app.post('/api/chat', requireAuth, async (req, res) => {
     const { data: conv, error } = await supabase.from('conversations').insert({ user_id: req.userId, title }).select().single();
     if (error) return res.status(500).json({ error: error.message });
     convId = conv.id;
+    console.log(`[chat] new conv created for user ${req.userId.slice(0,8)}: "${title}"`);
   }
   const lastMsg = messages[messages.length - 1];
   if (lastMsg?.role === 'user') {
-    await supabase.from('messages').insert({ conversation_id: convId, role: 'user', content: lastMsg.content, files: Array.isArray(lastMsg.files) ? lastMsg.files : [] });
+    const filesArray = Array.isArray(lastMsg.files) ? lastMsg.files : [];
+    await supabase.from('messages').insert({ conversation_id: convId, role: 'user', content: lastMsg.content, files: filesArray });
+    console.log(`[chat] user msg saved (${filesArray.length} files)`);
   }
   res.setHeader('X-Conversation-Id', convId);
   await streamChatResponse(messages, res, convId, attachments || []);
@@ -883,9 +937,18 @@ async function streamChatResponse(messages, res, conversationId, attachments) {
   const lastUser = [...messages].reverse().find(m => m.role === 'user');
   const userText = lastUser?.content || '';
 
+  // Fast paths — only apply when there are NO attachments AND the message is short
   if ((!attachments || !attachments.length)) {
-    if (isIdentityQuestion(userText)) { send({ text: IDENTITY_REPLY }); return done(); }
-    if (isGreeting(userText) && messages.length <= 2) { send({ text: buildGreetingReply(userText) }); return done(); }
+    if (isIdentityQuestion(userText)) {
+      console.log(`[identity-fast] matched: "${userText.slice(0, 80)}"`);
+      send({ text: IDENTITY_REPLY });
+      return done();
+    }
+    if (isGreeting(userText) && messages.length <= 2) {
+      console.log(`[greeting-fast] matched: "${userText.slice(0, 80)}"`);
+      send({ text: buildGreetingReply(userText) });
+      return done();
+    }
   }
 
   let fullText = '';
@@ -935,14 +998,12 @@ app.get('/api/conversations', requireAuth, async (req, res) => {
   const { data } = await supabase.from('conversations').select('*').eq('user_id', req.userId).order('updated_at', { ascending: false });
   res.json({ conversations: data || [] });
 });
-
 app.get('/api/conversations/:id/messages', requireAuth, async (req, res) => {
   const { data: conv } = await supabase.from('conversations').select('user_id').eq('id', req.params.id).single();
   if (!conv || conv.user_id !== req.userId) return res.status(403).json({ error: 'Not allowed' });
   const { data } = await supabase.from('messages').select('*').eq('conversation_id', req.params.id).order('created_at', { ascending: true });
   res.json({ messages: data || [] });
 });
-
 app.patch('/api/conversations/:id', requireAuth, async (req, res) => {
   const { title, pinned } = req.body || {};
   const updates = {};
@@ -951,12 +1012,10 @@ app.patch('/api/conversations/:id', requireAuth, async (req, res) => {
   await supabase.from('conversations').update(updates).eq('id', req.params.id).eq('user_id', req.userId);
   res.json({ success: true });
 });
-
 app.delete('/api/conversations/:id', requireAuth, async (req, res) => {
   await supabase.from('conversations').delete().eq('id', req.params.id).eq('user_id', req.userId);
   res.json({ success: true });
 });
-
 app.post('/api/chat/messages/:id/sync-versions', requireAuth, async (req, res) => {
   const { id } = req.params;
   const { userMessageContent, userMessageFiles, versions, versionFiles, aiReplies, aiFiles, currentVersionIndex, assistantContent, assistantFiles } = req.body || {};
@@ -980,7 +1039,6 @@ app.post('/api/share/guest', async (req, res) => {
   if (error) return res.status(500).json({ error: error.message });
   res.json({ token, url: `https://deeprwa.agentdomains.co/share/${token}` });
 });
-
 app.get('/api/share/:token', async (req, res) => {
   const { token } = req.params;
   const { data: guestShare } = await supabase.from('guest_shares').select('messages').eq('token', token).maybeSingle();
@@ -992,7 +1050,6 @@ app.get('/api/share/:token', async (req, res) => {
   }
   res.status(404).json({ error: 'Not found' });
 });
-
 app.get('/share/:token', (req, res) => res.sendFile(path.join(__dirname, 'public', 'share.html')));
 
 // STATIC
