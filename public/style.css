@@ -78,6 +78,17 @@ body {
 img, svg, video { max-width: 100%; height: auto; display: block; }
 button { font-family: inherit; }
 
+/* Touch / pen responsiveness: make every interactive element respond
+   to a single tap without the 300ms legacy delay and without needing hover. */
+button, a, [role="button"],
+.chip, .nav-item, .chat-item, .file-item, .file-item-wrap,
+.msg-action, .attach-btn, .send-btn, .icon-btn, .new-chat-btn, .auth-btn,
+.files-ms-btn, .link-btn, .vs-btn, .settings-tab, .modal-close, .input-toggle,
+.file-checkbox, .file-remove, .file-item-menu, .chat-item-menu,
+.account-info, .edit-textarea, .modal-input, #input {
+  touch-action: manipulation;
+}
+
 .bubble, .assistant-text, .file-item-name, .chat-item-title,
 .account-email, .modal-body p, .modal-body h3 {
   overflow-wrap: anywhere;
@@ -247,6 +258,8 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   text-overflow: ellipsis;
   min-width: 0;
 }
+/* Chat item menu — visible by default so touch / pen users can tap it.
+   Faded in only on devices that truly have a fine pointer + hover. */
 .chat-item-menu {
   background: transparent;
   border: none;
@@ -257,13 +270,16 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   display: grid;
   place-items: center;
   cursor: pointer;
-  opacity: 0;
+  opacity: 1;
   transition: opacity 0.15s, background 0.15s;
   flex-shrink: 0;
 }
-.chat-item:hover .chat-item-menu { opacity: 1; }
 .chat-item-menu:hover { background: var(--surface-3); color: var(--text); }
 .chat-item-menu svg { width: 14px; height: 14px; }
+@media (hover: hover) and (pointer: fine) {
+  .chat-item-menu { opacity: 0; }
+  .chat-item:hover .chat-item-menu { opacity: 1; }
+}
 
 /* Files */
 .file-item-wrap {
@@ -308,6 +324,7 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
 .file-item-info { flex: 1; min-width: 0; }
 .file-item-name { font-size: var(--fs-sm); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .file-item-meta { font-size: var(--fs-xs); color: var(--text-dim); }
+/* File item menu — visible by default so touch / pen users can tap it. */
 .file-item-menu {
   flex-shrink: 0;
   background: transparent;
@@ -317,13 +334,16 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   border-radius: 6px;
   display: grid; place-items: center;
   cursor: pointer;
-  opacity: 0;
+  opacity: 1;
   transition: opacity 0.15s, background 0.15s;
 }
-.file-item-wrap:hover .file-item-menu,
-.file-item-menu:focus { opacity: 1; }
 .file-item-menu:hover { background: var(--surface-3); color: var(--text); }
 .file-item-menu svg { width: 15px; height: 15px; }
+@media (hover: hover) and (pointer: fine) {
+  .file-item-menu { opacity: 0; }
+  .file-item-wrap:hover .file-item-menu,
+  .file-item-menu:focus { opacity: 1; }
+}
 
 .file-checkbox {
   position: relative;
@@ -683,18 +703,22 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   margin: 0 0 0.75rem;
 }
 
-/* Message actions */
+/* Message actions — visible by default so touch / pen users can tap them.
+   Faded behind hover only on devices that truly have a fine pointer + hover. */
 .msg-actions {
   display: flex;
   gap: 2px;
   margin-top: 0.35rem;
-  opacity: 0;
+  opacity: 1;
   transition: opacity 0.15s;
   flex-wrap: wrap;
 }
-.msg:hover .msg-actions,
-.msg-actions:not(:empty):not(.hidden) { opacity: 1; }
 .msg-actions-user { justify-content: flex-end; }
+@media (hover: hover) and (pointer: fine) {
+  .msg-actions { opacity: 0; }
+  .msg:hover .msg-actions,
+  .msg:focus-within .msg-actions { opacity: 1; }
+}
 .msg-action {
   background: transparent;
   border: none;
