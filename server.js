@@ -1,4 +1,4 @@
-// DeepRWA — Complete backend (rev.2.9.0)
+// DeepRWA — Complete backend (rev.3.0.0)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -239,7 +239,18 @@ Always reply in the **exact language the user wrote in**. Kinyarwanda → Kinyar
 Warm, professional, concise, respectful.`;
 
 // ============ GREETINGS & IDENTITY (strict) ============
-const GREETING_EXACT = new Set(['hi','hello','hey','yo','hiya','howdy','sup','whats up',"what's up",'good morning','good afternoon','good evening','good night','thanks','thank you','thx','ty','bye','goodbye','see you','see ya','how are you',"how're you",'how are you doing','how do you do','muraho','mwaramutse','mwiriwe','amakuru','bite','bite se','bonjour','salut','bonsoir','coucou','comment ca va','comment ça va','ça va','ca va','jambo','habari','hujambo','sijambo','habari yako','nzuri','hola','olá','ciao','hallo','hei']);
+const GREETING_EXACT = new Set([
+  'hi','hello','hey','yo','hiya','howdy','sup','whats up',"what's up",
+  'good morning','good afternoon','good evening','good night',
+  'thanks','thank you','thx','ty','bye','goodbye','see you','see ya',
+  'how are you',"how're you",'how are you doing','how do you do',
+  'how are you today','how is it going',"how's it going",'how have you been','how are things',
+  'nice to meet you','long time no see','whats good',
+  'muraho','mwaramutse','mwiriwe','amakuru','bite','bite se','uri amakuru','wiriwe',
+  'bonjour','salut','bonsoir','coucou','comment ca va','comment ça va','ça va','ca va','comment vas tu','comment allez vous',
+  'jambo','habari','hujambo','sijambo','habari yako','nzuri','habari gani',
+  'hola','olá','ciao','hallo','hei','hej'
+]);
 const IDENTITY_EXACT_PATTERNS = [
   /^who\s+(are|r)\s+you$/,
   /^what\s+(are|r)\s+you$/,
@@ -256,6 +267,7 @@ const IDENTITY_EXACT_PATTERNS = [
   /^who\s+am\s+i\s+talking\s+to$/
 ];
 function normalise(t) { return String(t || '').toLowerCase().replace(/[’‘`]/g, "'").replace(/[^\p{L}\p{N}\s']/gu, ' ').replace(/\s+/g, ' ').trim(); }
+
 function isGreeting(t) {
   const n = normalise(t);
   if (!n) return false;
@@ -454,20 +466,42 @@ const PROVIDERS = [
   { name: 'Pollinations', fn: streamPollinations }
 ];
 
-// ============ TITLE GENERATION ============
-// Full ChatGPT-style title system: language-aware shortcuts, image-request patterns,
-// multi-provider ladder, robust output cleaning, and local fallback.
+// ============================================================
+// TITLE GENERATION — rev.3.0.0
+// Goals:
+//   - Never echo the user's wording back as the title
+//   - Understand the topic / intent, then produce a 2–6 word name
+//   - Greetings, thanks, identity questions get labelled, not quoted
+//   - The local fallback (used only when every LLM fails) never quotes
+// ============================================================
+
+// --- 1. GREETING / SMALL-TALK DETECTION (expanded) ---
 
 function isGreetingOnly(msg) {
-  const n = String(msg || '').toLowerCase().replace(/[’‘`]/g, "'").replace(/[^\p{L}\p{N}\s']/gu, ' ').replace(/\s+/g, ' ').trim();
-  if (!n || n.length > 30) return false;
+  const n = normalise(msg);
+  if (!n) return false;
+  if (n.length > 80) return false;
   if (GREETING_EXACT.has(n)) return true;
-  return /^(hi|hey|hello|yo|muraho|mwaramutse|mwiriwe|bonjour|salut|jambo|habari|hola|ciao|hallo|hei)\b/.test(n) && n.split(' ').length <= 3;
+
+  const words = n.split(' ');
+
+  // A short message that begins with a greeting, with no substantive topic
+  const startsWithGreeting = /^(hi|hey|hello|yo|hiya|howdy|sup|muraho|mwaramutse|mwiriwe|wiriwe|bonjour|salut|bonsoir|coucou|jambo|habari|hujambo|hola|ciao|hallo|hei|hej)\b/.test(n);
+  if (startsWithGreeting && words.length <= 8) {
+    const hasTopic = /\b(rwanda|kigali|rwandan|province|district|sector|cell|village|history|culture|tourism|tourist|price|cost|story|news|people|person|place|city|school|university|hospital|food|recipe|market|company|business|explain|tell me about|how to|how do i|what is|what are|where is|where are|when is|when was|why is|why are|who is|who are|who was|show me|give me)\b/.test(n);
+    if (!hasTopic) return true;
+  }
+
+  // Standalone small-talk phrases
+  if (/^(how are you|how're you|how is it going|how's it going|how have you been|how are things|what's up|whats up|nice to meet you|long time no see|good (morning|afternoon|evening|night)|comment ca va|comment ça va|comment vas tu|comment allez vous)\b/.test(n)) return true;
+
+  return false;
 }
 
 function isCreatorQuestion(msg) {
-  const n = String(msg || '').toLowerCase().replace(/[’‘`]/g, "'").replace(/[^\p{L}\p{N}\s']/gu, ' ').replace(/\s+/g, ' ').trim();
-  if (!n || n.length > 60) return false;
+  const n = normalise(msg);
+  if (!n) return false;
+  if (n.length > 60) return false;
   return IDENTITY_EXACT_PATTERNS.some(r => r.test(n));
 }
 
@@ -497,74 +531,125 @@ function extractImagePrompt(msg) {
   return n;
 }
 
+// --- 2. CLEANING + ECHO REJECTION ---
+
+// Reject any candidate title that is essentially a quote of the user's message.
+function isEchoOfMessage(title, originalMsg) {
+  const tNorm = String(title || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+  const mNorm = String(originalMsg || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+  if (!tNorm || !mNorm) return false;
+
+  // Exact match
+  if (tNorm === mNorm) return true;
+
+  // Title is a direct substring of the message (e.g. "Just Two Bubbles" inside "Just two bubbles: the user…")
+  if (tNorm.length >= 4 && mNorm.includes(tNorm)) return true;
+
+  // Title is the start of the message word-for-word
+  if (tNorm.length >= 4 && mNorm.startsWith(tNorm)) return true;
+
+  // Word-order subsequence: every content word of the title appears
+  // in the message, in the same order — that's a truncated quote.
+  const tWords = tNorm.split(' ').filter(w => w.length >= 3);
+  if (tWords.length < 2) return false;
+  const mWords = mNorm.split(' ');
+  let idx = 0, matches = 0;
+  for (const tw of tWords) {
+    while (idx < mWords.length) {
+      const mw = mWords[idx];
+      if (mw === tw || mw.startsWith(tw) || tw.startsWith(mw)) { matches++; idx++; break; }
+      idx++;
+    }
+  }
+  return matches === tWords.length;
+}
+
 function cleanTitle(raw, originalMsg) {
   let t = String(raw || '').trim();
   if (!t) return null;
 
-  // Strip surrounding quotes (any flavour)
+  // Strip quotes (any flavour)
   t = t.replace(/^["'`“”‘’]+|["'`“”‘’]+$/g, '');
-  // Strip trailing periods
-  t = t.replace(/\.+$/, '').trim();
+  // Strip trailing periods / colons
+  t = t.replace(/[.:;,!]+$/, '').trim();
   // Strip "Title:" / "Chat title:" / "Chat:" prefix
   if (/^(title|chat title|chat)\s*[:\-]\s*/i.test(t)) {
     t = t.replace(/^(title|chat title|chat)\s*[:\-]\s*/i, '').trim();
   }
-  // Multi-line: pick shortest meaningful line
+  // Multi-line: pick the shortest meaningful line
   const lines = t.split('\n').map(l => l.trim()).filter(Boolean);
   if (lines.length > 1) {
     const short = lines.find(l => l.length <= 60 && !/^(sure|here|the title|of course|okay)/i.test(l)) || lines[0];
     t = short;
   }
-  // Strip any remaining quotes/backticks at the ends
+  // Strip any remaining quotes / backticks
   t = t.replace(/^["'`“”‘’]+|["'`“”‘’]+$/g, '').trim();
   t = t.replace(/\.+$/, '').trim();
-
   if (!t) return null;
-
-  // Reject if identical to the user's message
-  const msgNorm = String(originalMsg || '').toLowerCase().replace(/\s+/g, ' ').trim();
-  const tNorm = t.toLowerCase().replace(/\s+/g, ' ').trim();
-  if (tNorm === msgNorm) return null;
 
   // Hard cap
   if (t.length > 80) t = t.substring(0, 80).trim();
 
+  // Reject if the candidate is a quote of the message
+  if (isEchoOfMessage(t, originalMsg)) return null;
+
   return t;
 }
 
+// --- 3. PROMPT ---
+
 function buildTitlePrompt(msg) {
   const truncated = String(msg).substring(0, 800);
-  return `You write short titles for chat conversations, in the style of ChatGPT sidebar names.
+  return `You are an expert at naming chat conversations in the style of ChatGPT's sidebar.
 
-Read the USER MESSAGE below. Reply with ONLY the conversation title — never repeat the user's exact words.
+Read the USER MESSAGE and write a SHORT TITLE that describes the TOPIC or INTENT.
+You must NEVER repeat, quote, or paraphrase the user's exact wording back as the title.
 
 Strict rules:
-- 2 to 6 words. Title Case or sentence case.
-- Focus on the TOPIC or INTENT, not a quote of their sentence.
-- No quotation marks, no trailing period, no prefix like "Title:".
-- If the message is a greeting or small talk, reply exactly: Greeting
-- If the message asks who you are / who made you, reply exactly: About This Assistant
-- If the message asks for an image/photo/picture of something, use the pattern: X Photo (e.g. "Maize Photo", "Dairy Cow Photo", "Coffee Farm Photo")
-- If the message asks for the meaning/definition of something, use: Meaning of X
-- If the message asks how to do something, use: How to X
-- If the message describes a problem, use: X Problem or X Diagnosis
+- 2 to 6 words. Title Case.
+- Describe the SUBJECT, not the sentence.
+- Do NOT copy phrases from the message. Use your own words.
+- No quotation marks. No trailing period. No prefix like "Title:".
+
+Special cases (reply with EXACTLY the given text):
+- If the message is a greeting, thanks, or goodbye → Greeting
+- If the message asks who you are / who made you → About This Assistant
+- If the message asks what you can do / your capabilities → Assistant Capabilities
+
+Topic patterns (use these shapes):
+- Asking the meaning of X → Meaning of X
+- Asking how to do X → How to X
+- Describing a problem → X Problem  (e.g. "My maize leaves are yellow…" → Maize Leaf Problem)
+- Asking for an image/photo/picture of X → X Photo  (e.g. "generate a photo of maize" → Maize Photo)
+- Describing a share / export / tech feature → <Subject> Sharing  (e.g. "I want the user message and AI reply only, no switcher, no other versions" → Single Message Sharing)
+- Asking about a person → About <Name>
+- Asking about a place → <Place Name>
+- Asking about a topic → <Topic Name>
 
 Examples:
-USER: "Hi, what is your name?" → Greeting and Introduction
+USER: "Hi, how are you?" → Greeting
+USER: "Hello" → Greeting
+USER: "Thanks a lot!" → Greeting
+USER: "Who created you?" → About This Assistant
+USER: "What can you do?" → Assistant Capabilities
 USER: "What is the agriculture mean?" → Meaning of Agriculture
 USER: "How do I treat tomato blight?" → Tomato Blight Treatment
-USER: "My maize leaves are yellow with brown spots, what should I do?" → Maize Leaf Yellowing Diagnosis
+USER: "My maize leaves are yellow with brown spots, what should I do?" → Maize Leaf Problem
 USER: "create a photo of maize" → Maize Photo
 USER: "generate an image of cows in a field" → Cows in Field Photo
-USER: "provide a photo of a coffee farm" → Coffee Farm Photo
-USER: "Hello" → Greeting
-USER: "Who created you?" → About This Assistant
+USER: "Just two bubbles: the user message and its AI reply. No switcher, no other versions." → Single Message Sharing
+USER: "I want to export only one version of a chat with its files" → Single Version Export
+USER: "Tell me about the history of Rwanda" → Rwandan History
+USER: "Who was King Rudahigwa?" → About King Rudahigwa
+USER: "What are the top tourist attractions in Rwanda?" → Rwanda Tourist Attractions
 
 USER MESSAGE:
 ${truncated}
 
 Title:`;
 }
+
+// --- 4. LLM CALLS ---
 
 async function callTitleModel({ url, headers, model, prompt, timeoutMs = 20000 }) {
   const ctrl = new AbortController();
@@ -608,6 +693,7 @@ async function generateTitleViaProviders(msg) {
         });
         const cleaned = cleanTitle(raw, msg);
         if (cleaned) { console.log(`[title] Groq ${model}: "${cleaned}"`); return cleaned; }
+        else console.warn(`[title] Groq ${model} produced an echo — rejected: "${String(raw).slice(0,60)}"`);
       } catch (e) {
         console.warn(`[title] Groq ${model} failed:`, e.message);
       }
@@ -629,6 +715,7 @@ async function generateTitleViaProviders(msg) {
       });
       const cleaned = cleanTitle(raw, msg);
       if (cleaned) { console.log(`[title] OpenRouter: "${cleaned}"`); return cleaned; }
+      else console.warn(`[title] OpenRouter produced an echo — rejected`);
     } catch (e) {
       console.warn('[title] OpenRouter failed:', e.message);
     }
@@ -651,6 +738,7 @@ async function generateTitleViaProviders(msg) {
         const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
         const cleaned = cleanTitle(raw, msg);
         if (cleaned) { console.log(`[title] Gemini: "${cleaned}"`); return cleaned; }
+        else console.warn(`[title] Gemini produced an echo — rejected`);
       }
     } catch (e) {
       console.warn('[title] Gemini failed:', e.message);
@@ -660,10 +748,73 @@ async function generateTitleViaProviders(msg) {
   return null;
 }
 
+// --- 5. LOCAL FALLBACK (never echoes) ---
+
+const TITLE_STOPWORDS = new Set([
+  'a','an','and','or','but','if','then','else','when','where','while','of','to','in','on','at','by',
+  'for','with','about','against','between','into','through','during','before','after','above','below',
+  'from','up','down','out','off','over','under','again','further','once','here','there','all','any',
+  'both','each','few','more','most','other','some','such','no','nor','not','only','own','same','so',
+  'than','too','very','can','will','just','dont','don','should','now','is','are','was','were','be',
+  'been','being','have','has','had','do','does','did','would','could','should','may','might','must',
+  'shall','i','you','he','she','it','we','they','me','him','her','us','them','my','your','his',
+  'their','our','this','that','these','those','what','which','who','whom','whose','how','why','when',
+  'where','please','hi','hello','hey','thanks','thank','ok','okay','yes','no','like','want','need',
+  'get','got','give','make','made','let','lets','put','see','say','said','go','going','come','came',
+  'also','too','really','much','many','lot','lots','thing','things','stuff','way','ways'
+]);
+
+function extractObjectAfter(msg, match) {
+  const after = msg.slice(match.index + match[0].length).trim();
+  const words = after.split(/\s+/).map(w => w.replace(/[^\p{L}\p{N}]/gu, '')).filter(w => w.length > 2 && !TITLE_STOPWORDS.has(w.toLowerCase()));
+  return words.slice(0, 3).join(' ').substring(0, 50) || null;
+}
+
+function localFallbackTitle(msg, isImg) {
+  if (isImg) {
+    const p = extractImagePrompt(msg).split(/\s+/).slice(0, 4).join(' ').trim();
+    return p ? `${p} Photo` : 'Image Request';
+  }
+
+  // Common question forms
+  const qPatterns = [
+    { re: /\b(what is|what are|whats|what's)\b/i, prefix: 'Meaning of' },
+    { re: /\b(define|definition of|meaning of)\b/i, prefix: 'Meaning of' },
+    { re: /\b(how to|how do i|how can i|how does one)\b/i, prefix: 'How to' },
+    { re: /\b(who is|who are|who was)\b/i, prefix: 'About' },
+    { re: /\b(where is|where are|wheres|where's)\b/i, prefix: 'Location of' },
+  ];
+  for (const { re, prefix } of qPatterns) {
+    const m = msg.match(re);
+    if (m) {
+      const obj = extractObjectAfter(msg, m);
+      return obj ? `${prefix} ${obj}`.substring(0, 60) : prefix;
+    }
+  }
+
+  // Request patterns
+  if (/\b(create|generate|draw|make|produce)\b/i.test(msg)) {
+    const m = msg.match(/\b(create|generate|draw|make|produce)\b/i);
+    const obj = extractObjectAfter(msg, m);
+    return obj ? obj.substring(0, 60) : 'Request';
+  }
+
+  // Topics explicitly mentioned
+  if (/\b(rwanda|kigali)\b/i.test(msg)) return 'About Rwanda';
+
+  // Long / technical messages with no clear question: give a generic, non-echo label
+  if (msg.length > 200) return 'Long Message';
+  if (msg.length <= 20) return 'Short Message';
+  return 'New chat';
+}
+
+// --- 6. ORCHESTRATOR ---
+
 async function generateChatTitle(firstMessage) {
   const msg = String(firstMessage || '').trim();
   if (!msg) return 'New chat';
 
+  // Deterministic shortcuts (no LLM needed)
   if (isGreetingOnly(msg)) {
     const label = greetingLabel(msg);
     console.log(`[title] greeting shortcut: "${label}"`);
@@ -676,25 +827,19 @@ async function generateChatTitle(firstMessage) {
 
   const isImg = isImageRequest(msg);
 
+  // Ask the LLM ladder
   const fromLLM = await generateTitleViaProviders(msg);
   if (fromLLM) return fromLLM;
 
-  if (isImg) {
-    const p = extractImagePrompt(msg).split(/\s+/).slice(0, 4).join(' ');
-    const t = p ? `${p} Photo` : 'Image Request';
-    console.log(`[title] image fallback: "${t}"`);
-    return t;
-  }
-
-  const words = msg.replace(/\s+/g, ' ').split(' ').slice(0, 5);
-  const t = words.join(' ') + (msg.split(/\s+/).length > 5 ? '…' : '');
-  console.log(`[title] local fallback: "${t}"`);
-  return t || 'New chat';
+  // Deterministic, non-echoing fallback
+  const fallback = localFallbackTitle(msg, isImg);
+  console.log(`[title] local fallback: "${fallback}"`);
+  return fallback;
 }
 
 // ============ ROUTES ============
-app.get('/health', (req, res) => res.json({ status: 'ok', service: 'DeepRWA', version: '2.9.0', time: new Date().toISOString() }));
-app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '2.9.0', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
+app.get('/health', (req, res) => res.json({ status: 'ok', service: 'DeepRWA', version: '3.0.0', time: new Date().toISOString() }));
+app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '3.0.0', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
 app.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nSitemap: https://deeprwa.agentdomains.co/sitemap.xml\n`));
 app.get('/sitemap.xml', (req, res) => res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>https://deeprwa.agentdomains.co/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>\n</urlset>`));
 
