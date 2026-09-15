@@ -17,7 +17,10 @@
   --rwa-blue: #00a1de; --rwa-yellow: #fad201; --rwa-green: #20603d;
   --font: 'Inter', system-ui, -apple-system, sans-serif;
 }
-* { box-sizing: border-box; margin: 0; padding: 0; }
+* { box-sizing: border-box; margin: 0; padding: 0; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.15) transparent; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.24); }
 body { background: var(--bg); color: var(--text); font-family: var(--font); min-height: 100vh; -webkit-font-smoothing: antialiased; }
 .header { padding: 1rem; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; background: rgba(0,0,0,0.85); backdrop-filter: blur(12px); z-index: 10; }
 .brand { display: flex; align-items: center; gap: 0.6rem; text-decoration: none; color: var(--text); }
@@ -50,7 +53,11 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 .assistant-text table { border-collapse: collapse; width: 100%; margin: 0 0 0.75rem; font-size: 0.88rem; }
 .assistant-text th, .assistant-text td { border: 1px solid var(--border); padding: 0.4rem 0.65rem; text-align: left; }
 .msg-files { display: flex; flex-wrap: wrap; gap: 0.4rem; max-width: min(80%, 620px); justify-content: flex-end; }
-.msg-file-thumb { width: 120px; height: 120px; object-fit: cover; border-radius: 10px; border: 1px solid var(--border); }
+.msg-file-thumb { width: 120px; height: 120px; object-fit: cover; border-radius: 10px; border: 1px solid var(--border); cursor: pointer; transition: transform 0.15s; display: block; }
+.msg-file-thumb:hover { transform: scale(1.02); }
+.msg-file-doc { width: 90px; height: 90px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); display: grid; place-items: center; color: var(--text-muted); cursor: pointer; }
+.msg-file-doc svg { width: 28px; height: 28px; }
+.msg-files a { text-decoration: none; display: inline-block; }
 .version-switcher { display: inline-flex; align-items: center; gap: 0.3rem; margin-top: 0.35rem; background: var(--surface); border: 1px solid var(--border); border-radius: 999px; padding: 2px 6px; font-size: 0.78rem; color: var(--text-muted); }
 .vs-btn { background: transparent; border: none; color: var(--text-muted); width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; cursor: pointer; }
 .vs-btn:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
@@ -100,7 +107,6 @@ async function load() {
     const data = await res.json();
     state.messages = data.messages || [];
 
-    // Rebuild versions
     state.messages.forEach((m, i) => {
       if (m.role === 'user' && m.versions && m.versions.length > 0) {
         state.versions[i] = {
@@ -124,20 +130,21 @@ function render() {
     content.innerHTML = `<div class="error">Nothing to show.</div>`;
     return;
   }
-  content.innerHTML = state.messages.map((m, i) => {
-    if (m.role === 'user') return renderUser(m, i);
-    return renderAssistant(m, i);
-  }).join('');
+  content.innerHTML = state.messages.map((m, i) => m.role === 'user' ? renderUser(m, i) : renderAssistant(m, i)).join('');
   if (window.lucide) window.lucide.createIcons();
 }
 
+// Renders files from dataUrl (guest) OR url/public_url (logged-in)
 function renderFilesInline(files) {
   if (!files || !files.length) return '';
   return `<div class="msg-files">${files.map(f => {
     const isImg = (f.type || '').startsWith('image/');
-    const url = f.url || f.public_url || '';
+    const url = f.dataUrl || f.url || f.public_url || '';
     if (!url) return '';
-    return isImg ? `<img src="${url}" class="msg-file-thumb" />` : '';
+    const inner = isImg
+      ? `<img src="${url}" class="msg-file-thumb" loading="lazy" alt="attachment" />`
+      : `<div class="msg-file-doc"><i data-lucide="file-text"></i></div>`;
+    return `<a href="${url}" target="_blank" rel="noopener">${inner}</a>`;
   }).join('')}</div>`;
 }
 
@@ -160,16 +167,17 @@ function renderUser(m, i) {
 }
 
 function renderAssistant(m, i) {
-  // Check if previous user message has versions — use current index
   const prevIdx = i - 1;
   const v = state.versions[prevIdx];
   const content = (v && v.aiReplies[v.currentIndex]) ? v.aiReplies[v.currentIndex] : (m.content || '');
+  const files = (v && v.aiFiles[v.currentIndex]) ? v.aiFiles[v.currentIndex] : (m.files || []);
   return `
     <div class="msg msg-assistant">
       <div class="avatar"><img src="/av.png" alt="DeepRWA" /></div>
       <div class="assistant-body">
         <div class="assistant-name">DeepRWA</div>
         <div class="assistant-text">${content ? renderMarkdown(content) : ''}</div>
+        ${renderFilesInline(files)}
       </div>
     </div>`;
 }
@@ -184,10 +192,8 @@ document.addEventListener('click', (e) => {
   const newIdx = dir === 'prev' ? Math.max(0, v.currentIndex - 1) : Math.min(v.versions.length - 1, v.currentIndex + 1);
   if (newIdx === v.currentIndex) return;
   v.currentIndex = newIdx;
-  // Update visible user message
   state.messages[idx].content = v.versions[newIdx];
   state.messages[idx].files = v.versionFiles[newIdx];
-  // Update following assistant
   if (state.messages[idx + 1] && state.messages[idx + 1].role === 'assistant') {
     state.messages[idx + 1].content = v.aiReplies[newIdx];
     state.messages[idx + 1].files = v.aiFiles[newIdx];
