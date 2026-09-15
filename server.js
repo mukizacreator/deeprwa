@@ -14,8 +14,8 @@ const brevo = require('@getbrevo/brevo');
 const app = express();
 app.set('trust proxy', 1);
 app.use(cors());
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(express.json({ limit: '30mb' }));
+app.use(express.urlencoded({ extended: true, limit: '30mb' }));
 
 // ============ SUPABASE ============
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -427,10 +427,10 @@ async function generateChatTitle(firstMessage) {
 }
 
 // ============ ROUTES ============
-app.get('/health', (req, res) => res.json({ status: 'ok', service: 'DeepRWA', version: '2.3.0', time: new Date().toISOString() }));
+app.get('/health', (req, res) => res.json({ status: 'ok', service: 'DeepRWA', version: '2.3.1', time: new Date().toISOString() }));
 
 app.get('/api/config', (req, res) => res.json({
-  name: 'DeepRWA', tagline: 'Your AI guide to Rwanda', version: '2.3.0',
+  name: 'DeepRWA', tagline: 'Your AI guide to Rwanda', version: '2.3.1',
   supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null
 }));
 
@@ -783,14 +783,16 @@ app.delete('/api/auth/sessions-all-others', requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
-// ---- FILE UPLOAD ----
+// ---- FILE UPLOAD (10 MB max) ----
 app.post('/api/upload', requireAuth, async (req, res) => {
   if (!supabaseConfigured) return res.status(503).json({ error: 'Not configured' });
   const { name, type, data } = req.body || {};
   if (!name || !type || !data) return res.status(400).json({ error: 'Missing file data' });
   try {
     const buffer = Buffer.from(data, 'base64');
-    if (buffer.length > 20 * 1024 * 1024) return res.status(413).json({ error: 'File too large (max 20MB)' });
+    if (buffer.length > 10 * 1024 * 1024) {
+      return res.status(413).json({ error: 'File too large (max 10 MB)' });
+    }
     const ext = (name.split('.').pop() || 'bin').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8);
     const filePath = `${req.userId}/${Date.now()}-${crypto.randomBytes(4).toString('hex')}.${ext}`;
     const { error: upErr } = await supabase.storage.from('uploads').upload(filePath, buffer, { contentType: type, upsert: false });
