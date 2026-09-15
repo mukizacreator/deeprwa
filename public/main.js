@@ -31,10 +31,13 @@ const state = {
   authModal: { mode: 'login', pendingToken: null, forgot: { email: null, pendingToken: null, grantedToken: null } },
   settingsTab: 'profile',
   sessionCheckInterval: null,
-  lastSessionCheck: 0
+  lastSessionCheck: 0,
+  _pendingAction: null,
+  _pendingPw: null,
+  _filesCache: null
 };
 
-// ============ DOM HELPERS ============
+// ============ DOM ============
 const $ = (id) => document.getElementById(id);
 const chatEl = $('chat');
 const formEl = $('composer');
@@ -100,10 +103,7 @@ function authHeaders() {
 function isLocalId(id) { return typeof id === 'string' && id.startsWith('local_'); }
 function makeLocalId() { return 'local_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
 function nowISO() { return new Date().toISOString(); }
-function formatDate(iso) {
-  if (!iso) return '';
-  try { return new Date(iso).toLocaleString(); } catch { return ''; }
-}
+function formatDate(iso) { if (!iso) return ''; try { return new Date(iso).toLocaleString(); } catch { return ''; } }
 function timeAgo(iso) {
   if (!iso) return '';
   const diff = Date.now() - new Date(iso).getTime();
@@ -130,7 +130,7 @@ function toast(message, type = 'info', duration = 3500) {
   setTimeout(() => el.remove(), duration);
 }
 
-// ============ PASSWORD TOGGLE HELPER ============
+// ============ PASSWORD TOGGLE ============
 function passwordFieldHTML(id, placeholder, autocomplete = 'current-password') {
   return `
     <div class="input-wrap">
@@ -155,7 +155,7 @@ function attachPasswordToggles(root = document) {
   });
 }
 
-// ============ BUTTON STATE HELPER ============
+// ============ BUTTON HELPERS ============
 function setBtnLoading(btn, text) {
   if (!btn) return;
   if (!btn._originalHTML) btn._originalHTML = btn.innerHTML;
@@ -219,7 +219,7 @@ async function init() {
   startSessionCheck();
 }
 
-// ============ SESSION CHECK POLLING ============
+// ============ SESSION CHECK ============
 function startSessionCheck() {
   if (state.sessionCheckInterval) clearInterval(state.sessionCheckInterval);
   state.sessionCheckInterval = setInterval(() => {
@@ -240,6 +240,7 @@ async function forceSignOut(reason) {
   state.chats = [];
   state.activeChatId = null;
   state.messages = [];
+  state._filesCache = null;
   localStorage.removeItem('deeprwa_token');
   renderUser();
   renderChatList();
@@ -248,7 +249,7 @@ async function forceSignOut(reason) {
   toast(reason || 'Signed out', 'info');
 }
 
-// ============ USER RENDERING ============
+// ============ USER ============
 function renderUser() {
   if (state.user) {
     const initial = (state.user.email || 'U')[0].toUpperCase();
@@ -358,6 +359,7 @@ function renderFilesList() {
     .then(r => r.json())
     .then(d => {
       const files = d.files || [];
+      state._filesCache = files;
       if (!files.length) {
         sidebarContent.innerHTML = `<div class="sidebar-empty"><p>No files yet</p><span>Files you send or receive will appear here</span></div>`;
         return;
@@ -365,14 +367,16 @@ function renderFilesList() {
       sidebarContent.innerHTML = files.map(f => {
         const isImg = (f.type || '').startsWith('image/');
         const url = f.url || f.public_url || '';
-        return `<div class="file-item">
+        const link = url ? `<a href="${url}" target="_blank" style="text-decoration:none;color:inherit;">` : '';
+        const closeLink = url ? `</a>` : '';
+        return `<div class="file-item">${link}
           ${isImg && url
             ? `<img src="${url}" class="file-thumb-sm" />`
             : `<div class="file-thumb-sm"><i data-lucide="file-text"></i></div>`}
           <div class="file-item-info">
             <div class="file-item-name" title="${escapeHtml(f.name || 'file')}">${escapeHtml(f.name || 'file')}</div>
             <div class="file-item-meta">${timeAgo(f.created_at)}</div>
-          </div>
+          </div>${closeLink}
         </div>`;
       }).join('');
       refreshIcons();
@@ -561,7 +565,7 @@ chatEl.addEventListener('click', (e) => {
   formEl.requestSubmit();
 });
 
-// ============ SEND/STOP BUTTON ============
+// ============ SEND/STOP ============
 function updateSendButton() {
   const hasText = inputEl.value.trim().length > 0;
   const hasFiles = state.attachments.length > 0;
@@ -785,6 +789,78 @@ chatEl.addEventListener('input', (e) => {
   }
 });
 
+// ============ HELPERS FOR UPLOAD ============
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+async function uploadAttachmentsToServer() {
+  if (!state.user || !state.attachments.length) return null;
+  const uploaded = [];
+  for (const att of state.attachments) {
+    try {
+      if (att.file.size > 20 * 1024 * 1024) {
+        uploaded.push({ name: att.name, type: att.type, url: att.url });
+        continue;
+      }
+      const base64 = await fileToBase64(att.file);
+      const res = await fetch('/api/upload', {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: att.name, type: att.type, data: base64 })
+      });
+      if (res.ok) {
+        const d = await res.json();
+        uploaded.push({ name: d.name, type: d.type, url: d.url });
+      } else {
+        const err = await res.json().catch(() => ({}));
+        console.warn('Upload failed:', att.name, err.error);
+        uploaded.push({ name: att.name, type: att.type, url: att.url });
+      }
+    } catch (e) {
+      console.warn('Upload exception:', e.message);
+      uploaded.push({ name: att.name, type: att.type, url: att.url });
+    }
+  }
+  return uploaded;
+}
+
+async function collectImagesBase64(attachments) {
+  const images = [];
+  for (const a of attachments) {
+    if (a.type.startsWith('image/') && a.file.size < 4 * 1024 * 1024) {
+      try {
+        const data = await fileToBase64(a.file);
+        images.push({ mime: a.type, data });
+      } catch {}
+    } else if (a.type === 'text/plain' || a.type === 'text/markdown' || a.type === 'text/csv') {
+      try {
+        const text = await a.file.text();
+        images.push({ mime: 'text/plain', data: btoa(unescape(encodeURIComponent(text.slice(0, 20000)))) });
+      } catch {}
+    }
+  }
+  return images;
+}
+
+async function requestTitle(text) {
+  try {
+    const res = await fetch('/api/chat/title', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text })
+    });
+    if (!res.ok) return null;
+    const d = await res.json();
+    return d.title || null;
+  } catch { return null; }
+}
+
 // ============ SEND MESSAGE ============
 formEl.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -802,7 +878,9 @@ formEl.addEventListener('submit', async (e) => {
     renderChatList();
   }
 
-  const filesForMsg = state.attachments.map(f => ({ name: f.name, type: f.type, url: f.url }));
+  // Upload files if logged in
+  const uploadedFiles = await uploadAttachmentsToServer();
+  const filesForMsg = uploadedFiles || state.attachments.map(f => ({ name: f.name, type: f.type, url: f.url }));
   const imagesForAI = await collectImagesBase64(state.attachments);
   const isFirstMessage = isNewChat || chat.title === 'New chat' || !chat.messages.length;
 
@@ -838,7 +916,11 @@ formEl.addEventListener('submit', async (e) => {
   try {
     const endpoint = state.user ? '/api/chat' : '/api/chat/guest';
     const payload = {
-      messages: state.messages.map(m => ({ role: m.role, content: m.content })),
+      messages: state.messages.map(m => {
+        const out = { role: m.role, content: m.content };
+        if (m.role === 'user' && m.files) out.files = m.files;
+        return out;
+      }),
       images: imagesForAI
     };
     if (state.user) payload.conversationId = isLocalId(chat.id) ? null : chat.id;
@@ -891,7 +973,10 @@ formEl.addEventListener('submit', async (e) => {
       assistantMsg.content = fullText;
       const actEl = chatEl.querySelector(`.msg-assistant[data-id="${assistantMsg.id}"] .msg-actions-assistant`);
       if (actEl) actEl.classList.remove('hidden');
-      if (state.user) await loadConversations();
+      if (state.user) {
+        await loadConversations();
+        if (state.view === 'files') renderFilesList();
+      }
     } else {
       assistantMsg.content = 'No response received.';
       renderMessages();
@@ -913,47 +998,6 @@ formEl.addEventListener('submit', async (e) => {
     inputEl.focus();
   }
 });
-
-async function collectImagesBase64(attachments) {
-  const images = [];
-  for (const a of attachments) {
-    if (a.type.startsWith('image/') && a.file.size < 4 * 1024 * 1024) {
-      try {
-        const data = await fileToBase64(a.file);
-        images.push({ mime: a.type, data });
-      } catch {}
-    } else if (a.type === 'application/pdf') {
-      // Skip PDF for now (would need PDF text extraction)
-    } else if (a.type === 'text/plain' || a.type === 'text/markdown' || a.type === 'text/csv') {
-      try {
-        const text = await a.file.text();
-        images.push({ mime: 'text/plain', data: btoa(unescape(encodeURIComponent(text.slice(0, 20000)))) });
-      } catch {}
-    }
-  }
-  return images;
-}
-function fileToBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result.split(',')[1]);
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-}
-
-async function requestTitle(text) {
-  try {
-    const res = await fetch('/api/chat/title', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text })
-    });
-    if (!res.ok) return null;
-    const d = await res.json();
-    return d.title || null;
-  } catch { return null; }
-}
 
 // ============ EDIT & VERSIONS ============
 async function saveEditAndSend(newText) {
@@ -1010,7 +1054,11 @@ async function saveEditAndSend(newText) {
     const payload = {
       messages: state.messages
         .filter(m => m.role === 'user' || (m.role === 'assistant' && m.content))
-        .map(m => ({ role: m.role, content: m.content }))
+        .map(m => {
+          const out = { role: m.role, content: m.content };
+          if (m.role === 'user' && m.files) out.files = m.files;
+          return out;
+        })
     };
     if (state.user && chat && !isLocalId(chat.id)) payload.conversationId = chat.id;
 
@@ -1052,6 +1100,27 @@ async function saveEditAndSend(newText) {
     v.aiReplies[v.currentIndex] = fullText;
     v.aiFiles[v.currentIndex] = [];
     renderMessages();
+
+    // Sync to backend if logged in and message has a real ID
+    if (state.user && chat && !isLocalId(chat.id) && userMsg.id && !userMsg.id.startsWith('user_')) {
+      try {
+        await fetch(`/api/chat/messages/${userMsg.id}/sync-versions`, {
+          method: 'POST',
+          headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userMessageContent: userMsg.content,
+            userMessageFiles: userMsg.files || [],
+            versions: v.versions,
+            versionFiles: v.files,
+            aiReplies: v.aiReplies,
+            aiFiles: v.aiFiles,
+            currentVersionIndex: v.currentIndex,
+            assistantContent: fullText,
+            assistantFiles: []
+          })
+        });
+      } catch (e) { console.warn('sync failed', e); }
+    }
   } catch (err) {
     if (err.name === 'AbortError') {
       v.aiReplies[v.currentIndex] = fullText || '*Stopped.*';
@@ -1305,7 +1374,7 @@ function render2FALoginForm(twofaToken) {
   };
 }
 
-// ============ FORGOT PASSWORD (3 steps) ============
+// ============ FORGOT PASSWORD ============
 function renderForgotStep1() {
   authModalBody.innerHTML = `
     <h3>Reset your password</h3>
@@ -1432,7 +1501,6 @@ function renderSettingsTab(tab) {
   refreshIcons();
 }
 
-// ---- PROFILE TAB ----
 function renderProfileTab() {
   const u = state.user;
   settingsContent.innerHTML = `
@@ -1454,7 +1522,6 @@ function renderProfileTab() {
     </div>`;
 }
 
-// ---- ACCOUNT TAB ----
 function renderAccountTab() {
   settingsContent.innerHTML = `
     <h3>Account</h3>
@@ -1494,13 +1561,13 @@ function renderAccountTab() {
   refreshIcons();
   attachPasswordToggles(settingsContent);
 
-  $('changeEmailBtn').onclick = () => {
-    $('changeEmailArea').classList.toggle('hidden');
+  $('changeEmailBtn').onclick = () => { $('changeEmailArea').classList.toggle('hidden'); };
+  $('sendEmailCodeBtn').onclick = () => {
+    const newEmail = $('newEmailInput')?.value.trim();
+    if (!newEmail) { toast('Enter new email', 'error'); return; }
+    sendActionCode('change-email', { newEmail });
   };
-  $('sendEmailCodeBtn').onclick = () => sendActionCode('change-email', { newEmail: $('newEmailInput')?.value.trim() });
-  $('changePwBtn').onclick = () => {
-    $('changePwArea').classList.toggle('hidden');
-  };
+  $('changePwBtn').onclick = () => { $('changePwArea').classList.toggle('hidden'); };
   $('sendPwCodeBtn').onclick = async () => {
     const current = $('currentPw').value;
     const newPw = $('newPw').value;
@@ -1629,7 +1696,6 @@ function renderActionVerify(action, targetEmail) {
   };
 }
 
-// ---- SECURITY TAB ----
 function renderSecurityTab() {
   const enabled = state.user.totp_enabled;
   settingsContent.innerHTML = `
@@ -1643,11 +1709,8 @@ function renderSecurityTab() {
         : `<button class="btn-primary" id="enable2faBtn" style="width:auto;padding:0.55rem 1rem;">Enable 2FA</button>`}
     </div>`;
   refreshIcons();
-  if (enabled) {
-    $('disable2faBtn').onclick = () => disable2FA();
-  } else {
-    $('enable2faBtn').onclick = () => setup2FA();
-  }
+  if (enabled) $('disable2faBtn').onclick = () => disable2FA();
+  else $('enable2faBtn').onclick = () => setup2FA();
 }
 
 async function setup2FA() {
@@ -1725,7 +1788,6 @@ async function disable2FA() {
   };
 }
 
-// ---- SESSIONS TAB ----
 async function renderSessionsTab() {
   settingsContent.innerHTML = `<h3>Sessions</h3><p class="modal-sub">Loading…</p>`;
   try {
@@ -1808,6 +1870,7 @@ function confirmLogout() {
       state.chats = [];
       state.activeChatId = null;
       state.messages = [];
+      state._filesCache = null;
       localStorage.removeItem('deeprwa_token');
       renderUser();
       renderChatList();
