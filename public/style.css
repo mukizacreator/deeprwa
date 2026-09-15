@@ -1,4 +1,4 @@
-/* DeepRWA — Universal responsive stylesheet (rev.3.2.0)
+/* DeepRWA — Universal responsive stylesheet (rev.3.3.0)
    Touch-safe on phones, tablets, foldables, touch laptops, pens, mice. */
 
 /* ============ 1. TOKENS ============ */
@@ -85,7 +85,6 @@ button { font-family: inherit; }
 
 /* ============ 3. UNIVERSAL TOUCH SYSTEM ============ */
 
-/* 3a. Instant tap, no double-tap delay, no grey flash. */
 button,
 a,
 [role="button"],
@@ -121,13 +120,10 @@ a,
   -webkit-tap-highlight-color: transparent;
 }
 
-/* 3b. No long-press callout, no text selection while tapping chrome controls.
-   Never applied to inputs, textareas, or message content. */
 button,
 [role="button"],
 .chip,
 .nav-item,
-.chat-item,
 .file-item,
 .file-item-menu,
 .chat-item-menu,
@@ -153,7 +149,6 @@ button,
   user-select: none;
 }
 
-/* 3c. Icons inside buttons never swallow the tap. */
 button > svg,
 button > i,
 .chip > svg,
@@ -203,9 +198,6 @@ button > i,
   pointer-events: none;
 }
 
-/* 3d. Instant visual feedback on press.
-   Opacity only — never transform — so the button never shifts under
-   the finger (which can cancel the tap on some mobile browsers). */
 button:active:not(:disabled),
 [role="button"]:active,
 .chip:active,
@@ -233,7 +225,6 @@ button:active:not(:disabled),
   opacity: 0.72;
 }
 
-/* 3e. Focus ring only for keyboard users. */
 button:focus-visible,
 a:focus-visible,
 input:focus-visible,
@@ -243,8 +234,7 @@ textarea:focus-visible,
   outline-offset: 2px;
 }
 
-/* 3f. iOS Safari auto-zooms on input focus when font-size < 16px.
-   Force every focusable text field to at least 16px. */
+/* iOS Safari auto-zooms on input focus when font-size < 16px */
 #input,
 .modal-input,
 .edit-textarea,
@@ -253,7 +243,6 @@ textarea:focus-visible,
   font-size: max(16px, var(--fs-md));
 }
 
-/* 3g. Message content and inputs remain selectable (copy/paste). */
 .bubble,
 .assistant-text,
 .modal-input,
@@ -339,7 +328,7 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   align-items: center;
   gap: var(--space-sm);
   margin: var(--space-md) var(--space-md) var(--space-xs);
-  padding: var(--space-sm) var(--space-md);
+  padding: 10px 12px;
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -364,7 +353,7 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   display: flex;
   align-items: center;
   gap: var(--space-sm);
-  padding: var(--space-sm) var(--space-md);
+  padding: 8px 12px;
   background: transparent;
   border: none;
   border-radius: 6px;
@@ -373,11 +362,66 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   cursor: pointer;
   text-align: left;
   transition: background 0.15s, color 0.15s;
-  min-height: 44px;
+  min-height: 40px;
 }
 .nav-item:hover { background: var(--surface-2); color: var(--text); }
 .nav-item.active { background: var(--surface-2); color: var(--text); }
 .nav-item svg { width: 16px; height: 16px; }
+
+/* ============================================================
+   5. MULTI-SELECT BAR (shared by chats and files)
+   Compact, single-row, never wraps on desktop.
+   ============================================================ */
+.files-multiselect-bar,
+.chats-multiselect-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  flex-shrink: 0;
+}
+.files-multiselect-bar::-webkit-scrollbar,
+.chats-multiselect-bar::-webkit-scrollbar { display: none; }
+
+.files-ms-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.files-ms-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 10px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  min-height: 34px;
+  height: 34px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.files-ms-btn:hover { background: var(--surface-3); border-color: var(--border-strong); }
+.files-ms-btn.danger { color: var(--danger); border-color: var(--danger-border); }
+.files-ms-btn.danger:hover { background: rgba(239,83,80,0.1); }
+.files-ms-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.files-ms-btn svg { width: 13px; height: 13px; flex-shrink: 0; }
 
 .sidebar-content {
   flex: 1;
@@ -415,16 +459,18 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
 .chat-item {
   display: flex;
   align-items: center;
-  gap: var(--space-sm);
-  padding: var(--space-sm) var(--space-md);
+  gap: 8px;
+  padding: 6px 10px;
   border-radius: 6px;
   cursor: pointer;
   transition: background 0.15s;
   position: relative;
-  min-height: 44px;
+  min-height: 40px;
 }
 .chat-item:hover { background: var(--surface-2); }
 .chat-item.active { background: var(--surface-3); }
+.chat-item.selected { background: rgba(59,110,245,0.10); }
+.chat-item.selected:hover { background: rgba(59,110,245,0.16); }
 .chat-item-icon { width: 15px; height: 15px; color: var(--text-muted); flex-shrink: 0; pointer-events: none; }
 .chat-item-title {
   flex: 1;
@@ -436,15 +482,15 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   min-width: 0;
   pointer-events: none;
 }
-/* Chat item menu — ALWAYS visible. Never hidden behind hover. */
+/* Chat item menu — ALWAYS visible. */
 .chat-item-menu {
   background: transparent;
   border: none;
   color: var(--text-muted);
-  width: 36px;
-  height: 36px;
-  min-width: 36px;
-  min-height: 36px;
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  min-height: 32px;
   border-radius: 6px;
   display: grid;
   place-items: center;
@@ -456,7 +502,46 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
 .chat-item-menu:hover { background: var(--surface-3); color: var(--text); }
 .chat-item-menu svg { width: 15px; height: 15px; }
 
-/* Files */
+/* Chat checkbox inside multi-select mode */
+.chat-item .file-checkbox {
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  min-height: 32px;
+  margin-left: 0;
+  margin-right: 0;
+  position: relative;
+  display: inline-block;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.chat-item .file-checkbox input { position: absolute; opacity: 0; width: 0; height: 0; }
+.chat-item .file-checkbox-mark {
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: 20px; height: 20px;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--surface);
+  transition: background 0.15s, border-color 0.15s;
+  pointer-events: none;
+}
+.chat-item .file-checkbox input:checked + .file-checkbox-mark {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.chat-item .file-checkbox input:checked + .file-checkbox-mark::after {
+  content: '';
+  position: absolute;
+  left: 5px; top: 1px;
+  width: 5px; height: 10px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+/* Files list item */
 .file-item-wrap {
   display: flex;
   align-items: center;
@@ -473,7 +558,7 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   display: flex;
   align-items: center;
   gap: var(--space-sm);
-  padding: var(--space-sm);
+  padding: 8px;
   background: transparent;
   border: none;
   border-radius: 6px;
@@ -499,14 +584,13 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
 .file-item-info { flex: 1; min-width: 0; }
 .file-item-name { font-size: var(--fs-sm); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .file-item-meta { font-size: var(--fs-xs); color: var(--text-dim); }
-/* File item menu — ALWAYS visible. */
 .file-item-menu {
   flex-shrink: 0;
   background: transparent;
   border: none;
   color: var(--text-muted);
-  width: 40px; height: 40px;
-  min-width: 40px; min-height: 40px;
+  width: 36px; height: 36px;
+  min-width: 36px; min-height: 36px;
   border-radius: 6px;
   display: grid; place-items: center;
   cursor: pointer;
@@ -548,39 +632,6 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   transform: rotate(45deg);
 }
 
-/* Multi-select bar */
-.files-multiselect-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-xs);
-  padding: var(--space-sm) var(--space-md);
-  border-bottom: 1px solid var(--border);
-  background: var(--surface-2);
-  flex-wrap: wrap;
-}
-.files-ms-right { display: flex; align-items: center; gap: var(--space-xs); }
-.files-ms-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  padding: var(--space-sm) var(--space-md);
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--text);
-  font-size: var(--fs-xs);
-  font-weight: 500;
-  cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
-  min-height: 44px;
-}
-.files-ms-btn:hover { background: var(--surface-3); border-color: var(--border-strong); }
-.files-ms-btn.danger { color: var(--danger); border-color: var(--danger-border); }
-.files-ms-btn.danger:hover { background: rgba(239,83,80,0.1); }
-.files-ms-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.files-ms-btn svg { width: 13px; height: 13px; }
-
 /* Popup menus */
 .chat-menu, .file-menu, .dropdown {
   position: fixed;
@@ -598,7 +649,7 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   align-items: center;
   gap: 0.55rem;
   width: 100%;
-  padding: var(--space-sm) var(--space-md);
+  padding: 8px 12px;
   background: transparent;
   border: none;
   color: var(--text);
@@ -607,7 +658,7 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   border-radius: 6px;
   text-align: left;
   transition: background 0.1s;
-  min-height: 44px;
+  min-height: 40px;
 }
 .chat-menu button:hover, .file-menu button:hover, .dropdown button:hover { background: var(--surface-3); }
 .chat-menu button.danger, .file-menu button.danger, .dropdown button.danger { color: var(--danger); }
@@ -626,7 +677,7 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   display: flex;
   align-items: center;
   gap: var(--space-sm);
-  padding: var(--space-sm) var(--space-md);
+  padding: 8px 12px;
   background: transparent;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -663,11 +714,10 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
 .auth-btn.account > svg { pointer-events: none; }
 
 /* ============================================================
-   5. SIDEBAR BACKDROP — FIXED
-   This was the bug that blocked every tap on mobile.
-   Default state is now `pointer-events: none` so the invisible
-   overlay can never intercept a touch. It only becomes
-   interactive when the sidebar is actually open (`.show`).
+   SIDEBAR BACKDROP — CRITICAL FIX
+   Default is `pointer-events: none` so the invisible overlay
+   can never intercept a touch. It only becomes interactive
+   when the drawer is actually open (`.show`).
    ============================================================ */
 .sidebar-backdrop {
   display: none;
@@ -676,12 +726,12 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   background: rgba(0,0,0,0.5);
   z-index: 40;
   opacity: 0;
-  pointer-events: none;   /* <-- CRITICAL FIX */
+  pointer-events: none;
   transition: opacity 0.25s;
 }
 .sidebar-backdrop.show {
   opacity: 1;
-  pointer-events: auto;   /* only intercept taps while the drawer is open */
+  pointer-events: auto;
 }
 
 /* ============ 6. MAIN ============ */
@@ -763,16 +813,15 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   background: var(--surface);
   border: 1px solid var(--border);
   color: var(--text-muted);
-  padding: var(--space-sm) var(--space-md);
+  padding: 8px 14px;
   border-radius: 999px;
   font-size: var(--fs-sm);
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s, color 0.15s;
-  min-height: 44px;
+  min-height: 40px;
 }
 .chip:hover { background: var(--surface-2); color: var(--text); border-color: var(--border-strong); }
 
-/* Messages */
 .msg { display: flex; margin-bottom: var(--space-lg); }
 .msg-user {
   justify-content: flex-end;
@@ -895,7 +944,6 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   margin: 0 0 0.75rem;
 }
 
-/* Message actions — ALWAYS visible on every device. */
 .msg-actions {
   display: flex;
   gap: 2px;
@@ -922,7 +970,6 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
 .msg-action.copied { color: var(--rwa-green); }
 .msg-action svg { width: 15px; height: 15px; }
 
-/* Version switcher */
 .version-switcher {
   display: inline-flex;
   align-items: center;
@@ -952,7 +999,6 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
 .vs-btn svg { width: 13px; height: 13px; }
 .vs-label { font-weight: 500; padding: 0 0.2rem; }
 
-/* Edit area */
 .edit-area { width: min(80%, 620px); max-width: 100%; }
 .edit-textarea {
   width: 100%;
@@ -986,7 +1032,6 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
 }
 .edit-actions svg { width: 14px; height: 14px; }
 
-/* Thinking */
 .thinking {
   display: inline-flex;
   align-items: center;
@@ -1362,7 +1407,7 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   display: flex;
   align-items: center;
   gap: 0.55rem;
-  padding: var(--space-sm) var(--space-md);
+  padding: 8px 12px;
   background: transparent;
   border: none;
   border-radius: 6px;
@@ -1371,7 +1416,7 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   cursor: pointer;
   text-align: left;
   transition: background 0.15s, color 0.15s;
-  min-height: 44px;
+  min-height: 40px;
 }
 .settings-tab:hover { background: var(--surface-2); color: var(--text); }
 .settings-tab.active { background: var(--surface-3); color: var(--text); }
@@ -1586,14 +1631,14 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* ============================================================
-   14. HOVER-NONE OVERRIDES (phones, tablets, touchscreens, pens)
-   Hover styles are neutralised so the FIRST tap fires the action
-   and no hover state sticks after a tap.
+   14. HOVER-NONE OVERRIDES (touch / pen)
+   Neutralises hover so the FIRST tap fires the action.
    ============================================================ */
 @media (hover: none) {
   .icon-btn:hover { background: transparent; color: var(--text-muted); }
   .chat-item:hover { background: transparent; }
   .chat-item.active:hover { background: var(--surface-3); }
+  .chat-item.selected:hover { background: rgba(59,110,245,0.10); }
   .file-item-wrap:hover { background: transparent; }
   .chip:hover { background: var(--surface); border-color: var(--border); color: var(--text-muted); }
   .nav-item:hover { background: transparent; color: var(--text-muted); }
@@ -1672,7 +1717,7 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   .settings-sidebar::-webkit-scrollbar { display: none; }
   .settings-tab {
     white-space: nowrap;
-    padding: var(--space-sm) var(--space-md);
+    padding: 8px 12px;
     flex-shrink: 0;
   }
   .settings-content { max-height: none; flex: 1; }
@@ -1709,15 +1754,15 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   .brand-name { font-size: var(--fs-sm); }
   .brand-tag { display: none; }
   .chips { gap: 4px; }
-  .chip { padding: 0.4rem 0.7rem; font-size: var(--fs-xs); }
+  .chip { padding: 6px 10px; font-size: var(--fs-xs); }
   .send-btn, .attach-btn { width: 40px; height: 40px; min-width: 40px; min-height: 40px; }
   .send-btn svg, .attach-btn svg { width: 17px; height: 17px; }
   .icon-btn { width: 40px; height: 40px; min-width: 40px; min-height: 40px; }
-  .files-ms-btn span { display: none; }
   .msg-action { width: 36px; height: 36px; min-width: 36px; min-height: 36px; }
   .msg-action svg { width: 14px; height: 14px; }
   .composer-inner { padding: 5px; }
   #input { padding: 4px 2px; }
+  .files-ms-btn span { display: none; }
 }
 
 @media (max-height: 500px) and (orientation: landscape) {
