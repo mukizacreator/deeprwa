@@ -33,7 +33,9 @@ const state = {
   lastSessionCheck: 0,
   _pendingAction: null,
   _pendingPw: null,
-  _reauthWarned: false
+  _loginAt: 0,
+  _filesCache: [],
+  _selectedFiles: new Set()
 };
 
 // ============ DOM ============
@@ -54,6 +56,9 @@ const filePreviews = $('filePreviews');
 const sidebarNav = $('sidebarNav');
 const sidebarContent = $('sidebarContent');
 const sidebarFooter = $('sidebarFooter');
+const filesActions = $('filesActions');
+const filesSelectAllBtn = $('filesSelectAllBtn');
+const filesDeleteBtn = $('filesDeleteBtn');
 const authModal = $('authModal');
 const authModalBody = $('authModalBody');
 const authModalClose = $('authModalClose');
@@ -96,8 +101,12 @@ function escapeHtmlOutsideCode(text) {
 }
 function renderMarkdown(text) {
   const safe = escapeHtmlOutsideCode(text || '');
-  try { return window.marked.parse(safe, { breaks: true, gfm: true }); }
+  let html;
+  try { html = window.marked.parse(safe, { breaks: true, gfm: true }); }
   catch { return safe.replace(/\n/g, '<br>'); }
+  // Strip horizontal rules — they look unprofessional
+  html = html.replace(/<hr\s*\/?>/gi, '');
+  return html;
 }
 function scrollBottom() { chatEl.scrollTop = chatEl.scrollHeight; }
 function authHeaders() {
@@ -197,6 +206,7 @@ async function init() {
       if (res.ok) {
         const d = await res.json();
         state.user = d.user;
+        state._loginAt = Date.now();
         renderUser();
         await loadConversations();
       } else {
@@ -216,18 +226,12 @@ function startSessionCheck() {
     const now = Date.now();
     if (now - state.lastSessionCheck < 30000) return;
     state.lastSessionCheck = now;
+    // Skip first 30 seconds after login
+    if (state._loginAt && (Date.now() - state._loginAt) < 30000) return;
     fetch('/api/auth/session-check', { headers: authHeaders() })
       .then(r => r.ok ? r.json() : null)
       .then(d => {
-        if (d && d.valid === false) {
-          // Only sign out if we've been logged in for a while — prevents false positive at login
-          if (Date.now() - (state._loginAt || 0) > 30000) {
-            forceSignOut('Signed out from another device');
-          } else {
-            // Retry once on next tick
-            state.lastSessionCheck = 0;
-          }
-        }
+        if (d && d.valid === false) forceSignOut('Signed out from another device');
       })
       .catch(() => {});
   }, 60000);
@@ -313,7 +317,12 @@ sidebarNav.addEventListener('click', (e) => {
 
 // ============ CHAT LIST ============
 function renderChatList() {
-  if (state.view === 'files') { renderFilesList(); return; }
+  if (state.view === 'files') {
+    filesActions.classList.remove('hidden');
+    renderFilesList();
+    return;
+  }
+  filesActions.classList.add('hidden');
   if (!state.chats.length) {
     sidebarContent.innerHTML = `<div class="sidebar-empty"><p>No chats yet</p><span>Start a conversation with DeepRWA</span></div>`;
     return;
@@ -333,57 +342,136 @@ function renderChatList() {
   refreshIcons();
 }
 
-function renderFilesList() {
+async function renderFilesList() {
   if (state.user) {
     sidebarContent.innerHTML = `<div class="sidebar-empty"><p>Loading files…</p></div>`;
-    fetch('/api/files', { headers: authHeaders() })
-      .then(r => r.json())
-      .then(d => renderFilesArray(d.files || [], false))
-      .catch(() => { sidebarContent.innerHTML = `<div class="sidebar-empty"><p>Could not load files</p></div>`; });
+    try {
+      const res = await fetch('/api/files-with-ids', { headers: authHeaders() });
+      const d = await res.json();
+      state._filesCache = d.files || [];
+      renderFilesArray(state._filesCache, false);
+    } catch {
+      sidebarContent.innerHTML = `<div class="sidebar-empty"><p>Could not load files</p></div>`;
+    }
     return;
   }
-  // Guests: scan in-memory chats
+  // Guest: scan in-memory chats
   const files = [];
   for (const chat of state.chats) {
     for (const m of chat.messages || []) {
       if (Array.isArray(m.files)) {
-        for (const f of m.files) {
-          if (f && (f.dataUrl || f.url)) files.push({ ...f, created_at: m._createdAt || nowISO() });
-        }
+        m.files.forEach((f, i) => {
+          if (f && (f.dataUrl || f.url)) files.push({ ...f, _guestRef: { chatId: chat.id, msgId: m.id, index: i }, created_at: m._createdAt || nowISO() });
+        });
       }
     }
   }
+  state._filesCache = files;
   renderFilesArray(files, true);
 }
 
 function renderFilesArray(files, isGuest = false) {
   if (!files.length) {
     sidebarContent.innerHTML = isGuest
-      ? `<div class="sidebar-empty"><p>No files in this session</p><span>Guest files are not saved. Reload clears them.</span></div>`
+      ? `<div class="sidebar-empty"><p>No files in this session</p><span>Guest files are cleared when you reload.</span></div>`
       : `<div class="sidebar-empty"><p>No files yet</p><span>Files you send or receive will appear here</span></div>`;
     return;
   }
-  sidebarContent.innerHTML = files.map(f => {
+  sidebarContent.innerHTML = files.map((f, idx) => {
     const isImg = (f.type || '').startsWith('image/');
     const url = f.url || f.dataUrl || f.public_url || '';
-    const inner = `
-      ${isImg && url
-        ? `<img src="${url}" class="file-thumb-sm" loading="lazy" alt="file" />`
-        : `<div class="file-thumb-sm"><i data-lucide="file-text"></i></div>`}
-      <div class="file-item-info">
-        <div class="file-item-name" title="${escapeHtml(f.name || 'file')}">${escapeHtml(f.name || 'file')}</div>
-        <div class="file-item-meta">${timeAgo(f.created_at)}</div>
-      </div>`;
-    return url
-      ? `<button class="file-item" data-file-view='${escapeHtml(JSON.stringify({url, name: f.name, type: f.type}))}'>${inner}</button>`
-      : `<div class="file-item">${inner}</div>`;
+    const selected = state._selectedFiles.has(fileKey(f, idx));
+    return `<div class="file-item-wrap">
+      <label class="file-checkbox">
+        <input type="checkbox" data-file-check="${idx}" ${selected ? 'checked' : ''} />
+        <span class="file-checkbox-mark"></span>
+      </label>
+      <button class="file-item" data-file-view='${escapeHtml(JSON.stringify({url, name: f.name, type: f.type}))}'>
+        ${isImg && url
+          ? `<img src="${url}" class="file-thumb-sm" loading="lazy" alt="file" />`
+          : `<div class="file-thumb-sm"><i data-lucide="file-text"></i></div>`}
+        <div class="file-item-info">
+          <div class="file-item-name" title="${escapeHtml(f.name || 'file')}">${escapeHtml(f.name || 'file')}</div>
+          <div class="file-item-meta">${timeAgo(f.created_at)}</div>
+        </div>
+      </button>
+    </div>`;
   }).join('');
   refreshIcons();
 }
 
+function fileKey(f, idx) {
+  if (f.messageId !== undefined) return `${f.messageId}:${f.index}`;
+  if (f._guestRef) return `g:${f._guestRef.chatId}:${f._guestRef.msgId}:${f._guestRef.index}`;
+  return `i:${idx}`;
+}
+
+// File selection state
+sidebarContent.addEventListener('change', (e) => {
+  const chk = e.target.closest('[data-file-check]');
+  if (!chk) return;
+  const idx = parseInt(chk.dataset.fileCheck);
+  const f = state._filesCache[idx];
+  if (!f) return;
+  const key = fileKey(f, idx);
+  if (chk.checked) state._selectedFiles.add(key);
+  else state._selectedFiles.delete(key);
+});
+
+filesSelectAllBtn.addEventListener('click', () => {
+  const allSelected = state._filesCache.every((f, idx) => state._selectedFiles.has(fileKey(f, idx)));
+  if (allSelected) {
+    state._selectedFiles.clear();
+    filesSelectAllBtn.innerHTML = '<i data-lucide="check-square"></i><span>Select all</span>';
+  } else {
+    state._filesCache.forEach((f, idx) => state._selectedFiles.add(fileKey(f, idx)));
+    filesSelectAllBtn.innerHTML = '<i data-lucide="square"></i><span>Deselect all</span>';
+  }
+  refreshIcons();
+  renderFilesArray(state._filesCache, !state.user);
+});
+
+filesDeleteBtn.addEventListener('click', async () => {
+  const count = state._selectedFiles.size;
+  if (!count) { toast('Select files to delete first', 'error'); return; }
+  confirmAction({
+    title: `Delete ${count} file(s)?`,
+    text: 'They will be removed from your Files list.',
+    confirmLabel: 'Delete',
+    onConfirm: async () => {
+      if (state.user) {
+        // Logged-in: call server delete for each selected
+        const toDelete = state._filesCache.filter((f, idx) => state._selectedFiles.has(fileKey(f, idx)));
+        for (const f of toDelete) {
+          if (f.messageId !== undefined) {
+            try { await fetch(`/api/files/${f.messageId}/${f.index}`, { method: 'DELETE', headers: authHeaders() }); } catch {}
+          }
+        }
+        state._selectedFiles.clear();
+        await renderFilesList();
+      } else {
+        // Guest: remove from in-memory chats
+        for (const f of state._filesCache) {
+          if (state._selectedFiles.has(fileKey(f, 0)) && f._guestRef) {
+            const chat = state.chats.find(c => c.id === f._guestRef.chatId);
+            if (!chat) continue;
+            const msg = (chat.messages || []).find(m => m.id === f._guestRef.msgId);
+            if (msg && Array.isArray(msg.files)) {
+              msg.files.splice(f._guestRef.index, 1);
+            }
+          }
+        }
+        state._selectedFiles.clear();
+        renderFilesList();
+      }
+      toast(`${count} file(s) deleted`, 'success');
+    }
+  });
+});
+
 sidebarContent.addEventListener('click', (e) => {
   const fileBtn = e.target.closest('[data-file-view]');
-  if (fileBtn) {
+  if (fileBtn && !e.target.closest('.file-checkbox')) {
     try { const d = JSON.parse(fileBtn.dataset.fileView); showFileView(d.url, d.name, d.type); } catch {}
     return;
   }
@@ -432,17 +520,14 @@ async function togglePin(id) {
 function askDelete(id) {
   const chat = state.chats.find(c => c.id === id); if (!chat) return;
   confirmAction({
-    title: 'Delete this chat?',
-    text: `"${chat.title || 'New chat'}" will be removed.`,
-    confirmLabel: 'Delete',
+    title: 'Delete this chat?', text: `"${chat.title || 'New chat'}" will be removed.`, confirmLabel: 'Delete',
     onConfirm: async () => {
       if (state.user && !isLocalId(id)) {
         try { await fetch(`/api/conversations/${id}`, { method: 'DELETE', headers: authHeaders() }); } catch {}
       }
       state.chats = state.chats.filter(c => c.id !== id);
       if (state.activeChatId === id) newChatSilent();
-      renderChatList();
-      toast('Chat deleted', 'success');
+      renderChatList(); toast('Chat deleted', 'success');
     }
   });
 }
@@ -563,14 +648,46 @@ inputEl.addEventListener('keydown', (e) => {
     if (!state.isGenerating && !sendBtn.disabled) formEl.requestSubmit();
   }
 });
+
+// ============ PASTE SUPPORT ============
+inputEl.addEventListener('paste', (e) => {
+  const items = e.clipboardData?.items;
+  if (!items) return;
+  let added = 0;
+  for (const item of items) {
+    if (item.kind === 'file' && item.type.startsWith('image/')) {
+      e.preventDefault();
+      const file = item.getAsFile();
+      if (file) {
+        const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+        const named = new File([file], file.name || `pasted-${Date.now()}.${ext}`, { type: file.type });
+        if (addAttachment(named)) added++;
+      }
+    }
+  }
+  if (added) { toast(`${added} image(s) pasted`, 'success', 2000); }
+});
+
+// ============ FILE ATTACH ============
 attachBtn.addEventListener('click', () => fileInput.click());
 fileInput.addEventListener('change', (e) => {
-  for (const f of e.target.files) {
-    const id = Math.random().toString(36).slice(2);
-    state.attachments.push({ id, file: f, url: URL.createObjectURL(f), name: f.name, type: f.type });
-  }
-  fileInput.value = ''; renderFilePreviews(); updateSendButton();
+  for (const f of e.target.files) addAttachment(f);
+  fileInput.value = '';
+  renderFilePreviews(); updateSendButton();
 });
+
+function addAttachment(file) {
+  // Dedupe: same name + size + lastModified
+  for (const existing of state.attachments) {
+    if (existing.name === file.name && existing.file.size === file.size && existing.file.lastModified === file.lastModified) {
+      toast(`"${file.name}" is already attached`, 'info', 2000);
+      return false;
+    }
+  }
+  const id = Math.random().toString(36).slice(2);
+  state.attachments.push({ id, file, url: URL.createObjectURL(file), name: file.name, type: file.type });
+  return true;
+}
 
 function renderFilePreviews() {
   if (!state.attachments.length) { filePreviews.hidden = true; filePreviews.innerHTML = ''; return; }
@@ -782,7 +899,10 @@ async function attachmentsToDataUrls(attachments) {
   const out = [];
   for (const att of attachments) {
     try {
-      if (att.file.size > 3 * 1024 * 1024) continue;
+      if (att.file.size > 3 * 1024 * 1024) {
+        out.push({ name: att.name, type: att.type, dataUrl: att.url }); // objectUrl (ephemeral)
+        continue;
+      }
       const dataUrl = await fileToDataURL(att.file);
       out.push({ name: att.name, type: att.type, dataUrl });
     } catch {}
@@ -816,48 +936,51 @@ async function requestTitle(text) {
 // ============ SEND MESSAGE ============
 formEl.addEventListener('submit', async (e) => {
   e.preventDefault();
+  // ── LOCK IMMEDIATELY to prevent double-send duplicates ──
   if (state.isGenerating) return;
   const text = inputEl.value.trim();
   if (!text && !state.attachments.length) return;
+  state.isGenerating = true;
+  inputEl.disabled = true;
+  updateSendButton();
 
-  let chat = state.chats.find(c => c.id === state.activeChatId);
-  let isNewChat = false;
-  if (!chat) {
-    chat = { id: makeLocalId(), title: 'New chat', messages: [], pinned: false, createdAt: nowISO(), updatedAt: nowISO() };
-    state.chats.unshift(chat); state.activeChatId = chat.id; isNewChat = true; renderChatList();
-  }
-
-  const attachmentsForAI = await collectAttachmentsForAI(state.attachments);
-  let filesForMsg;
-  if (state.user) filesForMsg = await uploadAttachmentsToServer() || [];
-  else filesForMsg = await attachmentsToDataUrls(state.attachments);
-
-  const isFirstMessage = isNewChat || chat.title === 'New chat' || !chat.messages.length;
-
-  inputEl.value = ''; autoGrow();
-  state.attachments = []; renderFilePreviews();
-  chatEl.querySelector('.welcome')?.remove();
-
-  const userMsg = { id: 'user_' + Date.now(), role: 'user', content: text, files: filesForMsg, _createdAt: nowISO() };
-  state.messages.push(userMsg); chat.messages = state.messages;
-
-  const assistantMsg = { id: 'asst_' + Date.now(), role: 'assistant', content: '', files: [], _createdAt: nowISO() };
-  state.messages.push(assistantMsg);
-  renderMessages();
-
-  if (isFirstMessage && text) {
-    const title = await requestTitle(text);
-    if (title) { chat.title = title; renderChatList(); }
-  }
-
-  state.isGenerating = true; inputEl.disabled = true; updateSendButton();
-  state.abortController = new AbortController();
-
-  let fullText = '';
   try {
+    let chat = state.chats.find(c => c.id === state.activeChatId);
+    let isNewChat = false;
+    if (!chat) {
+      chat = { id: makeLocalId(), title: 'New chat', messages: [], pinned: false, createdAt: nowISO(), updatedAt: nowISO() };
+      state.chats.unshift(chat); state.activeChatId = chat.id; isNewChat = true; renderChatList();
+    }
+
+    const attachmentsForAI = await collectAttachmentsForAI(state.attachments);
+    let filesForMsg;
+    if (state.user) filesForMsg = await uploadAttachmentsToServer() || [];
+    else filesForMsg = await attachmentsToDataUrls(state.attachments);
+
+    const isFirstMessage = isNewChat || chat.title === 'New chat' || !chat.messages.length;
+
+    inputEl.value = ''; autoGrow();
+    state.attachments = []; renderFilePreviews();
+    chatEl.querySelector('.welcome')?.remove();
+
+    const userMsg = { id: 'user_' + Date.now(), role: 'user', content: text, files: filesForMsg, _createdAt: nowISO() };
+    state.messages.push(userMsg); chat.messages = state.messages;
+
+    const assistantMsg = { id: 'asst_' + Date.now(), role: 'assistant', content: '', files: [], _createdAt: nowISO() };
+    state.messages.push(assistantMsg);
+    renderMessages();
+
+    if (isFirstMessage && text) {
+      requestTitle(text).then(title => {
+        if (title) { chat.title = title; renderChatList(); }
+      }).catch(() => {});
+    }
+
+    state.abortController = new AbortController();
+
     const endpoint = state.user ? '/api/chat' : '/api/chat/guest';
     const payload = {
-      messages: state.messages.map(m => ({ role: m.role, content: m.content })), // NO files sent to LLM
+      messages: state.messages.map(m => ({ role: m.role, content: m.content })),
       attachments: attachmentsForAI
     };
     if (state.user) payload.conversationId = isLocalId(chat.id) ? null : chat.id;
@@ -870,7 +993,7 @@ formEl.addEventListener('submit', async (e) => {
 
     const reader = res.body.getReader();
     const dec = new TextDecoder();
-    let buf = '', firstChunk = true;
+    let buf = '', firstChunk = true, fullText = '';
     while (true) {
       const { done, value } = await reader.read(); if (done) break;
       buf += dec.decode(value, { stream: true });
@@ -901,11 +1024,22 @@ formEl.addEventListener('submit', async (e) => {
       if (state.view === 'files') renderFilesList();
     } else { assistantMsg.content = 'No response received.'; renderMessages(); }
   } catch (err) {
-    if (err.name === 'AbortError') { assistantMsg.content = fullText ? fullText + '\n\n*[stopped]*' : '*Stopped.*'; renderMessages(); }
-    else { console.error(err); assistantMsg.content = 'Something went wrong. Please try again.'; renderMessages(); }
+    if (err.name === 'AbortError') {
+      const last = state.messages[state.messages.length - 1];
+      if (last && last.role === 'assistant') { last.content = last.content ? last.content + '\n\n*[stopped]*' : '*Stopped.*'; }
+      renderMessages();
+    } else {
+      console.error(err);
+      const last = state.messages[state.messages.length - 1];
+      if (last && last.role === 'assistant') last.content = 'Something went wrong. Please try again.';
+      renderMessages();
+    }
   } finally {
-    state.isGenerating = false; inputEl.disabled = false; state.abortController = null;
-    updateSendButton(); inputEl.focus();
+    state.isGenerating = false;
+    inputEl.disabled = false;
+    state.abortController = null;
+    updateSendButton();
+    inputEl.focus();
   }
 });
 
@@ -1008,8 +1142,7 @@ async function loadConversations() {
     const res = await fetch('/api/conversations', { headers: authHeaders() });
     const data = await res.json();
     const serverChats = (data.conversations || []).map(c => ({ id: c.id, title: c.title, pinned: c.pinned, messages: [], createdAt: c.created_at, updatedAt: c.updated_at }));
-    const locals = state.chats.filter(c => isLocalId(c.id));
-    state.chats = [...locals, ...serverChats];
+    state.chats = serverChats; // replace entire list (guest chats are cleared on login)
     renderChatList();
   } catch {}
 }
@@ -1068,11 +1201,7 @@ function renderLoginForm() {
     if (!email || !password) { toast('Enter email and password', 'error'); return; }
     const btn = $('authSubmit'); setBtnLoading(btn, 'Logging in…');
     try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Client-Id': CLIENT_ID }, // CRITICAL
-        body: JSON.stringify({ email, password })
-      });
+      const res = await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Client-Id': CLIENT_ID }, body: JSON.stringify({ email, password }) });
       const data = await res.json();
       if (!res.ok) { resetBtn(btn); toast(data.error || 'Login failed', 'error'); return; }
       state.authModal.pendingToken = data.pendingToken;
@@ -1103,11 +1232,7 @@ function renderSignupForm() {
     if (password.length < 8) { toast('Password must be at least 8 characters', 'error'); return; }
     const btn = $('authSubmit'); setBtnLoading(btn, 'Sending code…');
     try {
-      const res = await fetch('/api/auth/signup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Client-Id': CLIENT_ID },
-        body: JSON.stringify({ email, password, fullName })
-      });
+      const res = await fetch('/api/auth/signup', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Client-Id': CLIENT_ID }, body: JSON.stringify({ email, password, fullName }) });
       const data = await res.json();
       if (!res.ok) { resetBtn(btn); toast(data.error || 'Signup failed', 'error'); return; }
       state.authModal.pendingToken = data.pendingToken;
@@ -1130,11 +1255,7 @@ function renderVerifyCodeForm(type) {
     if (resendBtn.disabled) return;
     const endpoint = type === 'signup' ? '/api/auth/resend-verification' : '/api/auth/resend-login-code';
     try {
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Client-Id': CLIENT_ID },
-        body: JSON.stringify({ pendingToken: state.authModal.pendingToken })
-      });
+      const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Client-Id': CLIENT_ID }, body: JSON.stringify({ pendingToken: state.authModal.pendingToken }) });
       const data = await res.json();
       if (!res.ok) { toast(data.error || 'Could not resend', 'error'); return; }
       state.authModal.pendingToken = data.pendingToken;
@@ -1147,21 +1268,34 @@ function renderVerifyCodeForm(type) {
     const btn = $('verifySubmit'); setBtnLoading(btn, 'Verifying…');
     const endpoint = type === 'signup' ? '/api/auth/confirm-signup' : '/api/auth/verify-login';
     try {
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Client-Id': CLIENT_ID }, // CRITICAL
-        body: JSON.stringify({ pendingToken: state.authModal.pendingToken, code })
-      });
+      const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Client-Id': CLIENT_ID }, body: JSON.stringify({ pendingToken: state.authModal.pendingToken, code }) });
       const data = await res.json();
       if (!res.ok) { resetBtn(btn); toast(data.error || 'Invalid code', 'error'); return; }
       if (data.requires2fa) { render2FALoginForm(data.twofaToken); return; }
-      state.token = data.accessToken; state.user = data.user;
-      state._loginAt = Date.now(); // prevent false sign-out
-      localStorage.setItem('deeprwa_token', data.accessToken);
-      authModal.classList.add('hidden'); renderUser(); await loadConversations();
-      toast(type === 'signup' ? 'Welcome to DeepRWA!' : 'Logged in', 'success');
+      await handleLoginSuccess(data);
     } catch { resetBtn(btn); toast('Network error', 'error'); }
   };
+}
+
+async function handleLoginSuccess(data) {
+  // Clear ALL guest data first
+  state.chats = [];
+  state.activeChatId = null;
+  state.messages = [];
+  state.attachments = [];
+  state._selectedFiles.clear();
+
+  state.token = data.accessToken;
+  state.user = data.user;
+  state._loginAt = Date.now();
+  localStorage.setItem('deeprwa_token', data.accessToken);
+
+  authModal.classList.add('hidden');
+  renderFilePreviews();
+  renderWelcome();
+  renderUser();
+  await loadConversations();
+  toast('Logged in', 'success');
 }
 
 function render2FALoginForm(twofaToken) {
@@ -1175,18 +1309,10 @@ function render2FALoginForm(twofaToken) {
     const code = $('faCode').value.trim();
     const btn = $('faSubmit'); setBtnLoading(btn, 'Verifying…');
     try {
-      const res = await fetch('/api/auth/verify-2fa', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Client-Id': CLIENT_ID },
-        body: JSON.stringify({ twofaToken, code })
-      });
+      const res = await fetch('/api/auth/verify-2fa', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Client-Id': CLIENT_ID }, body: JSON.stringify({ twofaToken, code }) });
       const data = await res.json();
       if (!res.ok) { resetBtn(btn); toast(data.error || 'Invalid code', 'error'); return; }
-      state.token = data.accessToken; state.user = data.user;
-      state._loginAt = Date.now();
-      localStorage.setItem('deeprwa_token', data.accessToken);
-      authModal.classList.add('hidden'); renderUser(); await loadConversations();
-      toast('Logged in', 'success');
+      await handleLoginSuccess(data);
     } catch { resetBtn(btn); toast('Network error', 'error'); }
   };
 }
@@ -1301,7 +1427,7 @@ function openProfileModal() {
 profileModalClose.addEventListener('click', () => profileModal.classList.add('hidden'));
 profileModal.addEventListener('click', (e) => { if (e.target === profileModal) profileModal.classList.add('hidden'); });
 
-// ============ SETTINGS MODAL (Account, Security, Sessions) ============
+// ============ SETTINGS MODAL ============
 function openSettingsModal(tab = 'account') {
   if (!state.user) return;
   settingsModal.classList.remove('hidden');
@@ -1356,7 +1482,13 @@ function renderAccountTab() {
     </div>`;
   refreshIcons(); attachPasswordToggles(settingsContent);
   $('changeEmailBtn').onclick = () => { $('changeEmailArea').classList.toggle('hidden'); };
-  $('sendEmailCodeBtn').onclick = () => { const newEmail = $('newEmailInput')?.value.trim(); if (!newEmail) { toast('Enter new email', 'error'); return; } sendActionCode('change-email', { newEmail }); };
+  $('sendEmailCodeBtn').onclick = () => {
+    const newEmail = $('newEmailInput')?.value.trim();
+    if (!newEmail) { toast('Enter new email', 'error'); return; }
+    const btn = $('sendEmailCodeBtn');
+    setBtnLoading(btn, 'Sending code…');
+    sendActionCode('change-email', { newEmail });
+  };
   $('changePwBtn').onclick = () => { $('changePwArea').classList.toggle('hidden'); };
   $('sendPwCodeBtn').onclick = async () => {
     const current = $('currentPw').value, newPw = $('newPw').value, confirm = $('confirmPw').value;
@@ -1364,17 +1496,22 @@ function renderAccountTab() {
     if (newPw.length < 8) { toast('Password must be at least 8 characters', 'error'); return; }
     if (newPw !== confirm) { toast('Passwords do not match', 'error'); return; }
     if (current === newPw) { toast('New password must be different', 'error'); return; }
-    const btn = $('sendPwCodeBtn'); setBtnLoading(btn, 'Verifying…');
+    const btn = $('sendPwCodeBtn'); setBtnLoading(btn, 'Verifying password…');
     try {
       const res = await fetch('/api/auth/verify-current-password', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ password: current }) });
       if (!res.ok) { resetBtn(btn); toast('Current password is incorrect', 'error'); return; }
       state._pendingPw = { current, newPw };
+      setBtnLoading(btn, 'Sending code…');
       sendActionCode('change-password');
     } catch { resetBtn(btn); toast('Network error', 'error'); }
   };
   $('deleteAccBtn').onclick = () => confirmAction({
     title: 'Delete your account?', text: 'This will permanently delete your account, chats, and files.', confirmLabel: 'Delete account',
-    onConfirm: () => sendActionCode('delete-account')
+    onConfirm: () => {
+      const btn = $('deleteAccBtn');
+      setBtnLoading(btn, 'Sending code…');
+      sendActionCode('delete-account');
+    }
   });
 }
 
@@ -1412,17 +1549,19 @@ function renderActionVerify(action, targetEmail) {
   $('actVerify').onclick = async () => {
     const code = $('actCode').value.trim();
     if (code.length !== 6) { toast('Enter 6-digit code', 'error'); return; }
-    const btn = $('actVerify'); setBtnLoading(btn, 'Verifying…');
+    const btn = $('actVerify'); setBtnLoading(btn, 'Verifying code…');
     try {
       const vres = await fetch('/api/auth/verify-action-code', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ pendingToken: state._pendingAction.token, code, action }) });
       const vdata = await vres.json();
       if (!vres.ok) { resetBtn(btn); toast(vdata.error || 'Invalid code', 'error'); return; }
+
       if (action === 'change-email') {
         setBtnLoading(btn, 'Changing email…');
         const r = await fetch('/api/auth/change-email', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ grantedToken: vdata.grantedToken }) });
         const d = await r.json();
         if (!r.ok) { resetBtn(btn); toast(d.error || 'Failed', 'error'); return; }
-        state.user.email = d.newEmail; toast('Email changed to ' + d.newEmail, 'success');
+        state.user.email = d.newEmail;
+        toast('Email changed to ' + d.newEmail, 'success');
         renderUser(); renderAccountTab();
       } else if (action === 'change-password') {
         setBtnLoading(btn, 'Changing password…');
@@ -1430,13 +1569,16 @@ function renderActionVerify(action, targetEmail) {
         const r = await fetch('/api/auth/change-password', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ grantedToken: vdata.grantedToken, currentPassword: pw.current, newPassword: pw.newPw }) });
         const d = await r.json();
         if (!r.ok) { resetBtn(btn); toast(d.error || 'Failed', 'error'); return; }
-        state._pendingPw = null; toast('Password changed', 'success'); renderAccountTab();
+        state._pendingPw = null;
+        toast('Password changed', 'success');
+        renderAccountTab();
       } else if (action === 'delete-account') {
         setBtnLoading(btn, 'Deleting account…');
         const r = await fetch('/api/auth/account', { method: 'DELETE', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ grantedToken: vdata.grantedToken }) });
         const d = await r.json();
         if (!r.ok) { resetBtn(btn); toast(d.error || 'Failed', 'error'); return; }
-        settingsModal.classList.add('hidden'); await forceSignOut('Account deleted');
+        settingsModal.classList.add('hidden');
+        await forceSignOut('Account deleted');
       }
     } catch { resetBtn(btn); toast('Network error', 'error'); }
   };
@@ -1485,7 +1627,9 @@ async function setup2FA() {
         const r = await fetch('/api/auth/2fa/enable', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) });
         const d = await r.json();
         if (!r.ok) { resetBtn(btn); toast(d.error || 'Invalid code', 'error'); return; }
-        state.user.totp_enabled = true; toast('2FA enabled', 'success'); renderSecurityTab();
+        state.user.totp_enabled = true;
+        toast('2FA enabled', 'success');
+        renderSecurityTab();
       } catch { resetBtn(btn); toast('Network error', 'error'); }
     };
   } catch { toast('Network error', 'error'); renderSecurityTab(); }
@@ -1508,7 +1652,9 @@ async function disable2FA() {
       const r = await fetch('/api/auth/2fa/disable', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) });
       const d = await r.json();
       if (!r.ok) { resetBtn(btn); toast(d.error || 'Invalid code', 'error'); return; }
-      state.user.totp_enabled = false; toast('2FA disabled', 'success'); renderSecurityTab();
+      state.user.totp_enabled = false;
+      toast('2FA disabled', 'success');
+      renderSecurityTab();
     } catch { resetBtn(btn); toast('Network error', 'error'); }
   };
 }
@@ -1524,7 +1670,7 @@ async function renderSessionsTab() {
     settingsContent.innerHTML = `
       <h3>Sessions</h3>
       <p class="modal-sub">Devices currently signed in to your account.</p>
-      ${current ? `<div class="settings-section"><h4>This device</h4>
+      ${current ? `<div class="settings-section"><h4>This device (current)</h4>
         <div class="session-item session-current"><div class="session-info">
           <div class="session-device">${escapeHtml(current.device || 'Current device')}</div>
           <div class="session-meta">${escapeHtml(current.ip || '')} · Active ${timeAgo(current.last_active)}</div>
@@ -1543,13 +1689,25 @@ async function renderSessionsTab() {
     settingsContent.querySelectorAll('[data-logout-session]').forEach(btn => {
       btn.onclick = () => confirmAction({
         title: 'Log out this session?', text: 'That device will need to log in again.', confirmLabel: 'Log out',
-        onConfirm: async () => { try { await fetch(`/api/auth/sessions/${btn.dataset.logoutSession}`, { method: 'DELETE', headers: authHeaders() }); toast('Session logged out', 'success'); renderSessionsTab(); } catch { toast('Failed', 'error'); } }
+        onConfirm: async () => {
+          try {
+            await fetch(`/api/auth/sessions/${btn.dataset.logoutSession}`, { method: 'DELETE', headers: authHeaders() });
+            toast('Session logged out', 'success');
+            renderSessionsTab();
+          } catch { toast('Failed', 'error'); }
+        }
       });
     });
     const allBtn = $('logoutAllBtn');
     if (allBtn) allBtn.onclick = () => confirmAction({
       title: 'Log out all other sessions?', text: 'All devices except this one will be signed out.', confirmLabel: 'Log out all',
-      onConfirm: async () => { try { await fetch('/api/auth/sessions-all-others', { method: 'DELETE', headers: authHeaders() }); toast('All other sessions logged out', 'success'); renderSessionsTab(); } catch { toast('Failed', 'error'); } }
+      onConfirm: async () => {
+        try {
+          await fetch('/api/auth/sessions-all-others', { method: 'DELETE', headers: authHeaders() });
+          toast('All other sessions logged out', 'success');
+          renderSessionsTab();
+        } catch { toast('Failed', 'error'); }
+      }
     });
   } catch { settingsContent.innerHTML = `<h3>Sessions</h3><p class="modal-sub">Could not load sessions.</p>`; }
 }
@@ -1558,7 +1716,8 @@ async function renderSessionsTab() {
 function confirmLogout() {
   confirmAction({
     title: 'Log out?', text: 'You will need to log in again to access your chats.', confirmLabel: 'Log out', danger: false,
-    onConfirm: () => {
+    onConfirm: async () => {
+      try { await fetch('/api/auth/sessions-current', { method: 'DELETE', headers: authHeaders() }); } catch {}
       state.token = null; state.user = null; state.chats = []; state.activeChatId = null; state.messages = [];
       localStorage.removeItem('deeprwa_token');
       renderUser(); renderChatList(); renderWelcome(); settingsModal.classList.add('hidden');
