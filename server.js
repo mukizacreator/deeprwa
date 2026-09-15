@@ -27,7 +27,7 @@ const supabase = (supabaseUrl && supabaseKey)
   : null;
 const supabaseConfigured = !!supabase;
 
-// ============ BREVO ============
+// ============ BREVO (deliverability-first) ============
 let brevoClient = null;
 try {
   if (process.env.BREVO_API_KEY) {
@@ -37,54 +37,78 @@ try {
   }
 } catch (e) { console.error('❌ Brevo init failed:', e.message); }
 
-async function sendEmailCode(toEmail, code, purpose = 'verification') {
-  if (!brevoClient) return false;
-  const subjects = {
-    signup: 'Your DeepRWA verification code',
-    login: 'Your DeepRWA login code',
-    reset: 'Your DeepRWA password reset code',
-    'change-email': 'Your DeepRWA email change code',
-    'change-password': 'Your DeepRWA password change code',
-    'delete-account': 'Your DeepRWA account deletion code'
-  };
-  const plain = `DeepRWA\n\nYour verification code is: ${code}\n\nThis code expires in 15 minutes.\nIf you did not request this, please ignore this email.\n\n— DeepRWA · The Star`;
-  const html = `<div style="font-family:Arial,Helvetica,sans-serif;max-width:520px;margin:0 auto;padding:24px;color:#1a1a1a;background:#ffffff;">
-  <div style="text-align:center;padding-bottom:16px;border-bottom:1px solid #eaeaea;">
-    <div style="font-size:22px;font-weight:700;letter-spacing:-0.02em;">
-      <span style="color:#111;">Deep</span><span style="color:#00a1de;">R</span><span style="color:#fad201;">W</span><span style="color:#20603d;">A</span>
-    </div>
-    <div style="font-size:12px;color:#888;margin-top:4px;">Your AI guide to Rwanda</div>
-  </div>
-  <div style="padding:28px 0;text-align:center;">
-    <p style="color:#555;font-size:14px;margin:0 0 16px;">Your verification code is:</p>
-    <div style="display:inline-block;background:#f4f6fa;border:1px solid #e2e6ee;border-radius:8px;padding:16px 24px;font-size:28px;font-weight:700;letter-spacing:8px;color:#111;font-family:Consolas,monospace;">${code}</div>
-    <p style="color:#888;font-size:12px;margin:20px 0 0;">This code expires in 15 minutes.</p>
-  </div>
-  <div style="text-align:center;padding-top:16px;border-top:1px solid #eaeaea;color:#999;font-size:11px;">
-    If you did not request this, please ignore this email.<br/>— DeepRWA · The Star
-  </div>
-</div>`;
+const FROM_EMAIL = process.env.EMAIL_FROM || 'noreply@deeprwa.agentdomains.co';
+const FROM_NAME = 'DeepRWA';
+const LOGO_URL = 'https://deeprwa.agentdomains.co/av.png';
 
-  const sendSmtpEmail = new brevo.SendSmtpEmail();
-  sendSmtpEmail.subject = subjects[purpose] || 'Your DeepRWA verification code';
-  sendSmtpEmail.htmlContent = html;
-  sendSmtpEmail.textContent = plain;
-  sendSmtpEmail.sender = {
-    name: 'DeepRWA',
-    email: process.env.EMAIL_FROM || 'noreply@deeprwa.agentdomains.co'
-  };
-  sendSmtpEmail.to = [{ email: toEmail }];
-  sendSmtpEmail.headers = {
-    'List-Unsubscribe': `<mailto:unsubscribe@deeprwa.agentdomains.co?subject=unsubscribe>`,
-    'X-Entity-Ref-ID': crypto.randomBytes(8).toString('hex')
-  };
+const ACTION_SUBJECTS = {
+  signup: 'DeepRWA verification code',
+  login: 'DeepRWA login code',
+  reset: 'DeepRWA password reset',
+  'forgot-password': 'DeepRWA password reset',
+  'change-email': 'DeepRWA email change',
+  'change-password': 'DeepRWA password change',
+  'delete-account': 'DeepRWA account deletion'
+};
+const ACTION_INTROS = {
+  signup: 'Use this code to verify your email and create your account:',
+  login: 'Use this code to complete your sign-in:',
+  reset: 'Use this code to reset your password:',
+  'forgot-password': 'Use this code to reset your password:',
+  'change-email': 'Use this code to confirm your new email:',
+  'change-password': 'Use this code to confirm your password change:',
+  'delete-account': 'Use this code to confirm account deletion:'
+};
+
+function buildVerificationEmailHtml(action, code) {
+  const subject = ACTION_SUBJECTS[action] || 'DeepRWA verification code';
+  const intro = ACTION_INTROS[action] || 'Use this code to continue:';
+  return `<!DOCTYPE html>
+<html><head><meta charset="UTF-8" /><title>${subject}</title></head>
+<body style="margin:0;padding:24px;background:#f4f6fa;font-family:Arial,Helvetica,sans-serif;color:#1e232a;">
+  <table role="presentation" cellpadding="0" cellspacing="0" style="max-width:520px;margin:0 auto;background:#ffffff;border-radius:12px;padding:32px 28px;">
+    <tr><td style="text-align:center;padding-bottom:20px;">
+      <img src="${LOGO_URL}" alt="DeepRWA" width="56" height="56" style="border-radius:12px;display:inline-block;" />
+    </td></tr>
+    <tr><td style="font-size:20px;font-weight:600;padding-bottom:12px;color:#1e232a;">${subject}</td></tr>
+    <tr><td style="font-size:15px;line-height:1.6;color:#3a424b;padding-bottom:20px;">${intro}</td></tr>
+    <tr><td style="text-align:center;padding:20px 0;">
+      <div style="display:inline-block;padding:16px 28px;background:#f0f4f8;color:#1e232a;font-size:32px;font-weight:700;letter-spacing:8px;border-radius:10px;font-family:Consolas,Menlo,monospace;">${code}</div>
+    </td></tr>
+    <tr><td style="font-size:14px;line-height:1.6;color:#3a424b;padding-bottom:8px;">This code expires in 10 minutes. If you did not request this, ignore this email.</td></tr>
+    <tr><td style="font-size:12px;color:#8a939c;text-align:center;padding-top:20px;border-top:1px solid #e5e9ee;">© ${new Date().getFullYear()} DeepRWA · The Star🌟</td></tr>
+  </table>
+</body></html>`;
+}
+
+async function sendEmailRaw(to, subject, html) {
+  const m = new brevo.SendSmtpEmail();
+  m.subject = subject;
+  m.htmlContent = html;
+  m.sender = { name: FROM_NAME, email: FROM_EMAIL };
+  m.to = [{ email: to }];
+  return await brevoClient.sendTransacEmail(m);
+}
+
+async function sendEmailCode(toEmail, code, purpose = 'verification') {
+  if (!brevoClient) { console.error('❌ Brevo not configured'); return false; }
+  const subject = ACTION_SUBJECTS[purpose] || 'DeepRWA verification code';
+  const html = buildVerificationEmailHtml(purpose, code);
   try {
-    const result = await brevoClient.sendTransacEmail(sendSmtpEmail);
-    console.log(`✅ Email sent to ${toEmail} (${purpose}) — messageId: ${result?.body?.messageId || 'n/a'}`);
+    const r = await sendEmailRaw(toEmail, subject, html);
+    console.log(`✅ Email sent to ${toEmail} (${purpose}) — id: ${r?.body?.messageId || 'n/a'}`);
     return true;
   } catch (err) {
-    console.error(`❌ Brevo send failed for ${toEmail}:`, err.message || err);
-    if (err.response && err.response.body) console.error('Brevo response:', JSON.stringify(err.response.body));
+    console.warn(`⚠️  Brevo attempt 1 failed for ${toEmail}: ${err.message}. Retry in 1.5s…`);
+  }
+  await new Promise(r => setTimeout(r, 1500));
+  try {
+    const r = await sendEmailRaw(toEmail, subject, html);
+    console.log(`✅ Email sent (retry) to ${toEmail} (${purpose}) — id: ${r?.body?.messageId || 'n/a'}`);
+    return true;
+  } catch (err) {
+    console.error(`❌ Retry also failed for ${toEmail}: ${err.message || err}`);
+    if (err.response?.body) console.error('Brevo response:', JSON.stringify(err.response.body));
     return false;
   }
 }
@@ -97,25 +121,15 @@ const apiLimiter = rateLimit({
 });
 app.use('/api/', apiLimiter);
 
-// ============ JWT HELPERS ============
+// ============ JWT ============
 const JWT_SECRET = process.env.JWT_SECRET;
-function signPending(payload, ttlSeconds = 900) { return jwt.sign(payload, JWT_SECRET, { expiresIn: ttlSeconds }); }
-function verifyPending(token) { try { return jwt.verify(token, JWT_SECRET); } catch { return null; } }
-function stripJwtClaims(payload) {
-  if (!payload || typeof payload !== 'object') return {};
-  const { exp, iat, nbf, aud, iss, sub, jti, ...rest } = payload;
-  return rest;
-}
+function signPending(p, ttl = 900) { return jwt.sign(p, JWT_SECRET, { expiresIn: ttl }); }
+function verifyPending(t) { try { return jwt.verify(t, JWT_SECRET); } catch { return null; } }
+function stripJwtClaims(p) { if (!p || typeof p !== 'object') return {}; const { exp, iat, nbf, aud, iss, sub, jti, ...rest } = p; return rest; }
 
 // ============ VALIDATION ============
 const EMAIL_RE = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/;
-function isValidEmail(email) {
-  if (!email || typeof email !== 'string') return false;
-  const t = email.trim();
-  if (t.length < 5 || t.length > 254) return false;
-  if (t.includes('..')) return false;
-  return EMAIL_RE.test(t);
-}
+function isValidEmail(e) { if (!e || typeof e !== 'string') return false; const t = e.trim(); if (t.length < 5 || t.length > 254) return false; if (t.includes('..')) return false; return EMAIL_RE.test(t); }
 function pwIsStrong(p) { return typeof p === 'string' && p.length >= 8 && /[a-zA-Z]/.test(p) && /\d/.test(p); }
 function genCode() { return Math.floor(100000 + Math.random() * 900000).toString(); }
 
@@ -135,35 +149,20 @@ async function findUserByEmail(email) {
   }
   return null;
 }
-async function isEmailTakenByOther(email, currentUserId) {
-  const user = await findUserByEmail(email);
-  if (!user) return false;
-  return user.id !== currentUserId;
-}
+async function isEmailTakenByOther(email, uid) { const u = await findUserByEmail(email); return u ? u.id !== uid : false; }
 
 // ============ AUTH ============
-function getUserId(req) {
-  const auth = req.headers.authorization;
-  if (!auth?.startsWith('Bearer ')) return null;
-  try { const p = jwt.verify(auth.slice(7), JWT_SECRET); return p.sub; } catch { return null; }
-}
-async function requireAuth(req, res, next) {
-  const userId = getUserId(req);
-  if (!userId) return res.status(401).json({ error: 'Authentication required' });
-  req.userId = userId;
-  next();
-}
+function getUserId(req) { const a = req.headers.authorization; if (!a?.startsWith('Bearer ')) return null; try { return jwt.verify(a.slice(7), JWT_SECRET).sub; } catch { return null; } }
+async function requireAuth(req, res, next) { const u = getUserId(req); if (!u) return res.status(401).json({ error: 'Auth required' }); req.userId = u; next(); }
 async function verifyPassword(email, password) {
   if (!supabaseUrl || !supabaseAnon) return null;
   try {
     const res = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=password`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'apikey': supabaseAnon },
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'apikey': supabaseAnon },
       body: JSON.stringify({ email, password })
     });
     if (!res.ok) return null;
-    const data = await res.json();
-    return data.user || null;
+    return (await res.json()).user || null;
   } catch { return null; }
 }
 
@@ -175,11 +174,8 @@ async function trackSession(userId, req) {
   const ip = (req.headers['x-forwarded-for'] || req.ip || 'Unknown').split(',')[0].trim();
   try {
     if (clientId) {
-      const { data: existing } = await supabase.from('sessions').select('id').eq('user_id', userId).eq('client_id', clientId).maybeSingle();
-      if (existing) {
-        await supabase.from('sessions').update({ device: ua.substring(0, 120), ip, user_agent: ua, last_active: new Date().toISOString() }).eq('id', existing.id);
-        return;
-      }
+      const { data: ex } = await supabase.from('sessions').select('id').eq('user_id', userId).eq('client_id', clientId).maybeSingle();
+      if (ex) { await supabase.from('sessions').update({ device: ua.substring(0, 120), ip, user_agent: ua, last_active: new Date().toISOString() }).eq('id', ex.id); return; }
     }
     await supabase.from('sessions').insert({ user_id: userId, client_id: clientId, device: ua.substring(0, 120), user_agent: ua, ip });
   } catch (e) { console.warn('session track failed', e.message); }
@@ -210,46 +206,26 @@ Greetings, thanks, goodbyes, "how are you", "who are you", "who made you" are NO
 ## LANGUAGE RULE
 Always reply in the **exact language the user wrote in**.
 
-## IMAGES AND DOCUMENTS (critical)
-When files are attached to a user message, they appear as image blocks, document blocks, or a note saying "[N file(s) attached]". If you see such blocks or the note:
-- NEVER claim there is no image or document.
-- If you can visually see the image content, describe it and answer the user's question about it.
-- If vision processing was unavailable and you only see the "[N file(s) attached]" note, tell the user clearly: "I can see you attached N file(s), but I'm currently unable to visually process them due to temporary vision service limits. Please try again in a moment." — do NOT say "I don't see any file".
+## FILES AND ATTACHMENTS (critical)
+When a user message contains images, PDFs, or text files, the images/PDFs are provided to you natively and text content is embedded in the message. There may also be a note like "[N file(s) attached: filename]".
+- NEVER say "I don't see any document" or "I don't see any image" when such a note or attachment is present.
+- If you can see the content, describe it or answer the question.
+- If the note is there but you truly cannot extract content, say: "I received your file(s), but couldn't read their contents. Try a different format or size."
 
 ## RULES
 1. Accuracy first.
 2. If you cannot find a definitive answer, say so politely. Never invent facts.
-3. Be concise, clear, easy to understand. Use Markdown. No raw HTML.
+3. Be concise. Use Markdown. No raw HTML.
 4. Respectful tone always.
 
 ## STYLE
 Warm, professional, concise, respectful.`;
 
-// ============ GREETING & IDENTITY ============
-const GREETING_EXACT = new Set([
-  'hi','hello','hey','yo','hiya','howdy','sup','whats up',"what's up",
-  'good morning','good afternoon','good evening','good night',
-  'thanks','thank you','thx','ty','bye','goodbye','see you','see ya',
-  'how are you',"how're you",'how are you doing','how do you do',
-  'muraho','mwaramutse','mwiriwe','amakuru','bite','bite se',
-  'bonjour','salut','bonsoir','coucou','comment ca va','comment ça va','ça va','ca va',
-  'jambo','habari','hujambo','sijambo','habari yako','nzuri',
-  'hola','olá','ciao','hallo','hei'
-]);
-const IDENTITY_PATTERNS = [
-  /\bwho\s+(are|r)\s+you\b/, /\bwhat\s+(are|r)\s+you\b/,
-  /\bwho\s+made\s+you\b/, /\bwho\s+created\s+you\b/, /\bwho\s+built\s+you\b/,
-  /\bwho\s+is\s+your\s+(creator|maker|owner|developer)\b/,
-  /\bwhat\s+is\s+your\s+name\b/, /\byour\s+name\b/
-];
+// ============ GREETINGS ============
+const GREETING_EXACT = new Set(['hi','hello','hey','yo','hiya','howdy','sup','whats up',"what's up",'good morning','good afternoon','good evening','good night','thanks','thank you','thx','ty','bye','goodbye','see you','see ya','how are you',"how're you",'how are you doing','how do you do','muraho','mwaramutse','mwiriwe','amakuru','bite','bite se','bonjour','salut','bonsoir','coucou','comment ca va','comment ça va','ça va','ca va','jambo','habari','hujambo','sijambo','habari yako','nzuri','hola','olá','ciao','hallo','hei']);
+const IDENTITY_PATTERNS = [/\bwho\s+(are|r)\s+you\b/,/\bwhat\s+(are|r)\s+you\b/,/\bwho\s+made\s+you\b/,/\bwho\s+created\s+you\b/,/\bwho\s+built\s+you\b/,/\bwho\s+is\s+your\s+(creator|maker|owner|developer)\b/,/\bwhat\s+is\s+your\s+name\b/,/\byour\s+name\b/];
 function normalise(t) { return String(t || '').toLowerCase().replace(/[’‘`]/g, "'").replace(/[^\p{L}\p{N}\s']/gu, ' ').replace(/\s+/g, ' ').trim(); }
-function isGreeting(t) {
-  const n = normalise(t);
-  if (!n) return false;
-  if (GREETING_EXACT.has(n)) return true;
-  if (n.length > 40) return false;
-  return /^(hi|hey|hello|yo|muraho|bonjour|jambo|hola|ciao|hallo)\b/.test(n) && n.split(' ').length <= 4;
-}
+function isGreeting(t) { const n = normalise(t); if (!n) return false; if (GREETING_EXACT.has(n)) return true; if (n.length > 40) return false; return /^(hi|hey|hello|yo|muraho|bonjour|jambo|hola|ciao|hallo)\b/.test(n) && n.split(' ').length <= 4; }
 function isIdentityQuestion(t) { return IDENTITY_PATTERNS.some(r => r.test(normalise(t))); }
 function buildGreetingReply(text) {
   const n = normalise(text);
@@ -265,27 +241,31 @@ function buildGreetingReply(text) {
 }
 const IDENTITY_REPLY = "I am DeepRWA, created by Emmanuel Mukiza under The Star🌟, specialised in information about Rwanda.";
 
-// ============ PROVIDER CHAIN ============
+// ============ PROVIDERS ============
 const cooldown = new Map();
 function isCooling(k) { const u = cooldown.get(k); if (!u) return false; if (Date.now() > u) { cooldown.delete(k); return false; } return true; }
 function setCooldown(k, ms) { cooldown.set(k, Date.now() + ms); }
 
-async function* sseOpenAI(url, headers, body) {
-  const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
-  if (!res.ok) { const e = new Error(`HTTP ${res.status}`); e.status = res.status; throw e; }
-  const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = '';
-  while (true) {
-    const { done, value } = await reader.read(); if (done) break;
-    buf += dec.decode(value, { stream: true });
-    let idx;
-    while ((idx = buf.indexOf('\n')) !== -1) {
-      const line = buf.slice(0, idx).trim(); buf = buf.slice(idx + 1);
-      if (!line.startsWith('data:')) continue;
-      const p = line.slice(5).trim();
-      if (p === '[DONE]') return;
-      try { const j = JSON.parse(p); const d = j.choices?.[0]?.delta?.content; if (d) yield d; } catch {}
+async function* sseOpenAI(url, headers, body, timeoutMs = 45000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body), signal: ctrl.signal });
+    if (!res.ok) { const t = await res.text().catch(() => ''); const e = new Error(`HTTP ${res.status}: ${t.slice(0, 150)}`); e.status = res.status; throw e; }
+    const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = '';
+    while (true) {
+      const { done, value } = await reader.read(); if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf('\n')) !== -1) {
+        const line = buf.slice(0, idx).trim(); buf = buf.slice(idx + 1);
+        if (!line.startsWith('data:')) continue;
+        const p = line.slice(5).trim();
+        if (p === '[DONE]') return;
+        try { const j = JSON.parse(p); const d = j.choices?.[0]?.delta?.content; if (d) yield d; } catch {}
+      }
     }
-  }
+  } finally { clearTimeout(timer); }
 }
 
 async function* streamGroq(msgs) {
@@ -352,33 +332,18 @@ async function* streamGemini(msgs) {
   } catch (e) { setCooldown(k, e.status === 429 ? 120000 : 300000); throw e; }
 }
 
-// ============ VISION PROVIDERS ============
-function buildVisionParts(messages, images) {
+// Vision: Gemini primary (images + PDFs), then OpenRouter + NVIDIA for images only
+async function* streamGeminiVision(messages, attachments) {
   const sys = messages.filter(m => m.role === 'system').map(m => m.content).join('\n');
   const userMsgs = messages.filter(m => m.role === 'user');
   const lastUser = userMsgs[userMsgs.length - 1];
-  return { sys, lastUser };
-}
-
-// Gemini Vision (native format)
-async function* streamGeminiVision(messages, images) {
-  const { sys, lastUser } = buildVisionParts(messages, images);
-  const priorConvo = messages.filter(m => m.role !== 'system' && m !== lastUser).map(m => ({
-    role: m.role === 'assistant' ? 'model' : 'user',
-    parts: [{ text: m.content }]
-  }));
-  const parts = [{ text: lastUser?.content || 'Analyse the attached files.' }];
-  for (const img of images) {
-    parts.push({ inline_data: { mime_type: img.mime, data: img.data } });
-  }
-  const body = {
-    contents: [...priorConvo, { role: 'user', parts }],
-    systemInstruction: sys ? { parts: [{ text: sys }] } : undefined,
-    generationConfig: { temperature: 0.7, maxOutputTokens: 4096 }
-  };
+  const priorConvo = messages.filter(m => m.role !== 'system' && m !== lastUser).map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
+  const parts = [{ text: lastUser?.content || 'Analyse the attached file(s).' }];
+  for (const f of attachments) parts.push({ inline_data: { mime_type: f.mime, data: f.data } });
+  const body = { contents: [...priorConvo, { role: 'user', parts }], systemInstruction: sys ? { parts: [{ text: sys }] } : undefined, generationConfig: { temperature: 0.7, maxOutputTokens: 4096 } };
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:streamGenerateContent?alt=sse&key=${process.env.GEMINI_API_KEY}`;
   const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  if (!res.ok) { const err = await res.text(); const e = new Error(`Gemini Vision ${res.status}`); e.status = res.status; throw e; }
+  if (!res.ok) { const t = await res.text().catch(() => ''); const e = new Error(`Gemini Vision ${res.status}`); e.status = res.status; throw e; }
   const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = '';
   while (true) {
     const { done, value } = await reader.read(); if (done) break;
@@ -393,23 +358,21 @@ async function* streamGeminiVision(messages, images) {
   }
 }
 
-// OpenRouter Vision (OpenAI format)
-async function* streamOpenRouterVision(messages, images) {
+async function* streamOpenRouterVision(messages, attachments) {
+  const images = attachments.filter(a => a.mime.startsWith('image/'));
+  if (!images.length) throw new Error('no images');
   const userMsgs = messages.filter(m => m.role === 'user');
   const lastUser = userMsgs[userMsgs.length - 1];
   const convo = messages.map(m => {
     if (m === lastUser) {
-      const content = [{ type: 'text', text: lastUser.content || 'Analyse the attached files.' }];
-      for (const img of images) {
-        content.push({ type: 'image_url', image_url: { url: `data:${img.mime};base64,${img.data}` } });
-      }
+      const content = [{ type: 'text', text: lastUser.content || 'Analyse the attached image(s).' }];
+      for (const f of images) content.push({ type: 'image_url', image_url: { url: `data:${f.mime};base64,${f.data}` } });
       return { role: 'user', content };
     }
     if (m.role === 'user') return { role: 'user', content: m.content };
     if (m.role === 'assistant') return { role: 'assistant', content: m.content };
     return null;
   }).filter(Boolean);
-
   yield* sseOpenAI(
     'https://openrouter.ai/api/v1/chat/completions',
     { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`, 'HTTP-Referer': 'https://deeprwa.agentdomains.co', 'X-Title': 'DeepRWA' },
@@ -417,23 +380,21 @@ async function* streamOpenRouterVision(messages, images) {
   );
 }
 
-// NVIDIA Vision (OpenAI format)
-async function* streamNVIDIAVision(messages, images) {
+async function* streamNVIDIAVision(messages, attachments) {
+  const images = attachments.filter(a => a.mime.startsWith('image/'));
+  if (!images.length) throw new Error('no images');
   const userMsgs = messages.filter(m => m.role === 'user');
   const lastUser = userMsgs[userMsgs.length - 1];
   const convo = messages.map(m => {
     if (m === lastUser) {
-      const content = [{ type: 'text', text: lastUser.content || 'Analyse the attached files.' }];
-      for (const img of images) {
-        content.push({ type: 'image_url', image_url: { url: `data:${img.mime};base64,${img.data}` } });
-      }
+      const content = [{ type: 'text', text: lastUser.content || 'Analyse the attached image(s).' }];
+      for (const f of images) content.push({ type: 'image_url', image_url: { url: `data:${f.mime};base64,${f.data}` } });
       return { role: 'user', content };
     }
     if (m.role === 'user') return { role: 'user', content: m.content };
     if (m.role === 'assistant') return { role: 'assistant', content: m.content };
     return null;
   }).filter(Boolean);
-
   yield* sseOpenAI(
     'https://integrate.api.nvidia.com/v1/chat/completions',
     { Authorization: `Bearer ${process.env.NVIDIA_API_KEY}` },
@@ -446,7 +407,6 @@ const VISION_PROVIDERS = [
   { name: 'OpenRouter Vision', fn: streamOpenRouterVision },
   { name: 'NVIDIA Vision', fn: streamNVIDIAVision }
 ];
-
 const PROVIDERS = [
   { name: 'Groq', fn: streamGroq },
   { name: 'Gemini', fn: streamGemini },
@@ -456,62 +416,34 @@ const PROVIDERS = [
   { name: 'Pollinations', fn: streamPollinations }
 ];
 
-// ============ TITLE GENERATION ============
+// ============ TITLE ============
 async function generateChatTitle(firstMessage) {
   if (!firstMessage) return 'New chat';
   if (isGreeting(firstMessage)) return 'Greeting';
   if (isIdentityQuestion(firstMessage)) return 'About DeepRWA';
-  const textOnly = String(firstMessage).slice(0, 400);
+  const t = String(firstMessage).slice(0, 400);
   try {
     const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'openai/gpt-oss-120b',
-        messages: [
-          { role: 'system', content: 'Generate a concise 2-5 word title that captures the topic of the user\'s message. Reply with ONLY the title text — no quotes, no "Title:" prefix, no punctuation at the end.' },
-          { role: 'user', content: textOnly }
-        ],
-        max_completion_tokens: 40,
-        reasoning_effort: 'none',
-        temperature: 0.3
-      })
+      body: JSON.stringify({ model: 'openai/gpt-oss-120b', messages: [{ role: 'system', content: 'Generate a concise 2-5 word title. Reply with ONLY the title — no quotes, no prefix, no punctuation.' }, { role: 'user', content: t }], max_completion_tokens: 40, reasoning_effort: 'none', temperature: 0.3 })
     });
-    if (!res.ok) throw new Error('title api ' + res.status);
+    if (!res.ok) throw new Error();
     const data = await res.json();
-    let title = (data.choices?.[0]?.message?.content || '').trim();
-    title = title.replace(/^["'`\s]+|["'`\s]+$/g, '').replace(/^Title:\s*/i, '').split('\n')[0].trim();
-    title = title.replace(/[.!?,;:]+$/, '');
-    if (!title || title.length > 60 || title.toLowerCase() === textOnly.toLowerCase()) {
-      title = textOnly.split(/\s+/).slice(0, 6).join(' ');
-    }
+    let title = (data.choices?.[0]?.message?.content || '').trim().replace(/^["'`\s]+|["'`\s]+$/g, '').replace(/^Title:\s*/i, '').split('\n')[0].trim().replace(/[.!?,;:]+$/, '');
+    if (!title || title.length > 60 || title.toLowerCase() === t.toLowerCase()) title = t.split(/\s+/).slice(0, 6).join(' ');
     return title || 'New chat';
-  } catch {
-    return textOnly.split(/\s+/).slice(0, 6).join(' ') || 'New chat';
-  }
+  } catch { return t.split(/\s+/).slice(0, 6).join(' ') || 'New chat'; }
 }
 
 // ============ ROUTES ============
-app.get('/health', (req, res) => res.json({ status: 'ok', service: 'DeepRWA', version: '2.4.0', time: new Date().toISOString() }));
-
-app.get('/api/config', (req, res) => res.json({
-  name: 'DeepRWA', tagline: 'Your AI guide to Rwanda', version: '2.4.0',
-  supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null
-}));
-
+app.get('/health', (req, res) => res.json({ status: 'ok', service: 'DeepRWA', version: '2.5.0', time: new Date().toISOString() }));
+app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '2.5.0', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
 app.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nSitemap: https://deeprwa.agentdomains.co/sitemap.xml\n`));
 app.get('/sitemap.xml', (req, res) => res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>https://deeprwa.agentdomains.co/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>\n</urlset>`));
 
-app.get('/api/debug/test-email', async (req, res) => {
-  const to = req.query.to;
-  if (!to) return res.status(400).json({ error: 'Add ?to=email' });
-  const ok = await sendEmailCode(to, '123456', 'signup');
-  res.json({ sent: ok, brevoConfigured: !!brevoClient, fromEmail: process.env.EMAIL_FROM || 'noreply@deeprwa.agentdomains.co', to });
-});
-
-// ---- AUTH: Signup ----
 app.post('/api/auth/signup', async (req, res) => {
-  if (!supabaseConfigured) return res.status(503).json({ error: 'Auth service not configured.' });
+  if (!supabaseConfigured) return res.status(503).json({ error: 'Auth not configured' });
   const { email, password, fullName } = req.body || {};
   if (!isValidEmail(email)) return res.status(400).json({ error: 'Invalid email address' });
   if (!pwIsStrong(password)) return res.status(400).json({ error: 'Password must be at least 8 characters with letters and numbers' });
@@ -521,40 +453,34 @@ app.post('/api/auth/signup', async (req, res) => {
   const code = genCode();
   const pendingToken = signPending({ type: 'signup', email: emailLower, password, fullName: fullName || '', code }, 900);
   const sent = await sendEmailCode(emailLower, code, 'signup');
-  if (!sent) return res.status(500).json({ error: 'Could not send verification email. Please try again later.' });
-  res.json({ pendingToken, email: emailLower, message: 'Verification code sent' });
+  if (!sent) return res.status(500).json({ error: 'Could not send verification email. Please try again.' });
+  res.json({ pendingToken, email: emailLower });
 });
 
 app.post('/api/auth/confirm-signup', async (req, res) => {
-  if (!supabaseConfigured) return res.status(503).json({ error: 'Auth service not configured.' });
   const { pendingToken, code } = req.body || {};
-  if (!pendingToken || !code) return res.status(400).json({ error: 'Token and code required' });
-  const payload = verifyPending(pendingToken);
-  if (!payload || payload.type !== 'signup') return res.status(400).json({ error: 'Invalid or expired token' });
-  if (payload.code !== code) return res.status(400).json({ error: 'Invalid code' });
-  const { data: newUser, error } = await supabase.auth.admin.createUser({ email: payload.email, password: payload.password, email_confirm: true });
+  const p = verifyPending(pendingToken);
+  if (!p || p.type !== 'signup') return res.status(400).json({ error: 'Session expired' });
+  if (p.code !== code) return res.status(400).json({ error: 'Invalid or expired code' });
+  const { data: newUser, error } = await supabase.auth.admin.createUser({ email: p.email, password: p.password, email_confirm: true });
   if (error) return res.status(500).json({ error: error.message });
-  await supabase.from('profiles').insert({ id: newUser.user.id, email: payload.email, display_name: payload.fullName || null });
+  await supabase.from('profiles').insert({ id: newUser.user.id, email: p.email, display_name: p.fullName || null });
   await trackSession(newUser.user.id, req);
-  const accessToken = jwt.sign({ sub: newUser.user.id, email: payload.email }, JWT_SECRET, { expiresIn: '30d' });
-  res.json({ accessToken, user: { id: newUser.user.id, email: payload.email, display_name: payload.fullName || null } });
+  const accessToken = jwt.sign({ sub: newUser.user.id, email: p.email }, JWT_SECRET, { expiresIn: '30d' });
+  res.json({ accessToken, user: { id: newUser.user.id, email: p.email, display_name: p.fullName || null } });
 });
 
 app.post('/api/auth/resend-verification', async (req, res) => {
-  const { pendingToken } = req.body || {};
-  if (!pendingToken) return res.status(400).json({ error: 'Token required' });
-  const p = verifyPending(pendingToken);
-  if (!p || p.type !== 'signup') return res.status(400).json({ error: 'Invalid token' });
+  const p = verifyPending(req.body?.pendingToken);
+  if (!p || p.type !== 'signup') return res.status(400).json({ error: 'Session expired' });
   const code = genCode();
   const newToken = signPending({ ...stripJwtClaims(p), code }, 900);
   const sent = await sendEmailCode(p.email, code, 'signup');
   if (!sent) return res.status(500).json({ error: 'Could not send email' });
-  res.json({ pendingToken: newToken, email: p.email });
+  res.json({ pendingToken: newToken });
 });
 
-// ---- AUTH: Login ----
 app.post('/api/auth/login', async (req, res) => {
-  if (!supabaseConfigured) return res.status(503).json({ error: 'Auth service not configured.' });
   const { email, password } = req.body || {};
   if (!isValidEmail(email)) return res.status(400).json({ error: 'Invalid email' });
   if (!password) return res.status(400).json({ error: 'Password required' });
@@ -562,35 +488,26 @@ app.post('/api/auth/login', async (req, res) => {
   if (!user) return res.status(401).json({ error: 'Invalid email or password' });
   const { data: profile } = await supabase.from('profiles').select('totp_enabled').eq('id', user.id).maybeSingle();
   const code = genCode();
-  const pendingToken = signPending({
-    type: 'login', userId: user.id, email: user.email, code,
-    needs2fa: profile?.totp_enabled || false
-  }, 900);
+  const pendingToken = signPending({ type: 'login', userId: user.id, email: user.email, code, needs2fa: profile?.totp_enabled || false }, 900);
   const sent = await sendEmailCode(user.email, code, 'login');
   if (!sent) return res.status(500).json({ error: 'Could not send login code' });
-  res.json({ pendingToken, requiresCode: true, requires2fa: profile?.totp_enabled || false });
+  res.json({ pendingToken, requires2fa: profile?.totp_enabled || false });
 });
 
 app.post('/api/auth/verify-login', async (req, res) => {
   const { pendingToken, code } = req.body || {};
-  if (!pendingToken || !code) return res.status(400).json({ error: 'Token and code required' });
-  const payload = verifyPending(pendingToken);
-  if (!payload || payload.type !== 'login') return res.status(400).json({ error: 'Invalid or expired token' });
-  if (payload.code !== code) return res.status(400).json({ error: 'Invalid code' });
-  if (payload.needs2fa) {
-    const twofaToken = signPending({ type: 'login-2fa', userId: payload.userId, email: payload.email }, 600);
-    return res.json({ requires2fa: true, twofaToken });
-  }
-  await trackSession(payload.userId, req);
-  const accessToken = jwt.sign({ sub: payload.userId, email: payload.email }, JWT_SECRET, { expiresIn: '30d' });
-  res.json({ accessToken, user: { id: payload.userId, email: payload.email } });
+  const p = verifyPending(pendingToken);
+  if (!p || p.type !== 'login') return res.status(400).json({ error: 'Session expired' });
+  if (p.code !== code) return res.status(400).json({ error: 'Invalid or expired code' });
+  if (p.needs2fa) { const twofaToken = signPending({ type: 'login-2fa', userId: p.userId, email: p.email }, 600); return res.json({ requires2fa: true, twofaToken }); }
+  await trackSession(p.userId, req);
+  const accessToken = jwt.sign({ sub: p.userId, email: p.email }, JWT_SECRET, { expiresIn: '30d' });
+  res.json({ accessToken, user: { id: p.userId, email: p.email } });
 });
 
 app.post('/api/auth/resend-login-code', async (req, res) => {
-  const { pendingToken } = req.body || {};
-  if (!pendingToken) return res.status(400).json({ error: 'Token required' });
-  const p = verifyPending(pendingToken);
-  if (!p || p.type !== 'login') return res.status(400).json({ error: 'Invalid token' });
+  const p = verifyPending(req.body?.pendingToken);
+  if (!p || p.type !== 'login') return res.status(400).json({ error: 'Session expired' });
   const code = genCode();
   const newToken = signPending({ ...stripJwtClaims(p), code }, 900);
   const sent = await sendEmailCode(p.email, code, 'login');
@@ -600,32 +517,22 @@ app.post('/api/auth/resend-login-code', async (req, res) => {
 
 app.post('/api/auth/verify-2fa', async (req, res) => {
   const { twofaToken, code } = req.body || {};
-  if (!twofaToken || !code) return res.status(400).json({ error: 'Token and code required' });
-  const payload = verifyPending(twofaToken);
-  if (!payload || payload.type !== 'login-2fa') return res.status(400).json({ error: 'Invalid or expired token' });
-  const { data: profile } = await supabase.from('profiles').select('totp_secret').eq('id', payload.userId).maybeSingle();
+  const p = verifyPending(twofaToken);
+  if (!p || p.type !== 'login-2fa') return res.status(400).json({ error: 'Session expired' });
+  const { data: profile } = await supabase.from('profiles').select('totp_secret').eq('id', p.userId).maybeSingle();
   if (!profile?.totp_secret) return res.status(400).json({ error: '2FA not configured' });
-  const valid = authenticator.verify({ token: code, secret: profile.totp_secret });
-  if (!valid) return res.status(400).json({ error: 'Invalid 2FA code' });
-  await trackSession(payload.userId, req);
-  const accessToken = jwt.sign({ sub: payload.userId, email: payload.email }, JWT_SECRET, { expiresIn: '30d' });
-  res.json({ accessToken, user: { id: payload.userId, email: payload.email } });
+  if (!authenticator.verify({ token: code, secret: profile.totp_secret })) return res.status(400).json({ error: 'Invalid 2FA code' });
+  await trackSession(p.userId, req);
+  const accessToken = jwt.sign({ sub: p.userId, email: p.email }, JWT_SECRET, { expiresIn: '30d' });
+  res.json({ accessToken, user: { id: p.userId, email: p.email } });
 });
 
 app.get('/api/auth/me', requireAuth, async (req, res) => {
-  if (!supabaseConfigured) return res.status(503).json({ error: 'Not configured' });
   const { data } = await supabase.from('profiles').select('*').eq('id', req.userId).maybeSingle();
-  res.json({
-    user: {
-      id: req.userId, email: data?.email, display_name: data?.display_name,
-      totp_enabled: data?.totp_enabled || false, created_at: data?.created_at
-    }
-  });
+  res.json({ user: { id: req.userId, email: data?.email, display_name: data?.display_name, totp_enabled: data?.totp_enabled || false, created_at: data?.created_at } });
 });
 
-// ---- Forgot password ----
 app.post('/api/auth/forgot-password-request', async (req, res) => {
-  if (!supabaseConfigured) return res.status(503).json({ error: 'Not configured' });
   const { email } = req.body || {};
   if (!isValidEmail(email)) return res.status(400).json({ error: 'Invalid email' });
   const user = await findUserByEmail(email);
@@ -639,19 +546,16 @@ app.post('/api/auth/forgot-password-request', async (req, res) => {
 
 app.post('/api/auth/forgot-password-verify-code', async (req, res) => {
   const { pendingToken, code } = req.body || {};
-  if (!pendingToken || !code) return res.status(400).json({ error: 'Token and code required' });
   const p = verifyPending(pendingToken);
-  if (!p || p.type !== 'forgot-password') return res.status(400).json({ error: 'Invalid or expired token' });
-  if (p.code !== code) return res.status(400).json({ error: 'Invalid code' });
+  if (!p || p.type !== 'forgot-password') return res.status(400).json({ error: 'Session expired' });
+  if (p.code !== code) return res.status(400).json({ error: 'Invalid or expired code' });
   const grantedToken = signPending({ type: 'forgot-password-granted', email: p.email, userId: p.userId }, 600);
   res.json({ grantedToken });
 });
 
 app.post('/api/auth/resend-forgot-password-code', async (req, res) => {
-  const { pendingToken } = req.body || {};
-  if (!pendingToken) return res.status(400).json({ error: 'Token required' });
-  const p = verifyPending(pendingToken);
-  if (!p || p.type !== 'forgot-password') return res.status(400).json({ error: 'Invalid token' });
+  const p = verifyPending(req.body?.pendingToken);
+  if (!p || p.type !== 'forgot-password') return res.status(400).json({ error: 'Session expired' });
   const code = genCode();
   const newToken = signPending({ ...stripJwtClaims(p), code }, 900);
   const sent = await sendEmailCode(p.email, code, 'reset');
@@ -660,12 +564,10 @@ app.post('/api/auth/resend-forgot-password-code', async (req, res) => {
 });
 
 app.post('/api/auth/reset-password', async (req, res) => {
-  if (!supabaseConfigured) return res.status(503).json({ error: 'Not configured' });
   const { grantedToken, newPassword } = req.body || {};
-  if (!grantedToken || !newPassword) return res.status(400).json({ error: 'Missing data' });
   if (!pwIsStrong(newPassword)) return res.status(400).json({ error: 'Password must be at least 8 chars with letters and numbers' });
   const g = verifyPending(grantedToken);
-  if (!g || g.type !== 'forgot-password-granted') return res.status(400).json({ error: 'Invalid token' });
+  if (!g || g.type !== 'forgot-password-granted') return res.status(400).json({ error: 'Session expired' });
   const same = await verifyPassword(g.email, newPassword);
   if (same) return res.status(400).json({ error: 'New password must be different from the current one' });
   const { error } = await supabase.auth.admin.updateUserById(g.userId, { password: newPassword });
@@ -673,9 +575,7 @@ app.post('/api/auth/reset-password', async (req, res) => {
   res.json({ success: true });
 });
 
-// ---- Account actions ----
 app.post('/api/auth/send-action-code', requireAuth, async (req, res) => {
-  if (!supabaseConfigured) return res.status(503).json({ error: 'Not configured' });
   const { action, newEmail } = req.body || {};
   if (!['change-email', 'change-password', 'delete-account'].includes(action)) return res.status(400).json({ error: 'Invalid action' });
   const { data: profile } = await supabase.from('profiles').select('email').eq('id', req.userId).maybeSingle();
@@ -689,20 +589,15 @@ app.post('/api/auth/send-action-code', requireAuth, async (req, res) => {
     targetEmail = newEmail;
   }
   const code = genCode();
-  const pendingToken = signPending({
-    type: 'action', action, userId: req.userId, email: profile.email,
-    newEmail: action === 'change-email' ? newEmail : null, code
-  }, 900);
+  const pendingToken = signPending({ type: 'action', action, userId: req.userId, email: profile.email, newEmail: action === 'change-email' ? newEmail : null, code }, 900);
   const sent = await sendEmailCode(targetEmail, code, action);
   if (!sent) return res.status(500).json({ error: 'Could not send email' });
   res.json({ pendingToken, targetEmail });
 });
 
 app.post('/api/auth/resend-action-code', requireAuth, async (req, res) => {
-  const { pendingToken } = req.body || {};
-  if (!pendingToken) return res.status(400).json({ error: 'Token required' });
-  const p = verifyPending(pendingToken);
-  if (!p || p.type !== 'action' || p.userId !== req.userId) return res.status(400).json({ error: 'Invalid token' });
+  const p = verifyPending(req.body?.pendingToken);
+  if (!p || p.type !== 'action' || p.userId !== req.userId) return res.status(400).json({ error: 'Session expired' });
   const code = genCode();
   const newToken = signPending({ ...stripJwtClaims(p), code }, 900);
   const targetEmail = p.action === 'change-email' && p.newEmail ? p.newEmail : p.email;
@@ -713,26 +608,22 @@ app.post('/api/auth/resend-action-code', requireAuth, async (req, res) => {
 
 app.post('/api/auth/verify-action-code', requireAuth, async (req, res) => {
   const { pendingToken, code, action } = req.body || {};
-  if (!pendingToken || !code) return res.status(400).json({ error: 'Token and code required' });
   const p = verifyPending(pendingToken);
-  if (!p || p.type !== 'action' || p.userId !== req.userId) return res.status(400).json({ error: 'Invalid token' });
+  if (!p || p.type !== 'action' || p.userId !== req.userId) return res.status(400).json({ error: 'Session expired' });
   if (p.action !== action) return res.status(400).json({ error: 'Action mismatch' });
-  if (p.code !== code) return res.status(400).json({ error: 'Invalid code' });
+  if (p.code !== code) return res.status(400).json({ error: 'Invalid or expired code' });
   const grantedToken = signPending({ type: 'granted', action: p.action, userId: p.userId, newEmail: p.newEmail || null }, 600);
   res.json({ grantedToken });
 });
 
 app.post('/api/auth/change-password', requireAuth, async (req, res) => {
-  if (!supabaseConfigured) return res.status(503).json({ error: 'Not configured' });
   const { currentPassword, newPassword, grantedToken } = req.body || {};
   if (!pwIsStrong(newPassword)) return res.status(400).json({ error: 'Password must be at least 8 chars with letters and numbers' });
   const g = verifyPending(grantedToken);
-  if (!g || g.type !== 'granted' || g.action !== 'change-password' || g.userId !== req.userId) return res.status(400).json({ error: 'Invalid or expired token' });
+  if (!g || g.type !== 'granted' || g.action !== 'change-password' || g.userId !== req.userId) return res.status(400).json({ error: 'Session expired' });
   const { data: profile } = await supabase.from('profiles').select('email').eq('id', req.userId).maybeSingle();
-  const user = await verifyPassword(profile?.email, currentPassword);
-  if (!user) return res.status(401).json({ error: 'Current password is incorrect' });
-  const same = await verifyPassword(profile?.email, newPassword);
-  if (same) return res.status(400).json({ error: 'New password must be different from the current one' });
+  if (!await verifyPassword(profile?.email, currentPassword)) return res.status(401).json({ error: 'Current password is incorrect' });
+  if (await verifyPassword(profile?.email, newPassword)) return res.status(400).json({ error: 'New password must be different' });
   const { error } = await supabase.auth.admin.updateUserById(req.userId, { password: newPassword });
   if (error) return res.status(500).json({ error: error.message });
   res.json({ success: true });
@@ -742,19 +633,15 @@ app.post('/api/auth/verify-current-password', requireAuth, async (req, res) => {
   const { password } = req.body || {};
   if (!password) return res.status(400).json({ error: 'Password required' });
   const { data: profile } = await supabase.from('profiles').select('email').eq('id', req.userId).maybeSingle();
-  const user = await verifyPassword(profile?.email, password);
-  if (!user) return res.status(401).json({ error: 'Incorrect password' });
+  if (!await verifyPassword(profile?.email, password)) return res.status(401).json({ error: 'Incorrect password' });
   res.json({ valid: true });
 });
 
 app.post('/api/auth/change-email', requireAuth, async (req, res) => {
-  if (!supabaseConfigured) return res.status(503).json({ error: 'Not configured' });
-  const { grantedToken } = req.body || {};
-  const g = verifyPending(grantedToken);
-  if (!g || g.type !== 'granted' || g.action !== 'change-email' || g.userId !== req.userId || !g.newEmail) return res.status(400).json({ error: 'Invalid or expired token' });
+  const g = verifyPending(req.body?.grantedToken);
+  if (!g || g.type !== 'granted' || g.action !== 'change-email' || g.userId !== req.userId || !g.newEmail) return res.status(400).json({ error: 'Session expired' });
   if (!isValidEmail(g.newEmail)) return res.status(400).json({ error: 'Invalid email' });
-  const taken = await isEmailTakenByOther(g.newEmail, req.userId);
-  if (taken) return res.status(400).json({ error: 'That email is already in use' });
+  if (await isEmailTakenByOther(g.newEmail, req.userId)) return res.status(400).json({ error: 'That email is already in use' });
   const { error } = await supabase.auth.admin.updateUserById(req.userId, { email: g.newEmail, email_confirm: true });
   if (error) return res.status(500).json({ error: error.message });
   await supabase.from('profiles').update({ email: g.newEmail }).eq('id', req.userId);
@@ -762,99 +649,77 @@ app.post('/api/auth/change-email', requireAuth, async (req, res) => {
 });
 
 app.delete('/api/auth/account', requireAuth, async (req, res) => {
-  if (!supabaseConfigured) return res.status(503).json({ error: 'Not configured' });
-  const { grantedToken } = req.body || {};
-  const g = verifyPending(grantedToken);
-  if (!g || g.type !== 'granted' || g.action !== 'delete-account' || g.userId !== req.userId) return res.status(400).json({ error: 'Invalid or expired token' });
+  const g = verifyPending(req.body?.grantedToken);
+  if (!g || g.type !== 'granted' || g.action !== 'delete-account' || g.userId !== req.userId) return res.status(400).json({ error: 'Session expired' });
   await supabase.from('sessions').delete().eq('user_id', req.userId);
   const { error } = await supabase.auth.admin.deleteUser(req.userId);
   if (error) return res.status(500).json({ error: error.message });
   res.json({ success: true });
 });
 
-// ---- 2FA ----
 app.post('/api/auth/2fa/setup', requireAuth, async (req, res) => {
-  if (!supabaseConfigured) return res.status(503).json({ error: 'Not configured' });
   const { data: profile } = await supabase.from('profiles').select('email, totp_enabled').eq('id', req.userId).maybeSingle();
-  if (profile?.totp_enabled) return res.status(400).json({ error: '2FA is already enabled' });
+  if (profile?.totp_enabled) return res.status(400).json({ error: '2FA already enabled' });
   const secret = authenticator.generateSecret();
   const otpauth = authenticator.keyuri(profile?.email || 'user', 'DeepRWA', secret);
-  const qrDataUrl = await QRCode.toDataURL(otpauth, { width: 240, margin: 1, color: { dark: '#e6e8eb', light: '#0a0a0a' } });
+  const qrDataUrl = await QRCode.toDataURL(otpauth, { width: 240, margin: 1, color: { dark: '#1e232a', light: '#ffffff' } });
   await supabase.from('profiles').update({ totp_secret: secret }).eq('id', req.userId);
-  res.json({ secret, otpauth, qrDataUrl });
+  res.json({ secret, qrDataUrl });
 });
 
 app.post('/api/auth/2fa/enable', requireAuth, async (req, res) => {
-  if (!supabaseConfigured) return res.status(503).json({ error: 'Not configured' });
   const { code } = req.body || {};
   const { data: profile } = await supabase.from('profiles').select('totp_secret').eq('id', req.userId).maybeSingle();
   if (!profile?.totp_secret) return res.status(400).json({ error: 'Start setup first' });
-  const valid = authenticator.verify({ token: code, secret: profile.totp_secret });
-  if (!valid) return res.status(400).json({ error: 'Invalid 2FA code' });
+  if (!authenticator.verify({ token: code, secret: profile.totp_secret })) return res.status(400).json({ error: 'Invalid 2FA code' });
   await supabase.from('profiles').update({ totp_enabled: true }).eq('id', req.userId);
   res.json({ success: true });
 });
 
 app.post('/api/auth/2fa/disable', requireAuth, async (req, res) => {
-  if (!supabaseConfigured) return res.status(503).json({ error: 'Not configured' });
   const { code } = req.body || {};
   const { data: profile } = await supabase.from('profiles').select('totp_secret').eq('id', req.userId).maybeSingle();
   if (!profile?.totp_secret) return res.status(400).json({ error: '2FA not enabled' });
-  const valid = authenticator.verify({ token: code, secret: profile.totp_secret });
-  if (!valid) return res.status(400).json({ error: 'Invalid 2FA code' });
+  if (!authenticator.verify({ token: code, secret: profile.totp_secret })) return res.status(400).json({ error: 'Invalid 2FA code' });
   await supabase.from('profiles').update({ totp_enabled: false, totp_secret: null }).eq('id', req.userId);
   res.json({ success: true });
 });
 
-// ---- Sessions ----
 app.get('/api/auth/sessions', requireAuth, async (req, res) => {
-  if (!supabaseConfigured) return res.status(503).json({ sessions: [] });
   const clientId = req.headers['x-client-id'] || '';
   const { data } = await supabase.from('sessions').select('*').eq('user_id', req.userId).order('last_active', { ascending: false });
-  const sessions = (data || []).map(s => ({ ...s, current: s.client_id === clientId }));
-  res.json({ sessions });
+  res.json({ sessions: (data || []).map(s => ({ ...s, current: s.client_id === clientId })) });
 });
 
 app.get('/api/auth/session-check', requireAuth, async (req, res) => {
-  if (!supabaseConfigured) return res.json({ valid: true });
   const clientId = req.headers['x-client-id'] || '';
   const { data } = await supabase.from('sessions').select('id, client_id').eq('user_id', req.userId);
-  const rows = data || [];
-  const byClient = clientId ? rows.find(s => s.client_id === clientId) : null;
-  if (byClient) {
-    await supabase.from('sessions').update({ last_active: new Date().toISOString() }).eq('id', byClient.id);
-    return res.json({ valid: true });
-  }
+  const byClient = clientId ? (data || []).find(s => s.client_id === clientId) : null;
+  if (byClient) { await supabase.from('sessions').update({ last_active: new Date().toISOString() }).eq('id', byClient.id); return res.json({ valid: true }); }
   return res.json({ valid: false });
 });
 
 app.delete('/api/auth/sessions/:id', requireAuth, async (req, res) => {
-  if (!supabaseConfigured) return res.status(503).json({ error: 'Not configured' });
   const clientId = req.headers['x-client-id'] || '';
   const { data: row } = await supabase.from('sessions').select('client_id').eq('id', req.params.id).eq('user_id', req.userId).maybeSingle();
-  if (row && row.client_id === clientId) return res.status(400).json({ error: 'Use the account menu to log out the current session' });
+  if (row && row.client_id === clientId) return res.status(400).json({ error: 'Log out via account menu' });
   await supabase.from('sessions').delete().eq('id', req.params.id).eq('user_id', req.userId);
   res.json({ success: true });
 });
 
 app.delete('/api/auth/sessions-all-others', requireAuth, async (req, res) => {
-  if (!supabaseConfigured) return res.status(503).json({ error: 'Not configured' });
   const clientId = req.headers['x-client-id'] || '';
   if (clientId) await supabase.from('sessions').delete().eq('user_id', req.userId).neq('client_id', clientId);
   else await supabase.from('sessions').delete().eq('user_id', req.userId);
   res.json({ success: true });
 });
 
-// ---- FILE UPLOAD (10 MB) ----
 app.post('/api/upload', requireAuth, async (req, res) => {
-  if (!supabaseConfigured) return res.status(503).json({ error: 'Not configured' });
   const { name, type, data } = req.body || {};
   if (!name || !type || !data) return res.status(400).json({ error: 'Missing file data' });
   try {
     const buffer = Buffer.from(data, 'base64');
-    if (buffer.length > 10 * 1024 * 1024) {
-      return res.status(413).json({ error: 'File too large (max 10 MB)' });
-    }
+    if (buffer.length > 10 * 1024 * 1024) return res.status(413).json({ error: 'File too large (max 10 MB)' });
     const ext = (name.split('.').pop() || 'bin').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8);
     const filePath = `${req.userId}/${Date.now()}-${crypto.randomBytes(4).toString('hex')}.${ext}`;
     const { error: upErr } = await supabase.storage.from('uploads').upload(filePath, buffer, { contentType: type, upsert: false });
@@ -864,29 +729,41 @@ app.post('/api/upload', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ---- TITLE ----
+app.get('/api/files', requireAuth, async (req, res) => {
+  try {
+    const { data: convs } = await supabase.from('conversations').select('id').eq('user_id', req.userId);
+    const convIds = (convs || []).map(c => c.id);
+    if (!convIds.length) return res.json({ files: [] });
+    const { data } = await supabase.from('messages').select('files, created_at, role').in('conversation_id', convIds).not('files', 'is', null).order('created_at', { ascending: false });
+    const all = [];
+    for (const row of (data || [])) {
+      if (Array.isArray(row.files)) {
+        for (const f of row.files) {
+          if (f && (f.url || f.public_url)) all.push({ ...f, url: f.url || f.public_url, created_at: row.created_at, role: row.role });
+        }
+      }
+    }
+    res.json({ files: all });
+  } catch (e) { res.status(500).json({ error: e.message, files: [] }); }
+});
+
 app.post('/api/chat/title', async (req, res) => {
   const { message } = req.body || {};
   if (!message) return res.status(400).json({ error: 'message required' });
-  const title = await generateChatTitle(message);
-  res.json({ title });
+  res.json({ title: await generateChatTitle(message) });
 });
 
-// ---- CHAT ----
 app.post('/api/chat/guest', async (req, res) => {
-  const { messages, images } = req.body || {};
+  const { messages, attachments } = req.body || {};
   if (!Array.isArray(messages) || !messages.length) return res.status(400).json({ error: 'messages required' });
-  await streamChatResponse(messages, res, null, images || []);
+  await streamChatResponse(messages, res, null, attachments || []);
 });
 
 app.post('/api/chat', requireAuth, async (req, res) => {
-  if (!supabaseConfigured) return res.status(503).json({ error: 'Not configured' });
-  const { messages, conversationId, images } = req.body || {};
+  const { messages, conversationId, attachments } = req.body || {};
   if (!Array.isArray(messages) || !messages.length) return res.status(400).json({ error: 'messages required' });
-
   let convId = conversationId;
   const firstUserText = messages.find(m => m.role === 'user')?.content || '';
-
   if (!convId) {
     const title = await generateChatTitle(firstUserText);
     const { data: conv, error } = await supabase.from('conversations').insert({ user_id: req.userId, title }).select().single();
@@ -899,139 +776,80 @@ app.post('/api/chat', requireAuth, async (req, res) => {
       await supabase.from('conversations').update({ title }).eq('id', convId);
     }
   }
-
   const lastMsg = messages[messages.length - 1];
   if (lastMsg?.role === 'user') {
-    await supabase.from('messages').insert({
-      conversation_id: convId,
-      role: 'user',
-      content: lastMsg.content,
-      files: Array.isArray(lastMsg.files) ? lastMsg.files : []
-    });
+    await supabase.from('messages').insert({ conversation_id: convId, role: 'user', content: lastMsg.content, files: Array.isArray(lastMsg.files) ? lastMsg.files : [] });
   }
-
   res.setHeader('X-Conversation-Id', convId);
-  await streamChatResponse(messages, res, convId, images || []);
+  await streamChatResponse(messages, res, convId, attachments || []);
 });
 
-async function streamChatResponse(messages, res, conversationId, images) {
+async function streamChatResponse(messages, res, conversationId, attachments) {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders?.();
-
   const send = (o) => res.write(`data: ${JSON.stringify(o)}\n\n`);
   const done = () => { res.write('data: [DONE]\n\n'); res.end(); };
 
   const lastUser = [...messages].reverse().find(m => m.role === 'user');
   const userText = lastUser?.content || '';
 
-  if ((!images || !images.length)) {
+  if ((!attachments || !attachments.length)) {
     if (isIdentityQuestion(userText)) { for (const c of IDENTITY_REPLY) send({ text: c }); return done(); }
-    if (isGreeting(userText) && messages.length <= 2) {
-      const r = buildGreetingReply(userText);
-      for (const c of r) send({ text: c });
-      return done();
-    }
+    if (isGreeting(userText) && messages.length <= 2) { const r = buildGreetingReply(userText); for (const c of r) send({ text: c }); return done(); }
   }
 
-  // When images present, try vision providers in order
-  if (images && images.length) {
-    let visionText = '';
-    let visionStarted = false;
+  if (attachments && attachments.length) {
+    const names = attachments.map(a => a.name || a.mime).join(', ');
+    const note = `\n\n[${attachments.length} file(s) attached: ${names}]`;
+    let handled = false;
     for (const vp of VISION_PROVIDERS) {
       try {
-        visionText = '';
-        visionStarted = false;
-        const msgsWithNote = messages; // unchanged — vision providers handle images natively
-        for await (const chunk of vp.fn(msgsWithNote, images)) {
-          visionStarted = true;
-          visionText += chunk;
-          send({ text: chunk });
-        }
-        if (visionStarted && visionText.trim()) {
-          if (conversationId && supabase) {
-            await supabase.from('messages').insert({ conversation_id: conversationId, role: 'assistant', content: visionText });
-          }
+        let fullText = ''; let any = false;
+        for await (const chunk of vp.fn(messages, attachments)) { any = true; fullText += chunk; send({ text: chunk }); }
+        if (any && fullText.trim()) {
+          handled = true;
+          if (conversationId && supabase) await supabase.from('messages').insert({ conversation_id: conversationId, role: 'assistant', content: fullText });
           return done();
         }
-        throw new Error('empty');
-      } catch (e) {
-        console.warn(`[fail] ${vp.name}: ${e.message}`);
-        continue;
-      }
+      } catch (e) { console.warn(`[fail] ${vp.name}: ${e.message}`); continue; }
     }
-    // All vision providers failed — add note so text-only models don't deny images
-    console.warn('All vision providers failed — falling back with file note');
-    const note = `\n\n[${images.length} file(s) attached — vision service temporarily unavailable]`;
-    const lastUserIdx = messages.length - 1;
-    if (messages[lastUserIdx] && messages[lastUserIdx].role === 'user') {
-      messages = messages.map((m, i) => i === lastUserIdx ? { ...m, content: m.content + note } : m);
+    if (!handled) {
+      const lastIdx = messages.length - 1;
+      if (messages[lastIdx]?.role === 'user') messages = messages.map((m, i) => i === lastIdx ? { ...m, content: m.content + note } : m);
     }
   }
 
   const full = [{ role: 'system', content: SYSTEM_PROMPT }, ...messages];
   let lastErr = null;
-
   for (const p of PROVIDERS) {
     try {
       let started = false; let fullText = '';
       for await (const chunk of p.fn(full)) { started = true; fullText += chunk; send({ text: chunk }); }
       if (!started) throw new Error('empty');
-      if (conversationId && fullText && supabase) {
-        await supabase.from('messages').insert({ conversation_id: conversationId, role: 'assistant', content: fullText });
-      }
+      if (conversationId && fullText && supabase) await supabase.from('messages').insert({ conversation_id: conversationId, role: 'assistant', content: fullText });
       return done();
     } catch (e) { lastErr = e; console.warn(`[fail] ${p.name}: ${e.message}`); continue; }
   }
   send({ text: 'Sorry, all AI providers are temporarily unavailable. Please try again.' });
-  send({ error: String(lastErr?.message || 'unknown') });
   done();
 }
 
-// ---- CONVERSATIONS ----
 app.get('/api/conversations', requireAuth, async (req, res) => {
-  if (!supabaseConfigured) return res.status(503).json({ conversations: [] });
   const { data } = await supabase.from('conversations').select('*').eq('user_id', req.userId).order('updated_at', { ascending: false });
   res.json({ conversations: data || [] });
 });
 
 app.get('/api/conversations/:id/messages', requireAuth, async (req, res) => {
-  if (!supabaseConfigured) return res.status(503).json({ messages: [] });
   const { data: conv } = await supabase.from('conversations').select('user_id').eq('id', req.params.id).single();
   if (!conv || conv.user_id !== req.userId) return res.status(403).json({ error: 'Not allowed' });
   const { data } = await supabase.from('messages').select('*').eq('conversation_id', req.params.id).order('created_at', { ascending: true });
   res.json({ messages: data || [] });
 });
 
-// Fixed: scoped to user's conversations only
-app.get('/api/files', requireAuth, async (req, res) => {
-  if (!supabaseConfigured) return res.status(503).json({ files: [] });
-  const { data: convs } = await supabase.from('conversations').select('id').eq('user_id', req.userId);
-  const convIds = (convs || []).map(c => c.id);
-  if (!convIds.length) return res.json({ files: [] });
-  const { data } = await supabase
-    .from('messages')
-    .select('files, created_at, role')
-    .in('conversation_id', convIds)
-    .not('files', 'is', null)
-    .order('created_at', { ascending: false });
-  const all = [];
-  for (const row of (data || [])) {
-    if (Array.isArray(row.files)) {
-      for (const f of row.files) {
-        if (f && (f.url || f.public_url)) {
-          all.push({ ...f, created_at: row.created_at, role: row.role });
-        }
-      }
-    }
-  }
-  res.json({ files: all });
-});
-
 app.patch('/api/conversations/:id', requireAuth, async (req, res) => {
-  if (!supabaseConfigured) return res.status(503).json({ error: 'Not configured' });
   const { title, pinned } = req.body || {};
   const updates = {};
   if (title) updates.title = title;
@@ -1041,14 +859,11 @@ app.patch('/api/conversations/:id', requireAuth, async (req, res) => {
 });
 
 app.delete('/api/conversations/:id', requireAuth, async (req, res) => {
-  if (!supabaseConfigured) return res.status(503).json({ error: 'Not configured' });
   await supabase.from('conversations').delete().eq('id', req.params.id).eq('user_id', req.userId);
   res.json({ success: true });
 });
 
-// ---- VERSION SYNC ----
 app.post('/api/chat/messages/:id/sync-versions', requireAuth, async (req, res) => {
-  if (!supabaseConfigured) return res.status(503).json({ error: 'Not configured' });
   const { id } = req.params;
   const { userMessageContent, userMessageFiles, versions, versionFiles, aiReplies, aiFiles, currentVersionIndex, assistantContent, assistantFiles } = req.body || {};
   const { data: msg } = await supabase.from('messages').select('conversation_id, role, created_at').eq('id', id).single();
@@ -1062,17 +877,12 @@ app.post('/api/chat/messages/:id/sync-versions', requireAuth, async (req, res) =
     current_version_index: currentVersionIndex || 0
   }).eq('id', id);
   await supabase.from('messages').delete().eq('conversation_id', msg.conversation_id).gt('created_at', msg.created_at);
-  const { data: newMsg } = await supabase.from('messages').insert({
-    conversation_id: msg.conversation_id, role: 'assistant',
-    content: assistantContent, files: assistantFiles || []
-  }).select().single();
+  const { data: newMsg } = await supabase.from('messages').insert({ conversation_id: msg.conversation_id, role: 'assistant', content: assistantContent, files: assistantFiles || [] }).select().single();
   await supabase.from('conversations').update({ updated_at: new Date().toISOString() }).eq('id', msg.conversation_id);
   res.json({ assistantMessageId: newMsg?.id });
 });
 
-// ---- SHARE ----
 app.post('/api/share/guest', async (req, res) => {
-  if (!supabaseConfigured) return res.status(503).json({ error: 'Not configured' });
   const { messages } = req.body || {};
   if (!Array.isArray(messages)) return res.status(400).json({ error: 'messages required' });
   const token = crypto.randomBytes(16).toString('hex');
@@ -1082,7 +892,6 @@ app.post('/api/share/guest', async (req, res) => {
 });
 
 app.get('/api/share/:token', async (req, res) => {
-  if (!supabaseConfigured) return res.status(503).json({ error: 'Not configured' });
   const { token } = req.params;
   const { data: sharedChat } = await supabase.from('shared_links').select('conversation_id').eq('token', token).maybeSingle();
   if (sharedChat) {
@@ -1094,11 +903,8 @@ app.get('/api/share/:token', async (req, res) => {
   res.status(404).json({ error: 'Not found' });
 });
 
-app.get('/share/:token', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'share.html'));
-});
+app.get('/share/:token', (req, res) => res.sendFile(path.join(__dirname, 'public', 'share.html')));
 
-// ---- Static ----
 const PUBLIC_DIR = path.join(__dirname, 'public');
 app.use(express.static(PUBLIC_DIR));
 app.get(/^\/(?!api|health|robots|sitemap|av\.png|share).*/, (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
