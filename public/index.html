@@ -25,7 +25,6 @@
 <body>
 <div class="app" id="app">
 
-  <!-- SIDEBAR -->
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-top">
       <div class="brand">
@@ -47,15 +46,12 @@
     <div class="sidebar-content" id="sidebarContent"></div>
 
     <div class="sidebar-footer" id="sidebarFooter">
-      <button class="auth-btn" id="authBtn">
-        <i data-lucide="log-in"></i><span>Log in</span>
-      </button>
+      <button class="auth-btn" id="authBtn"><i data-lucide="log-in"></i><span>Log in</span></button>
     </div>
   </aside>
 
   <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
 
-  <!-- MAIN -->
   <main class="main">
     <header class="topbar">
       <button class="icon-btn menu-btn" id="menuBtn" aria-label="Menu"><i data-lucide="menu"></i></button>
@@ -72,18 +68,19 @@
       <div class="file-previews" id="filePreviews" hidden></div>
       <form class="composer-inner" id="composer">
         <button type="button" class="attach-btn" id="attachBtn" aria-label="Attach"><i data-lucide="paperclip"></i></button>
-        <input type="file" id="fileInput" multiple hidden accept="image/*,.pdf,.txt,.doc,.docx,.md,.csv,.json" />
+        <input type="file" id="fileInput" multiple hidden accept="image/*,application/pdf,text/*,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.md,.csv,.json" />
         <textarea id="input" rows="1" placeholder="Ask anything about Rwanda…" autocomplete="off"></textarea>
         <button type="button" class="send-btn" id="sendBtn" disabled aria-label="Send">
           <i data-lucide="arrow-up" class="icon-send"></i>
           <i data-lucide="square" class="icon-stop hidden"></i>
         </button>
       </form>
+      <p class="composer-disclaimer">DeepRWA may make mistakes. Responses are not guaranteed to be 100% accurate — please verify important information.</p>
     </div>
   </main>
 </div>
 
-<!-- ============ AUTH MODAL ============ -->
+<!-- AUTH MODAL -->
 <div class="modal-backdrop hidden" id="authModal">
   <div class="modal">
     <button class="modal-close" id="authModalClose"><i data-lucide="x"></i></button>
@@ -91,7 +88,7 @@
   </div>
 </div>
 
-<!-- ============ SETTINGS MODAL ============ -->
+<!-- SETTINGS MODAL -->
 <div class="modal-backdrop hidden" id="settingsModal">
   <div class="modal modal-settings">
     <button class="modal-close" id="settingsModalClose"><i data-lucide="x"></i></button>
@@ -107,7 +104,7 @@
   </div>
 </div>
 
-<!-- ============ ACCOUNT DROPDOWN ============ -->
+<!-- ACCOUNT DROPDOWN -->
 <div class="dropdown hidden" id="accountDropdown">
   <button data-action="profile"><i data-lucide="user"></i><span>Profile</span></button>
   <button data-action="settings"><i data-lucide="settings"></i><span>Settings</span></button>
@@ -115,7 +112,7 @@
   <button data-action="logout" class="danger"><i data-lucide="log-out"></i><span>Log out</span></button>
 </div>
 
-<!-- ============ SHARE MODAL ============ -->
+<!-- SHARE MODAL -->
 <div class="modal-backdrop hidden" id="shareModal">
   <div class="modal">
     <button class="modal-close" id="shareModalClose"><i data-lucide="x"></i></button>
@@ -130,7 +127,7 @@
   </div>
 </div>
 
-<!-- ============ RENAME MODAL ============ -->
+<!-- RENAME MODAL -->
 <div class="modal-backdrop hidden" id="renameModal">
   <div class="modal">
     <button class="modal-close" id="renameModalClose"><i data-lucide="x"></i></button>
@@ -142,7 +139,7 @@
   </div>
 </div>
 
-<!-- ============ CONFIRM MODAL ============ -->
+<!-- CONFIRM MODAL -->
 <div class="modal-backdrop hidden" id="confirmModal">
   <div class="modal">
     <div class="modal-body">
@@ -156,7 +153,7 @@
   </div>
 </div>
 
-<!-- ============ TOASTS ============ -->
+<!-- TOASTS -->
 <div class="toast-container" id="toastContainer"></div>
 
 <script src="/main.js"></script>
