@@ -85,18 +85,48 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); min-
 const state = { messages: [], versions: {} };
 
 function escapeHtml(t) { return String(t || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+// Same sanitiser as main.js — keeps fenced ``` blocks untouched, normalises
+// stray HTML the model emits outside code blocks, then escapes leftovers.
 function escapeHtmlOutsideCode(text) {
-  const lines = (text || '').split('\n'); let inCode = false;
+  const lines = (text || '').split('\n');
+  let inCode = false;
   return lines.map(line => {
     if (/^\s*```/.test(line)) { inCode = !inCode; return line; }
     if (inCode) return line;
-    return line.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    let cleaned = line
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<hr\s*\/?>/gi, '\n')
+      .replace(/<a\s+[^>]*?href\s*=\s*["']([^"']*)["'][^>]*?>(.*?)<\/a>/gi, '[$2]($1)')
+      .replace(/<\/?(p|div|span|strong|em|b|i|u|ul|ol|li|blockquote|table|thead|tbody|tr|td|th|h[1-6]|section|article|header|footer|nav|aside|main|pre|code|sup|sub|small|mark|del|ins|figure|figcaption|picture|source|video|audio|canvas|iframe|form|input|button|select|textarea|label|fieldset|legend|details|summary|body|html|head|title|meta|link|script|style)[^>]*>/gi, '')
+      .replace(/<!--[\s\S]*?-->/g, '');
+
+    return cleaned.replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }).join('\n');
 }
+
+// Same renderer as main.js — no <hr>, and every link opens in a new tab.
 function renderMarkdown(text) {
   const safe = escapeHtmlOutsideCode(text || '');
-  try { return window.marked.parse(safe, { breaks: true, gfm: true }); }
-  catch { return safe.replace(/\n/g, '<br>'); }
+  let html;
+  try {
+    html = window.marked.parse(safe, { breaks: true, gfm: true });
+  } catch {
+    return safe.replace(/\n/g, '<br>');
+  }
+
+  html = html.replace(/<hr\s*\/?>/gi, '');
+
+  html = html.replace(/<a\s+([^>]*?)>/gi, (_match, attrs) => {
+    const cleanedAttrs = attrs
+      .replace(/\btarget\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+      .replace(/\brel\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+      .trim();
+    return `<a ${cleanedAttrs ? cleanedAttrs + ' ' : ''}target="_blank" rel="noopener noreferrer">`;
+  });
+
+  return html;
 }
 
 async function load() {
@@ -134,7 +164,8 @@ function render() {
   if (window.lucide) window.lucide.createIcons();
 }
 
-// Renders files from dataUrl (guest) OR url/public_url (logged-in)
+// Renders files from dataUrl (guest) OR url/public_url (logged-in).
+// Anchors open in a new tab so the viewer stays put.
 function renderFilesInline(files) {
   if (!files || !files.length) return '';
   return `<div class="msg-files">${files.map(f => {
@@ -144,7 +175,7 @@ function renderFilesInline(files) {
     const inner = isImg
       ? `<img src="${url}" class="msg-file-thumb" loading="lazy" alt="attachment" />`
       : `<div class="msg-file-doc"><i data-lucide="file-text"></i></div>`;
-    return `<a href="${url}" target="_blank" rel="noopener">${inner}</a>`;
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer">${inner}</a>`;
   }).join('')}</div>`;
 }
 
