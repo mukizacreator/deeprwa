@@ -1,4 +1,4 @@
-// DeepRWA — Complete backend (rev.2.7.0)
+// DeepRWA — Complete backend (rev.2.8.0)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -14,8 +14,8 @@ const brevo = require('@getbrevo/brevo');
 const app = express();
 app.set('trust proxy', 1);
 app.use(cors());
-app.use(express.json({ limit: '30mb' }));
-app.use(express.urlencoded({ extended: true, limit: '30mb' }));
+app.use(express.json({ limit: '40mb' }));
+app.use(express.urlencoded({ extended: true, limit: '40mb' }));
 
 // ============ SUPABASE ============
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -202,9 +202,9 @@ If the user asks about **any other country** or a topic unrelated to Rwanda, rep
 
 ## FILE SCOPE (critical)
 Files (images, PDFs, text) uploaded by the user are subject to the same scope rule:
-- If the file content is about Rwanda (history, people, culture, news, geography, products, prices, etc.), analyse it fully.
-- If the file content is clearly NOT about Rwanda (e.g. a business directory of Kenya, a European scholarship, non-Rwandan exam notes), politely decline: "The file you uploaded appears to be about [topic], which is outside my scope. I'm specialised only in Rwanda. Please upload something Rwanda-related, or ask me a question about Rwanda."
-- Never analyse unrelated files in depth, even if the user insists. Briefly acknowledge you can't help with it.
+- If the file content is about Rwanda, analyse it fully.
+- If the file content is clearly NOT about Rwanda, politely decline: "The file you uploaded appears to be about [topic], which is outside my scope. I'm specialised only in Rwanda. Please upload something Rwanda-related, or ask me a question about Rwanda."
+- Never analyse unrelated files in depth. Briefly acknowledge you can't help with it.
 
 ## GREETINGS AND SMALL TALK
 Greetings, thanks, goodbyes, "how are you", "who are you", "who made you" are NOT out of scope. Respond warmly and briefly, then invite a Rwanda-related question.
@@ -213,7 +213,7 @@ Greetings, thanks, goodbyes, "how are you", "who are you", "who made you" are NO
 Always reply in the **exact language the user wrote in**.
 
 ## FORMATTING (critical)
-- NEVER use horizontal rules / horizontal lines (---, ___, <hr>). They look unprofessional.
+- NEVER use horizontal rules / horizontal lines (---, ___, <hr>).
 - Use headings (##, ###) and bullet lists instead.
 - Use **bold** for emphasis.
 - Markdown only. No raw HTML.
@@ -379,48 +379,37 @@ async function* streamGeminiVision(messages, attachments) {
 }
 
 async function* streamOpenRouterVision(messages, attachments) {
-  const images = attachments.filter(a => a.mime.startsWith('image/'));
+  const images = attachments.filter(a => (a.mime || '').startsWith('image/'));
   if (!images.length) throw new Error('no images');
   const sanitized = sanitizeForProvider(messages);
-  const userMsgs = sanitized.filter(m => m.role === 'user');
-  const lastUser = userMsgs[userMsgs.length - 1];
-  const convo = sanitized.map(m => {
-    if (m === lastUser) {
-      const content = [{ type: 'text', text: lastUser.content || 'Analyse the attached image(s).' }];
-      for (const f of images) content.push({ type: 'image_url', image_url: { url: `data:${f.mime};base64,${f.data}` } });
-      return { role: 'user', content };
-    }
-    if (m.role === 'user') return { role: 'user', content: m.content };
-    if (m.role === 'assistant') return { role: 'assistant', content: m.content };
-    return null;
-  }).filter(Boolean);
+  // Build the multimodal content
+  const lastIdx = sanitized.map(m => m.role).lastIndexOf('user');
+  const content = [];
+  content.push({ type: 'text', text: sanitized[lastIdx]?.content || 'Analyse the attached image(s).' });
+  for (const f of images) content.push({ type: 'image_url', image_url: { url: `data:${f.mime};base64,${f.data}` } });
+  const convo = sanitized.map((m, i) => i === lastIdx ? { role: 'user', content } : { role: m.role, content: m.content });
   yield* sseOpenAI(
     'https://openrouter.ai/api/v1/chat/completions',
     { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`, 'HTTP-Referer': 'https://deeprwa.agentdomains.co', 'X-Title': 'DeepRWA' },
-    { model: 'inclusionai/ling-3.0-flash-vl:free', messages: convo, stream: true, temperature: 0.7, max_tokens: 2048 }
+    { model: 'qwen/qwen2.5-vl-72b-instruct:free', messages: convo, stream: true, temperature: 0.7, max_tokens: 2048 },
+    40000
   );
 }
 
 async function* streamNVIDIAVision(messages, attachments) {
-  const images = attachments.filter(a => a.mime.startsWith('image/'));
+  const images = attachments.filter(a => (a.mime || '').startsWith('image/'));
   if (!images.length) throw new Error('no images');
   const sanitized = sanitizeForProvider(messages);
-  const userMsgs = sanitized.filter(m => m.role === 'user');
-  const lastUser = userMsgs[userMsgs.length - 1];
-  const convo = sanitized.map(m => {
-    if (m === lastUser) {
-      const content = [{ type: 'text', text: lastUser.content || 'Analyse the attached image(s).' }];
-      for (const f of images) content.push({ type: 'image_url', image_url: { url: `data:${f.mime};base64,${f.data}` } });
-      return { role: 'user', content };
-    }
-    if (m.role === 'user') return { role: 'user', content: m.content };
-    if (m.role === 'assistant') return { role: 'assistant', content: m.content };
-    return null;
-  }).filter(Boolean);
+  const lastIdx = sanitized.map(m => m.role).lastIndexOf('user');
+  const content = [];
+  content.push({ type: 'text', text: sanitized[lastIdx]?.content || 'Analyse the attached image(s).' });
+  for (const f of images) content.push({ type: 'image_url', image_url: { url: `data:${f.mime};base64,${f.data}` } });
+  const convo = sanitized.map((m, i) => i === lastIdx ? { role: 'user', content } : { role: m.role, content: m.content });
   yield* sseOpenAI(
     'https://integrate.api.nvidia.com/v1/chat/completions',
     { Authorization: `Bearer ${process.env.NVIDIA_API_KEY}` },
-    { model: 'meta/llama-3.2-11b-vision-instruct', messages: convo, stream: true, temperature: 0.7, max_tokens: 2048 }
+    { model: 'meta/llama-3.2-11b-vision-instruct', messages: convo, stream: true, temperature: 0.7, max_tokens: 2048 },
+    40000
   );
 }
 
@@ -446,11 +435,10 @@ async function generateChatTitle(firstMessage) {
 
   const textOnly = String(firstMessage).slice(0, 400);
   const prompt = [
-    { role: 'system', content: 'You generate short, descriptive chat titles. Reply with ONLY 2-5 words. No quotes, no prefix, no period. Examples: "Rwandan History", "Kigali Hotels", "Coffee Prices Rwanda"' },
+    { role: 'system', content: 'You generate short, descriptive chat titles. Reply with ONLY 2-5 words. No quotes, no prefix, no period.' },
     { role: 'user', content: textOnly }
   ];
 
-  // Try Groq first
   try {
     const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
@@ -464,11 +452,10 @@ async function generateChatTitle(firstMessage) {
         .replace(/^Title:\s*/i, '')
         .split('\n')[0].trim()
         .replace(/[.!?,;:]+$/, '');
-      if (t && t.length <= 60 && t.toLowerCase() !== textOnly.toLowerCase().slice(0, 60)) return t;
+      if (t && t.length <= 60) return t;
     }
-  } catch (e) { console.warn('[title] Groq failed:', e.message); }
+  } catch {}
 
-  // Try Gemini as fallback
   try {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
     const res = await fetch(url, {
@@ -481,24 +468,21 @@ async function generateChatTitle(firstMessage) {
     if (res.ok) {
       const data = await res.json();
       let t = (data.candidates?.[0]?.content?.parts?.[0]?.text || '').trim()
-        .replace(/^["'`\s]+|["'`\s]+$/g, '')
-        .replace(/^Title:\s*/i, '')
-        .split('\n')[0].trim()
-        .replace(/[.!?,;:]+$/, '');
-      if (t && t.length <= 60 && t.toLowerCase() !== textOnly.toLowerCase().slice(0, 60)) return t;
+        .replace(/^["'`\s]+|["'`\s]+$/g, '').split('\n')[0].trim().replace(/[.!?,;:]+$/, '');
+      if (t && t.length <= 60) return t;
     }
-  } catch (e) { console.warn('[title] Gemini failed:', e.message); }
+  } catch {}
 
   return textOnly.split(/\s+/).slice(0, 5).join(' ') || 'New chat';
 }
 
 // ============ ROUTES ============
-app.get('/health', (req, res) => res.json({ status: 'ok', service: 'DeepRWA', version: '2.7.0', time: new Date().toISOString() }));
-app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '2.7.0', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
+app.get('/health', (req, res) => res.json({ status: 'ok', service: 'DeepRWA', version: '2.8.0', time: new Date().toISOString() }));
+app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '2.8.0', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
 app.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nSitemap: https://deeprwa.agentdomains.co/sitemap.xml\n`));
 app.get('/sitemap.xml', (req, res) => res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>https://deeprwa.agentdomains.co/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>\n</urlset>`));
 
-// ---- AUTH: Signup ----
+// AUTH: Signup
 app.post('/api/auth/signup', async (req, res) => {
   if (!supabaseConfigured) return res.status(503).json({ error: 'Auth not configured' });
   const { email, password, fullName } = req.body || {};
@@ -537,7 +521,7 @@ app.post('/api/auth/resend-verification', async (req, res) => {
   res.json({ pendingToken: newToken });
 });
 
-// ---- AUTH: Login ----
+// AUTH: Login
 app.post('/api/auth/login', async (req, res) => {
   const { email, password } = req.body || {};
   if (!isValidEmail(email)) return res.status(400).json({ error: 'Invalid email' });
@@ -590,7 +574,7 @@ app.get('/api/auth/me', requireAuth, async (req, res) => {
   res.json({ user: { id: req.userId, email: data?.email, display_name: data?.display_name, totp_enabled: data?.totp_enabled || false, created_at: data?.created_at } });
 });
 
-// ---- FORGOT PASSWORD ----
+// FORGOT PASSWORD
 app.post('/api/auth/forgot-password-request', async (req, res) => {
   const { email } = req.body || {};
   if (!isValidEmail(email)) return res.status(400).json({ error: 'Invalid email' });
@@ -634,7 +618,7 @@ app.post('/api/auth/reset-password', async (req, res) => {
   res.json({ success: true });
 });
 
-// ---- ACCOUNT ACTIONS ----
+// ACCOUNT ACTIONS
 app.post('/api/auth/send-action-code', requireAuth, async (req, res) => {
   const { action, newEmail } = req.body || {};
   if (!['change-email', 'change-password', 'delete-account'].includes(action)) return res.status(400).json({ error: 'Invalid action' });
@@ -717,7 +701,7 @@ app.delete('/api/auth/account', requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
-// ---- 2FA ----
+// 2FA
 app.post('/api/auth/2fa/setup', requireAuth, async (req, res) => {
   const { data: profile } = await supabase.from('profiles').select('email, totp_enabled').eq('id', req.userId).maybeSingle();
   if (profile?.totp_enabled) return res.status(400).json({ error: '2FA already enabled' });
@@ -727,7 +711,6 @@ app.post('/api/auth/2fa/setup', requireAuth, async (req, res) => {
   await supabase.from('profiles').update({ totp_secret: secret }).eq('id', req.userId);
   res.json({ secret, qrDataUrl });
 });
-
 app.post('/api/auth/2fa/enable', requireAuth, async (req, res) => {
   const { code } = req.body || {};
   const { data: profile } = await supabase.from('profiles').select('totp_secret').eq('id', req.userId).maybeSingle();
@@ -736,7 +719,6 @@ app.post('/api/auth/2fa/enable', requireAuth, async (req, res) => {
   await supabase.from('profiles').update({ totp_enabled: true }).eq('id', req.userId);
   res.json({ success: true });
 });
-
 app.post('/api/auth/2fa/disable', requireAuth, async (req, res) => {
   const { code } = req.body || {};
   const { data: profile } = await supabase.from('profiles').select('totp_secret').eq('id', req.userId).maybeSingle();
@@ -746,7 +728,7 @@ app.post('/api/auth/2fa/disable', requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
-// ---- SESSIONS ----
+// SESSIONS
 app.get('/api/auth/sessions', requireAuth, async (req, res) => {
   const clientId = req.headers['x-client-id'] || '';
   const { data } = await supabase.from('sessions').select('*').eq('user_id', req.userId).eq('revoked', false).order('last_active', { ascending: false });
@@ -792,7 +774,7 @@ app.delete('/api/auth/sessions-current', requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
-// ---- FILE UPLOAD ----
+// FILE UPLOAD
 app.post('/api/upload', requireAuth, async (req, res) => {
   const { name, type, data } = req.body || {};
   if (!name || !type || !data) return res.status(400).json({ error: 'Missing file data' });
@@ -804,11 +786,11 @@ app.post('/api/upload', requireAuth, async (req, res) => {
     const { error: upErr } = await supabase.storage.from('uploads').upload(filePath, buffer, { contentType: type, upsert: false });
     if (upErr) return res.status(500).json({ error: upErr.message });
     const { data: urlData } = supabase.storage.from('uploads').getPublicUrl(filePath);
-    res.json({ url: data || urlData.publicUrl, name, type });
+    res.json({ url: urlData.publicUrl, name, type });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ---- FILES: list (basic, no ids) ----
+// FILES LIST
 app.get('/api/files', requireAuth, async (req, res) => {
   try {
     const { data: convs } = await supabase.from('conversations').select('id').eq('user_id', req.userId);
@@ -817,17 +799,12 @@ app.get('/api/files', requireAuth, async (req, res) => {
     const { data } = await supabase.from('messages').select('files, created_at, role').in('conversation_id', convIds).not('files', 'is', null).order('created_at', { ascending: false });
     const all = [];
     for (const row of (data || [])) {
-      if (Array.isArray(row.files)) {
-        for (const f of row.files) {
-          if (f && (f.url || f.public_url)) all.push({ ...f, url: f.url || f.public_url, created_at: row.created_at, role: row.role });
-        }
-      }
+      if (Array.isArray(row.files)) for (const f of row.files) if (f && (f.url || f.public_url)) all.push({ ...f, url: f.url || f.public_url, created_at: row.created_at, role: row.role });
     }
     res.json({ files: all });
   } catch (e) { res.status(500).json({ error: e.message, files: [] }); }
 });
 
-// ---- FILES: list with messageId + index (for selection/delete) ----
 app.get('/api/files-with-ids', requireAuth, async (req, res) => {
   try {
     const { data: convs } = await supabase.from('conversations').select('id').eq('user_id', req.userId);
@@ -846,7 +823,6 @@ app.get('/api/files-with-ids', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message, files: [] }); }
 });
 
-// ---- FILE DELETE from a message ----
 app.delete('/api/files/:messageId/:fileIndex', requireAuth, async (req, res) => {
   const { messageId, fileIndex } = req.params;
   const idx = parseInt(fileIndex);
@@ -862,14 +838,14 @@ app.delete('/api/files/:messageId/:fileIndex', requireAuth, async (req, res) => 
   res.json({ success: true });
 });
 
-// ---- TITLE ----
+// CHAT TITLE
 app.post('/api/chat/title', async (req, res) => {
   const { message } = req.body || {};
   if (!message) return res.status(400).json({ error: 'message required' });
   res.json({ title: await generateChatTitle(message) });
 });
 
-// ---- CHAT ----
+// CHAT
 app.post('/api/chat/guest', async (req, res) => {
   const { messages, attachments } = req.body || {};
   if (!Array.isArray(messages) || !messages.length) return res.status(400).json({ error: 'messages required' });
@@ -921,7 +897,7 @@ async function streamChatResponse(messages, res, conversationId, attachments) {
         const chunks = [];
         for await (const chunk of vp.fn(messages, attachments)) chunks.push(chunk);
         const t = chunks.join('');
-        if (t.trim()) { fullText = t; handled = true; break; }
+        if (t.trim()) { fullText = t; handled = true; console.log(`✅ ${vp.name} responded (${t.length} chars)`); break; }
       } catch (e) { console.warn(`[fail] ${vp.name}: ${e.message}`); continue; }
     }
   }
@@ -936,26 +912,25 @@ async function streamChatResponse(messages, res, conversationId, attachments) {
     }
     const sanitized = sanitizeForProvider(mod);
     const full = [{ role: 'system', content: SYSTEM_PROMPT }, ...sanitized];
-    let lastErr = null;
     for (const p of PROVIDERS) {
       try {
         const chunks = [];
         for await (const chunk of p.fn(full)) chunks.push(chunk);
         const t = chunks.join('');
-        if (t.trim()) { fullText = t; handled = true; break; }
-      } catch (e) { lastErr = e; console.warn(`[fail] ${p.name}: ${e.message}`); continue; }
+        if (t.trim()) { fullText = t; handled = true; console.log(`✅ ${p.name} responded (${t.length} chars)`); break; }
+      } catch (e) { console.warn(`[fail] ${p.name}: ${e.message}`); continue; }
     }
     if (!handled) { send({ text: 'Sorry, all AI providers are temporarily unavailable. Please try again.' }); return done(); }
   }
 
   send({ text: fullText });
   if (conversationId && supabase) {
-    await supabase.from('messages').insert({ conversation_id: conversationId, role: 'assistant', content: fullText });
+    try { await supabase.from('messages').insert({ conversation_id: conversationId, role: 'assistant', content: fullText }); } catch (e) { console.warn('save assistant msg failed:', e.message); }
   }
   return done();
 }
 
-// ---- CONVERSATIONS ----
+// CONVERSATIONS
 app.get('/api/conversations', requireAuth, async (req, res) => {
   const { data } = await supabase.from('conversations').select('*').eq('user_id', req.userId).order('updated_at', { ascending: false });
   res.json({ conversations: data || [] });
@@ -996,7 +971,7 @@ app.post('/api/chat/messages/:id/sync-versions', requireAuth, async (req, res) =
   res.json({ assistantMessageId: newMsg?.id });
 });
 
-// ---- SHARE ----
+// SHARE
 app.post('/api/share/guest', async (req, res) => {
   const { messages } = req.body || {};
   if (!Array.isArray(messages)) return res.status(400).json({ error: 'messages required' });
@@ -1020,7 +995,7 @@ app.get('/api/share/:token', async (req, res) => {
 
 app.get('/share/:token', (req, res) => res.sendFile(path.join(__dirname, 'public', 'share.html')));
 
-// ---- STATIC ----
+// STATIC
 const PUBLIC_DIR = path.join(__dirname, 'public');
 app.use(express.static(PUBLIC_DIR));
 app.get(/^\/(?!api|health|robots|sitemap|av\.png|share).*/, (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
