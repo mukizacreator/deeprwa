@@ -1,4 +1,4 @@
-// DeepRWA — Complete frontend logic (rev.2.8.0)
+// DeepRWA — Complete frontend logic (rev.2.8.1)
 
 // ============ CLIENT ID ============
 function getOrCreateClientId() {
@@ -198,12 +198,10 @@ function attachCountdown(btn, seconds = 60) {
 }
 
 // ============ IMAGE COMPRESSION ============
-// Resize + JPEG-compress images client-side to keep payloads small.
 async function compressImage(file, maxDimension = 1600, quality = 0.85) {
   if (!file.type.startsWith('image/')) return file;
-  if (file.type === 'image/gif') return file; // preserve animation
-  if (file.size < 200 * 1024) return file;    // < 200 KB, no need
-
+  if (file.type === 'image/gif') return file;
+  if (file.size < 200 * 1024) return file;
   return new Promise((resolve) => {
     const img = new Image();
     const url = URL.createObjectURL(file);
@@ -234,7 +232,6 @@ async function compressImage(file, maxDimension = 1600, quality = 0.85) {
 async function init() {
   renderUser(); renderChatList(); renderWelcome(); updateSendButton();
   inputEl.focus();
-
   if (state.token) {
     try {
       const res = await fetch('/api/auth/me', { headers: authHeaders() });
@@ -393,7 +390,6 @@ async function renderFilesList() {
     updateMultiBar();
     return;
   }
-  // Guests: scan in-memory chats
   const files = [];
   for (const chat of state.chats) {
     for (const m of chat.messages || []) {
@@ -438,15 +434,12 @@ function renderFilesArray(files, isGuest = false) {
       : `<div class="sidebar-empty"><p>No files yet</p><span>Files you send or receive will appear here</span></div>`;
     return;
   }
-
   const inMulti = state._multiSelectMode;
-
   sidebarContent.innerHTML = files.map((f, idx) => {
     const isImg = (f.type || '').startsWith('image/');
     const url = f.url || f.dataUrl || f.public_url || '';
     const key = fileKey(f, idx);
     const checked = state._selectedFiles.has(key);
-
     return `<div class="file-item-wrap" data-file-idx="${idx}">
       ${inMulti ? `<label class="file-checkbox" title="Select">
         <input type="checkbox" data-file-check="${idx}" ${checked ? 'checked' : ''} />
@@ -775,11 +768,9 @@ inputEl.addEventListener('keydown', (e) => {
   }
 });
 
-// Paste support
 inputEl.addEventListener('paste', (e) => {
   const items = e.clipboardData?.items;
   if (!items) return;
-  let added = 0;
   for (const item of items) {
     if (item.kind === 'file' && item.type.startsWith('image/')) {
       e.preventDefault();
@@ -788,13 +779,11 @@ inputEl.addEventListener('paste', (e) => {
         const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
         const named = new File([file], file.name || `pasted-${Date.now()}.${ext}`, { type: file.type });
         addAttachment(named).then(ok => { if (ok) { toast('Image pasted', 'success', 2000); renderFilePreviews(); updateSendButton(); } });
-        added++;
       }
     }
   }
 });
 
-// Attach files
 attachBtn.addEventListener('click', () => fileInput.click());
 fileInput.addEventListener('change', async (e) => {
   for (const f of e.target.files) await addAttachment(f);
@@ -803,28 +792,22 @@ fileInput.addEventListener('change', async (e) => {
 });
 
 async function addAttachment(file) {
-  // Dedupe by name + size + lastModified
   for (const existing of state.attachments) {
     if (existing.originalName === file.name && existing.originalSize === file.size && existing.originalLastModified === file.lastModified) {
       toast(`"${file.name}" is already attached`, 'info', 2000);
       return false;
     }
   }
-  // Compress images client-side (fixes "Failed to fetch" on large uploads)
   let processedFile = file;
   if (file.type.startsWith('image/') && file.size > 200 * 1024) {
     try { processedFile = await compressImage(file); } catch { processedFile = file; }
   }
   const id = Math.random().toString(36).slice(2);
   state.attachments.push({
-    id,
-    file: processedFile,
+    id, file: processedFile,
     url: URL.createObjectURL(processedFile),
-    name: processedFile.name,
-    type: processedFile.type,
-    originalName: file.name,
-    originalSize: file.size,
-    originalLastModified: file.lastModified
+    name: processedFile.name, type: processedFile.type,
+    originalName: file.name, originalSize: file.size, originalLastModified: file.lastModified
   });
   return true;
 }
@@ -989,7 +972,6 @@ chatEl.addEventListener('click', async (e) => {
     action.classList.toggle('active');
     action.closest('.msg-actions').querySelector('[data-action="like"]')?.classList.remove('active');
   } else if (act === 'edit') {
-    // BLOCK entering edit while AI is responding
     if (state.isGenerating) {
       toast('Please wait for the current response to finish, or stop it first', 'info');
       return;
@@ -1044,12 +1026,7 @@ async function attachmentsToDataUrls(attachments) {
   const out = [];
   for (const att of attachments) {
     try {
-      // Always convert to dataURL so shared links persist it (guest chats otherwise use ephemeral blob URLs)
-      if (att.file.size > 5 * 1024 * 1024) {
-        // Too large to embed reliably; fall back to object URL (won't persist in shares)
-        out.push({ name: att.name, type: att.type, dataUrl: att.url });
-        continue;
-      }
+      if (att.file.size > 5 * 1024 * 1024) { out.push({ name: att.name, type: att.type, dataUrl: att.url }); continue; }
       const dataUrl = await fileToDataURL(att.file);
       out.push({ name: att.name, type: att.type, dataUrl });
     } catch {}
@@ -1060,11 +1037,9 @@ async function collectAttachmentsForAI(attachments) {
   const out = [];
   for (const a of attachments) {
     try {
-      if (a.type.startsWith('image/') && a.file.size < 4 * 1024 * 1024) {
-        out.push({ name: a.name, mime: a.type, data: await fileToBase64(a.file) });
-      } else if (a.type === 'application/pdf' && a.file.size < 6 * 1024 * 1024) {
-        out.push({ name: a.name, mime: 'application/pdf', data: await fileToBase64(a.file) });
-      } else if (a.type === 'text/plain' || a.type === 'text/markdown' || a.type === 'text/csv' || a.type === 'application/json') {
+      if (a.type.startsWith('image/') && a.file.size < 4 * 1024 * 1024) out.push({ name: a.name, mime: a.type, data: await fileToBase64(a.file) });
+      else if (a.type === 'application/pdf' && a.file.size < 6 * 1024 * 1024) out.push({ name: a.name, mime: 'application/pdf', data: await fileToBase64(a.file) });
+      else if (a.type === 'text/plain' || a.type === 'text/markdown' || a.type === 'text/csv' || a.type === 'application/json') {
         const text = await a.file.text();
         out.push({ name: a.name, mime: 'text/plain', data: btoa(unescape(encodeURIComponent(text.slice(0, 30000)))) });
       }
@@ -1097,51 +1072,32 @@ formEl.addEventListener('submit', async (e) => {
       chat = { id: makeLocalId(), title: 'New chat', messages: [], pinned: false, createdAt: nowISO(), updatedAt: nowISO() };
       state.chats.unshift(chat); state.activeChatId = chat.id; isNewChat = true; renderChatList();
     }
-
     const attachmentsForAI = await collectAttachmentsForAI(state.attachments);
     let filesForMsg;
     if (state.user) filesForMsg = await uploadAttachmentsToServer() || [];
     else filesForMsg = await attachmentsToDataUrls(state.attachments);
-
     const isFirstMessage = isNewChat || chat.title === 'New chat' || !chat.messages.length;
-
     inputEl.value = ''; autoGrow();
     state.attachments = []; renderFilePreviews();
     chatEl.querySelector('.welcome')?.remove();
-
     const userMsg = { id: 'user_' + Date.now(), role: 'user', content: text, files: filesForMsg, _createdAt: nowISO() };
     state.messages.push(userMsg); chat.messages = state.messages;
-
     const assistantMsg = { id: 'asst_' + Date.now(), role: 'assistant', content: '', files: [], _createdAt: nowISO() };
     state.messages.push(assistantMsg);
     renderMessages();
-
     if (isFirstMessage && text) {
-      requestTitle(text).then(title => {
-        if (title) { chat.title = title; renderChatList(); }
-      }).catch(() => {});
+      requestTitle(text).then(title => { if (title) { chat.title = title; renderChatList(); } }).catch(() => {});
     }
-
     state.abortController = new AbortController();
-
     const endpoint = state.user ? '/api/chat' : '/api/chat/guest';
-    const payload = {
-      messages: state.messages.map(m => ({ role: m.role, content: m.content })),
-      attachments: attachmentsForAI
-    };
+    const payload = { messages: state.messages.map(m => ({ role: m.role, content: m.content })), attachments: attachmentsForAI };
     if (state.user) payload.conversationId = isLocalId(chat.id) ? null : chat.id;
-
     let res;
-    try {
-      res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload), signal: state.abortController.signal });
-    } catch (fetchErr) {
-      throw new Error('NETWORK: ' + fetchErr.message);
-    }
+    try { res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload), signal: state.abortController.signal }); }
+    catch (fetchErr) { throw new Error('NETWORK: ' + fetchErr.message); }
     if (!res.ok || !res.body) throw new Error('Bad response: ' + res.status);
-
     const serverConvId = res.headers.get('X-Conversation-Id');
     if (serverConvId && isLocalId(chat.id)) { chat.id = serverConvId; state.activeChatId = serverConvId; renderChatList(); }
-
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let buf = '', firstChunk = true, fullText = '';
@@ -1166,7 +1122,6 @@ formEl.addEventListener('submit', async (e) => {
         } catch {}
       }
     }
-
     if (fullText) {
       assistantMsg.content = fullText;
       const actEl = chatEl.querySelector(`.msg-assistant[data-id="${assistantMsg.id}"] .msg-actions-assistant`);
@@ -1177,26 +1132,16 @@ formEl.addEventListener('submit', async (e) => {
   } catch (err) {
     if (err.name === 'AbortError') {
       const last = state.messages[state.messages.length - 1];
-      if (last && last.role === 'assistant') { last.content = last.content ? last.content + '\n\n*[stopped]*' : '*Stopped.*'; }
+      if (last && last.role === 'assistant') last.content = last.content ? last.content + '\n\n*[stopped]*' : '*Stopped.*';
       renderMessages();
     } else {
       console.error(err);
       const last = state.messages[state.messages.length - 1];
-      if (last && last.role === 'assistant') {
-        if (err.message.startsWith('NETWORK:')) {
-          last.content = 'Could not reach the server. Please check your connection and try again.';
-        } else {
-          last.content = 'Something went wrong. Please try again.';
-        }
-      }
+      if (last && last.role === 'assistant') last.content = err.message.startsWith('NETWORK:') ? 'Could not reach the server. Please check your connection and try again.' : 'Something went wrong. Please try again.';
       renderMessages();
     }
   } finally {
-    state.isGenerating = false;
-    inputEl.disabled = false;
-    state.abortController = null;
-    updateSendButton();
-    inputEl.focus();
+    state.isGenerating = false; inputEl.disabled = false; state.abortController = null; updateSendButton(); inputEl.focus();
   }
 });
 
@@ -1204,21 +1149,16 @@ formEl.addEventListener('submit', async (e) => {
 async function saveEditAndSend(newText) {
   const trimmed = newText.trim();
   if (!trimmed) return;
-
-  // Safety: if a generation is running, abort it cleanly so we don't race
   if (state.isGenerating) {
     if (state.abortController) { try { state.abortController.abort(); } catch {} }
-    state.abortController = null;
-    state.isGenerating = false;
+    state.abortController = null; state.isGenerating = false;
   }
-
   const editId = state.editingMessageId;
   const editIdx = state.messages.findIndex(m => m.id === editId);
   if (editIdx < 0) return;
   const userMsg = state.messages[editIdx];
   const nextMsg = state.messages[editIdx + 1];
   const isAsst = nextMsg && nextMsg.role === 'assistant';
-
   if (!state.messageVersions[editId]) {
     state.messageVersions[editId] = { versions: [userMsg.content], files: [userMsg.files || []], aiReplies: [isAsst ? nextMsg.content : ''], aiFiles: [isAsst ? (nextMsg.files || []) : []], currentIndex: 0 };
   }
@@ -1228,41 +1168,24 @@ async function saveEditAndSend(newText) {
   }
   v.currentIndex = v.versions.length - 1;
   userMsg.content = trimmed; userMsg.files = v.files[v.currentIndex];
-
   state.messages = state.messages.slice(0, editIdx + 1);
   const chat = state.chats.find(c => c.id === state.activeChatId);
   if (chat) chat.messages = state.messages;
-
   state.editingMessageId = null; state.editingValue = '';
-
   const assistantMsg = { id: 'asst_' + Date.now(), role: 'assistant', content: '', files: [], _createdAt: nowISO() };
   state.messages.push(assistantMsg);
   renderMessages();
-
-  // CRITICAL: activate stop button (isGenerating true) BEFORE the fetch
-  state.isGenerating = true;
-  inputEl.disabled = true;
-  updateSendButton();
+  state.isGenerating = true; inputEl.disabled = true; updateSendButton();
   state.abortController = new AbortController();
-
   let fullText = '';
   try {
     const endpoint = state.user ? '/api/chat' : '/api/chat/guest';
-    const payload = {
-      messages: state.messages
-        .filter(m => m.role === 'user' || (m.role === 'assistant' && m.content))
-        .map(m => ({ role: m.role, content: m.content }))
-    };
+    const payload = { messages: state.messages.filter(m => m.role === 'user' || (m.role === 'assistant' && m.content)).map(m => ({ role: m.role, content: m.content })) };
     if (state.user && chat && !isLocalId(chat.id)) payload.conversationId = chat.id;
-
     let res;
-    try {
-      res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload), signal: state.abortController.signal });
-    } catch (fetchErr) {
-      throw new Error('NETWORK: ' + fetchErr.message);
-    }
+    try { res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload), signal: state.abortController.signal }); }
+    catch (fetchErr) { throw new Error('NETWORK: ' + fetchErr.message); }
     if (!res.ok || !res.body) throw new Error('Bad response');
-
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let buf = '', firstChunk = true;
@@ -1290,41 +1213,20 @@ async function saveEditAndSend(newText) {
     v.aiReplies[v.currentIndex] = fullText;
     v.aiFiles[v.currentIndex] = [];
     renderMessages();
-
-    // Persist version history to backend for logged-in users
     if (state.user && chat && !isLocalId(chat.id) && userMsg.id && !userMsg.id.startsWith('user_')) {
       try {
         await fetch(`/api/chat/messages/${userMsg.id}/sync-versions`, {
           method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            userMessageContent: userMsg.content,
-            userMessageFiles: userMsg.files || [],
-            versions: v.versions,
-            versionFiles: v.files,
-            aiReplies: v.aiReplies,
-            aiFiles: v.aiFiles,
-            currentVersionIndex: v.currentIndex,
-            assistantContent: fullText,
-            assistantFiles: []
-          })
+          body: JSON.stringify({ userMessageContent: userMsg.content, userMessageFiles: userMsg.files || [], versions: v.versions, versionFiles: v.files, aiReplies: v.aiReplies, aiFiles: v.aiFiles, currentVersionIndex: v.currentIndex, assistantContent: fullText, assistantFiles: [] })
         });
       } catch (e) { console.warn('sync versions failed', e); }
     }
   } catch (err) {
-    if (err.name === 'AbortError') {
-      v.aiReplies[v.currentIndex] = fullText || '*Stopped.*';
-    } else {
-      console.error(err);
-      v.aiReplies[v.currentIndex] = err.message.startsWith('NETWORK:')
-        ? 'Could not reach the server. Please check your connection.'
-        : 'Something went wrong.';
-    }
+    if (err.name === 'AbortError') v.aiReplies[v.currentIndex] = fullText || '*Stopped.*';
+    else { console.error(err); v.aiReplies[v.currentIndex] = err.message.startsWith('NETWORK:') ? 'Could not reach the server. Please check your connection.' : 'Something went wrong.'; }
     renderMessages();
   } finally {
-    state.isGenerating = false;
-    inputEl.disabled = false;
-    state.abortController = null;
-    updateSendButton();
+    state.isGenerating = false; inputEl.disabled = false; state.abortController = null; updateSendButton();
   }
 }
 
@@ -1359,7 +1261,6 @@ async function selectChat(id) {
   const chat = state.chats.find(c => c.id === id); if (!chat) return;
   state.activeChatId = id; state.editingMessageId = null; state.editingValue = '';
   state.attachments = []; renderFilePreviews();
-
   if (state.user && !isLocalId(id)) {
     try {
       const res = await fetch(`/api/conversations/${id}/messages`, { headers: authHeaders() });
@@ -1485,23 +1386,14 @@ function renderVerifyCodeForm(type) {
 }
 
 async function handleLoginSuccess(data) {
-  state.chats = [];
-  state.activeChatId = null;
-  state.messages = [];
-  state.attachments = [];
-  state._selectedFiles.clear();
-  state._multiSelectMode = false;
-  state.messageVersions = {};
-
+  state.chats = []; state.activeChatId = null; state.messages = []; state.attachments = [];
+  state._selectedFiles.clear(); state._multiSelectMode = false; state.messageVersions = {};
   state.token = data.accessToken;
   state.user = data.user;
   state._loginAt = Date.now();
   localStorage.setItem('deeprwa_token', data.accessToken);
-
   authModal.classList.add('hidden');
-  renderFilePreviews();
-  renderWelcome();
-  renderUser();
+  renderFilePreviews(); renderWelcome(); renderUser();
   await loadConversations();
   toast('Logged in', 'success');
 }
@@ -1688,8 +1580,7 @@ function renderAccountTab() {
   $('sendEmailCodeBtn').onclick = () => {
     const newEmail = $('newEmailInput')?.value.trim();
     if (!newEmail) { toast('Enter new email', 'error'); return; }
-    const btn = $('sendEmailCodeBtn');
-    setBtnLoading(btn, 'Sending code…');
+    const btn = $('sendEmailCodeBtn'); setBtnLoading(btn, 'Sending code…');
     sendActionCode('change-email', { newEmail });
   };
   $('changePwBtn').onclick = () => { $('changePwArea').classList.toggle('hidden'); };
@@ -1710,11 +1601,7 @@ function renderAccountTab() {
   };
   $('deleteAccBtn').onclick = () => confirmAction({
     title: 'Delete your account?', text: 'This will permanently delete your account, chats, and files.', confirmLabel: 'Delete account',
-    onConfirm: () => {
-      const btn = $('deleteAccBtn');
-      setBtnLoading(btn, 'Sending code…');
-      sendActionCode('delete-account');
-    }
+    onConfirm: () => { const btn = $('deleteAccBtn'); setBtnLoading(btn, 'Sending code…'); sendActionCode('delete-account'); }
   });
 }
 
@@ -1757,14 +1644,12 @@ function renderActionVerify(action, targetEmail) {
       const vres = await fetch('/api/auth/verify-action-code', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ pendingToken: state._pendingAction.token, code, action }) });
       const vdata = await vres.json();
       if (!vres.ok) { resetBtn(btn); toast(vdata.error || 'Invalid code', 'error'); return; }
-
       if (action === 'change-email') {
         setBtnLoading(btn, 'Changing email…');
         const r = await fetch('/api/auth/change-email', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ grantedToken: vdata.grantedToken }) });
         const d = await r.json();
         if (!r.ok) { resetBtn(btn); toast(d.error || 'Failed', 'error'); return; }
-        state.user.email = d.newEmail;
-        toast('Email changed to ' + d.newEmail, 'success');
+        state.user.email = d.newEmail; toast('Email changed to ' + d.newEmail, 'success');
         renderUser(); renderAccountTab();
       } else if (action === 'change-password') {
         setBtnLoading(btn, 'Changing password…');
@@ -1772,16 +1657,13 @@ function renderActionVerify(action, targetEmail) {
         const r = await fetch('/api/auth/change-password', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ grantedToken: vdata.grantedToken, currentPassword: pw.current, newPassword: pw.newPw }) });
         const d = await r.json();
         if (!r.ok) { resetBtn(btn); toast(d.error || 'Failed', 'error'); return; }
-        state._pendingPw = null;
-        toast('Password changed', 'success');
-        renderAccountTab();
+        state._pendingPw = null; toast('Password changed', 'success'); renderAccountTab();
       } else if (action === 'delete-account') {
         setBtnLoading(btn, 'Deleting account…');
         const r = await fetch('/api/auth/account', { method: 'DELETE', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ grantedToken: vdata.grantedToken }) });
         const d = await r.json();
         if (!r.ok) { resetBtn(btn); toast(d.error || 'Failed', 'error'); return; }
-        settingsModal.classList.add('hidden');
-        await forceSignOut('Account deleted');
+        settingsModal.classList.add('hidden'); await forceSignOut('Account deleted');
       }
     } catch { resetBtn(btn); toast('Network error', 'error'); }
   };
@@ -1830,9 +1712,7 @@ async function setup2FA() {
         const r = await fetch('/api/auth/2fa/enable', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) });
         const d = await r.json();
         if (!r.ok) { resetBtn(btn); toast(d.error || 'Invalid code', 'error'); return; }
-        state.user.totp_enabled = true;
-        toast('2FA enabled', 'success');
-        renderSecurityTab();
+        state.user.totp_enabled = true; toast('2FA enabled', 'success'); renderSecurityTab();
       } catch { resetBtn(btn); toast('Network error', 'error'); }
     };
   } catch { toast('Network error', 'error'); renderSecurityTab(); }
@@ -1855,9 +1735,7 @@ async function disable2FA() {
       const r = await fetch('/api/auth/2fa/disable', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) });
       const d = await r.json();
       if (!r.ok) { resetBtn(btn); toast(d.error || 'Invalid code', 'error'); return; }
-      state.user.totp_enabled = false;
-      toast('2FA disabled', 'success');
-      renderSecurityTab();
+      state.user.totp_enabled = false; toast('2FA disabled', 'success'); renderSecurityTab();
     } catch { resetBtn(btn); toast('Network error', 'error'); }
   };
 }
@@ -1930,7 +1808,8 @@ function confirmLogout() {
   });
 }
 
-// ============ SHARE (includes all versions) ============
+// ============ SHARE ============
+// CHAT share: includes ALL versions + all files. Viewer can switch back/next.
 async function shareChat(chatId) {
   const chat = state.chats.find(c => c.id === chatId); if (!chat) return;
   let msgs = chat.messages || [];
@@ -1939,7 +1818,6 @@ async function shareChat(chatId) {
       const res = await fetch(`/api/conversations/${chatId}/messages`, { headers: authHeaders() });
       const d = await res.json();
       msgs = (d.messages || []).map(m => ({ id: m.id, role: m.role, content: m.content, files: m.files || [] }));
-      // Populate messageVersions from server data
       (d.messages || []).forEach(m => {
         if (m.role === 'user' && m.versions && m.versions.length > 0) {
           state.messageVersions[m.id] = {
@@ -1954,22 +1832,56 @@ async function shareChat(chatId) {
     } catch {}
   }
   if (!msgs.length) { toast('Nothing to share yet', 'error'); return; }
-  await postShare(msgs);
+  await postShare(msgs, { includeVersions: true });
 }
 
+// MESSAGE share: only the currently-displayed version of the user message + its AI reply.
+// No version switcher, no other versions.
 async function shareSingleMessage(idx) {
   const msg = state.messages[idx]; if (!msg) return;
-  const msgs = [msg];
-  const prev = state.messages[idx - 1];
-  if (prev && prev.role === 'user') msgs.unshift(prev);
-  await postShare(msgs);
+
+  let userMsg = null, assistantMsg = null;
+  if (msg.role === 'assistant') {
+    assistantMsg = msg;
+    const prev = state.messages[idx - 1];
+    if (prev && prev.role === 'user') userMsg = prev;
+  } else if (msg.role === 'user') {
+    userMsg = msg;
+    const next = state.messages[idx + 1];
+    if (next && next.role === 'assistant') assistantMsg = next;
+  }
+
+  const msgs = [];
+
+  // Resolve the CURRENT version of the user message (if versions exist)
+  let currentUserContent = userMsg?.content || '';
+  let currentUserFiles = userMsg?.files || [];
+  let currentAiContent = assistantMsg?.content || '';
+  let currentAiFiles = assistantMsg?.files || [];
+
+  if (userMsg && userMsg.id && state.messageVersions[userMsg.id]) {
+    const v = state.messageVersions[userMsg.id];
+    const i = Math.max(0, Math.min(v.currentIndex || 0, v.versions.length - 1));
+    currentUserContent = v.versions[i] ?? currentUserContent;
+    currentUserFiles = v.files[i] ?? currentUserFiles;
+    currentAiContent = v.aiReplies[i] ?? currentAiContent;
+    currentAiFiles = v.aiFiles[i] ?? currentAiFiles;
+  }
+
+  if (userMsg) msgs.push({ role: 'user', content: currentUserContent, files: currentUserFiles });
+  if (assistantMsg) msgs.push({ role: 'assistant', content: currentAiContent, files: currentAiFiles });
+
+  if (!msgs.length) { toast('Nothing to share', 'error'); return; }
+  await postShare(msgs, { includeVersions: false });
 }
 
-async function postShare(msgs) {
-  // Enrich every message with its version data if present
+async function postShare(msgs, opts = {}) {
+  const includeVersions = opts.includeVersions === true;
+
   const enriched = msgs.map(m => {
     const out = { role: m.role, content: m.content, files: m.files || [] };
-    if (m.id && state.messageVersions[m.id]) {
+    // Include full version history ONLY when chat-share is requested
+    if (includeVersions && m.id && state.messageVersions[m.id]) {
       const v = state.messageVersions[m.id];
       out.versions = v.versions || [];
       out.versionFiles = v.files || [];
@@ -1987,7 +1899,7 @@ async function postShare(msgs) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
     showShareModal(data.url);
-    toast('Share link created — versions and files included.', 'success');
+    toast(includeVersions ? 'Chat share created — versions included.' : 'Message share created.', 'success');
   } catch { toast('Could not create share link', 'error'); }
 }
 
