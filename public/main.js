@@ -1,4 +1,4 @@
-// DeepRWA — Complete frontend logic (rev.2.8.1)
+// DeepRWA — Complete frontend logic (rev.2.8.2)
 
 // ============ CLIENT ID ============
 function getOrCreateClientId() {
@@ -1072,32 +1072,60 @@ formEl.addEventListener('submit', async (e) => {
       chat = { id: makeLocalId(), title: 'New chat', messages: [], pinned: false, createdAt: nowISO(), updatedAt: nowISO() };
       state.chats.unshift(chat); state.activeChatId = chat.id; isNewChat = true; renderChatList();
     }
+
     const attachmentsForAI = await collectAttachmentsForAI(state.attachments);
     let filesForMsg;
     if (state.user) filesForMsg = await uploadAttachmentsToServer() || [];
     else filesForMsg = await attachmentsToDataUrls(state.attachments);
+
     const isFirstMessage = isNewChat || chat.title === 'New chat' || !chat.messages.length;
+
     inputEl.value = ''; autoGrow();
     state.attachments = []; renderFilePreviews();
     chatEl.querySelector('.welcome')?.remove();
+
     const userMsg = { id: 'user_' + Date.now(), role: 'user', content: text, files: filesForMsg, _createdAt: nowISO() };
     state.messages.push(userMsg); chat.messages = state.messages;
+
     const assistantMsg = { id: 'asst_' + Date.now(), role: 'assistant', content: '', files: [], _createdAt: nowISO() };
     state.messages.push(assistantMsg);
     renderMessages();
+
+    // CHAT TITLE — resolve chat by id in current state after loadConversations may have replaced it
     if (isFirstMessage && text) {
-      requestTitle(text).then(title => { if (title) { chat.title = title; renderChatList(); } }).catch(() => {});
+      requestTitle(text).then(title => {
+        if (!title) return;
+        const c = state.chats.find(x => x.id === chat.id) || chat;
+        c.title = title;
+        renderChatList();
+      }).catch(() => {});
     }
+
     state.abortController = new AbortController();
+
     const endpoint = state.user ? '/api/chat' : '/api/chat/guest';
-    const payload = { messages: state.messages.map(m => ({ role: m.role, content: m.content })), attachments: attachmentsForAI };
+    // Include files array for user messages so backend can persist them
+    const payload = {
+      messages: state.messages.map(m => {
+        const out = { role: m.role, content: m.content };
+        if (m.role === 'user' && Array.isArray(m.files) && m.files.length) out.files = m.files;
+        return out;
+      }),
+      attachments: attachmentsForAI
+    };
     if (state.user) payload.conversationId = isLocalId(chat.id) ? null : chat.id;
+
     let res;
-    try { res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload), signal: state.abortController.signal }); }
-    catch (fetchErr) { throw new Error('NETWORK: ' + fetchErr.message); }
+    try {
+      res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload), signal: state.abortController.signal });
+    } catch (fetchErr) {
+      throw new Error('NETWORK: ' + fetchErr.message);
+    }
     if (!res.ok || !res.body) throw new Error('Bad response: ' + res.status);
+
     const serverConvId = res.headers.get('X-Conversation-Id');
     if (serverConvId && isLocalId(chat.id)) { chat.id = serverConvId; state.activeChatId = serverConvId; renderChatList(); }
+
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let buf = '', firstChunk = true, fullText = '';
@@ -1122,17 +1150,20 @@ formEl.addEventListener('submit', async (e) => {
         } catch {}
       }
     }
+
     if (fullText) {
       assistantMsg.content = fullText;
       const actEl = chatEl.querySelector(`.msg-assistant[data-id="${assistantMsg.id}"] .msg-actions-assistant`);
       if (actEl) actEl.classList.remove('hidden');
       if (state.user) await loadConversations();
       if (state.view === 'files') renderFilesList();
+      // Second refresh after a short delay to catch DB settle
+      setTimeout(() => { if (state.view === 'files') renderFilesList(); }, 800);
     } else { assistantMsg.content = 'No response received.'; renderMessages(); }
   } catch (err) {
     if (err.name === 'AbortError') {
       const last = state.messages[state.messages.length - 1];
-      if (last && last.role === 'assistant') last.content = last.content ? last.content + '\n\n*[stopped]*' : '*Stopped.*';
+      if (last && last.role === 'assistant') { last.content = last.content ? last.content + '\n\n*[stopped]*' : '*Stopped.*'; }
       renderMessages();
     } else {
       console.error(err);
@@ -1180,7 +1211,15 @@ async function saveEditAndSend(newText) {
   let fullText = '';
   try {
     const endpoint = state.user ? '/api/chat' : '/api/chat/guest';
-    const payload = { messages: state.messages.filter(m => m.role === 'user' || (m.role === 'assistant' && m.content)).map(m => ({ role: m.role, content: m.content })) };
+    const payload = {
+      messages: state.messages
+        .filter(m => m.role === 'user' || (m.role === 'assistant' && m.content))
+        .map(m => {
+          const out = { role: m.role, content: m.content };
+          if (m.role === 'user' && Array.isArray(m.files) && m.files.length) out.files = m.files;
+          return out;
+        })
+    };
     if (state.user && chat && !isLocalId(chat.id)) payload.conversationId = chat.id;
     let res;
     try { res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload), signal: state.abortController.signal }); }
@@ -1809,7 +1848,6 @@ function confirmLogout() {
 }
 
 // ============ SHARE ============
-// CHAT share: includes ALL versions + all files. Viewer can switch back/next.
 async function shareChat(chatId) {
   const chat = state.chats.find(c => c.id === chatId); if (!chat) return;
   let msgs = chat.messages || [];
@@ -1835,8 +1873,6 @@ async function shareChat(chatId) {
   await postShare(msgs, { includeVersions: true });
 }
 
-// MESSAGE share: only the currently-displayed version of the user message + its AI reply.
-// No version switcher, no other versions.
 async function shareSingleMessage(idx) {
   const msg = state.messages[idx]; if (!msg) return;
 
@@ -1853,7 +1889,6 @@ async function shareSingleMessage(idx) {
 
   const msgs = [];
 
-  // Resolve the CURRENT version of the user message (if versions exist)
   let currentUserContent = userMsg?.content || '';
   let currentUserFiles = userMsg?.files || [];
   let currentAiContent = assistantMsg?.content || '';
@@ -1877,10 +1912,8 @@ async function shareSingleMessage(idx) {
 
 async function postShare(msgs, opts = {}) {
   const includeVersions = opts.includeVersions === true;
-
   const enriched = msgs.map(m => {
     const out = { role: m.role, content: m.content, files: m.files || [] };
-    // Include full version history ONLY when chat-share is requested
     if (includeVersions && m.id && state.messageVersions[m.id]) {
       const v = state.messageVersions[m.id];
       out.versions = v.versions || [];
