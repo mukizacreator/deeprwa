@@ -1,4 +1,4 @@
-// DeepRWA — Complete frontend logic
+// DeepRWA — Complete frontend logic (rev.2.8.0)
 
 // ============ CLIENT ID ============
 function getOrCreateClientId() {
@@ -197,6 +197,39 @@ function attachCountdown(btn, seconds = 60) {
   }, 1000);
 }
 
+// ============ IMAGE COMPRESSION ============
+// Resize + JPEG-compress images client-side to keep payloads small.
+async function compressImage(file, maxDimension = 1600, quality = 0.85) {
+  if (!file.type.startsWith('image/')) return file;
+  if (file.type === 'image/gif') return file; // preserve animation
+  if (file.size < 200 * 1024) return file;    // < 200 KB, no need
+
+  return new Promise((resolve) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      let { naturalWidth: w, naturalHeight: h } = img;
+      if (w > maxDimension || h > maxDimension) {
+        if (w >= h) { h = Math.round((h * maxDimension) / w); w = maxDimension; }
+        else { w = Math.round((w * maxDimension) / h); h = maxDimension; }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, w, h);
+      canvas.toBlob((blob) => {
+        if (!blob) { resolve(file); return; }
+        const baseName = (file.name || 'image').replace(/\.[^.]+$/, '');
+        const newFile = new File([blob], `${baseName}.jpg`, { type: 'image/jpeg', lastModified: file.lastModified });
+        resolve(newFile);
+      }, 'image/jpeg', quality);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
+    img.src = url;
+  });
+}
+
 // ============ INIT ============
 async function init() {
   renderUser(); renderChatList(); renderWelcome(); updateSendButton();
@@ -383,7 +416,6 @@ function fileKey(f, idx) {
 }
 
 function updateMultiBar() {
-  // Show the multi-select bar ONLY when multi-select mode is active AND there are files
   if (state._multiSelectMode && state._filesCache.length > 0) {
     filesMultiBar.classList.remove('hidden');
     const n = state._selectedFiles.size;
@@ -525,7 +557,6 @@ filesDeleteSelectedBtn.addEventListener('click', () => {
   });
 });
 
-// Checkbox toggle in multi-select
 sidebarContent.addEventListener('change', (e) => {
   const chk = e.target.closest('[data-file-check]');
   if (!chk) return;
@@ -538,13 +569,9 @@ sidebarContent.addEventListener('change', (e) => {
   updateMultiBar();
 });
 
-// ============ DELETE FILES (single or bulk) ============
 async function deleteFiles(files) {
   if (!files.length) return;
-
   if (state.user) {
-    // Logged-in: call server for each (with messageId + index)
-    // Sort descending by index per message so we don't shift indices mid-delete
     const byMessage = {};
     for (const f of files) {
       if (f.messageId === undefined) continue;
@@ -559,8 +586,6 @@ async function deleteFiles(files) {
     }
     await renderFilesList();
   } else {
-    // Guest: remove from in-memory chats
-    // Sort files by guest index descending per message
     const byMsg = {};
     for (const f of files) {
       if (!f._guestRef) continue;
@@ -577,7 +602,6 @@ async function deleteFiles(files) {
       for (const idx of entry.indices) msg.files.splice(idx, 1);
     }
     renderFilesList();
-    // If current chat is showing, re-render to reflect removed file
     renderMessages();
   }
 }
@@ -763,30 +787,45 @@ inputEl.addEventListener('paste', (e) => {
       if (file) {
         const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
         const named = new File([file], file.name || `pasted-${Date.now()}.${ext}`, { type: file.type });
-        if (addAttachment(named)) added++;
+        addAttachment(named).then(ok => { if (ok) { toast('Image pasted', 'success', 2000); renderFilePreviews(); updateSendButton(); } });
+        added++;
       }
     }
   }
-  if (added) { toast(`${added} image(s) pasted`, 'success', 2000); }
 });
 
 // Attach files
 attachBtn.addEventListener('click', () => fileInput.click());
-fileInput.addEventListener('change', (e) => {
-  for (const f of e.target.files) addAttachment(f);
+fileInput.addEventListener('change', async (e) => {
+  for (const f of e.target.files) await addAttachment(f);
   fileInput.value = '';
   renderFilePreviews(); updateSendButton();
 });
 
-function addAttachment(file) {
+async function addAttachment(file) {
+  // Dedupe by name + size + lastModified
   for (const existing of state.attachments) {
-    if (existing.name === file.name && existing.file.size === file.size && existing.file.lastModified === file.lastModified) {
+    if (existing.originalName === file.name && existing.originalSize === file.size && existing.originalLastModified === file.lastModified) {
       toast(`"${file.name}" is already attached`, 'info', 2000);
       return false;
     }
   }
+  // Compress images client-side (fixes "Failed to fetch" on large uploads)
+  let processedFile = file;
+  if (file.type.startsWith('image/') && file.size > 200 * 1024) {
+    try { processedFile = await compressImage(file); } catch { processedFile = file; }
+  }
   const id = Math.random().toString(36).slice(2);
-  state.attachments.push({ id, file, url: URL.createObjectURL(file), name: file.name, type: file.type });
+  state.attachments.push({
+    id,
+    file: processedFile,
+    url: URL.createObjectURL(processedFile),
+    name: processedFile.name,
+    type: processedFile.type,
+    originalName: file.name,
+    originalSize: file.size,
+    originalLastModified: file.lastModified
+  });
   return true;
 }
 
@@ -950,6 +989,11 @@ chatEl.addEventListener('click', async (e) => {
     action.classList.toggle('active');
     action.closest('.msg-actions').querySelector('[data-action="like"]')?.classList.remove('active');
   } else if (act === 'edit') {
+    // BLOCK entering edit while AI is responding
+    if (state.isGenerating) {
+      toast('Please wait for the current response to finish, or stop it first', 'info');
+      return;
+    }
     const m = state.messages[idx];
     state.editingMessageId = m.id; state.editingValue = m.content; renderMessages();
     setTimeout(() => { const ta = document.getElementById('editTextarea'); if (ta) { ta.focus(); ta.style.height = ta.scrollHeight + 'px'; } }, 0);
@@ -1000,7 +1044,9 @@ async function attachmentsToDataUrls(attachments) {
   const out = [];
   for (const att of attachments) {
     try {
-      if (att.file.size > 3 * 1024 * 1024) {
+      // Always convert to dataURL so shared links persist it (guest chats otherwise use ephemeral blob URLs)
+      if (att.file.size > 5 * 1024 * 1024) {
+        // Too large to embed reliably; fall back to object URL (won't persist in shares)
         out.push({ name: att.name, type: att.type, dataUrl: att.url });
         continue;
       }
@@ -1085,8 +1131,13 @@ formEl.addEventListener('submit', async (e) => {
     };
     if (state.user) payload.conversationId = isLocalId(chat.id) ? null : chat.id;
 
-    const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload), signal: state.abortController.signal });
-    if (!res.ok || !res.body) throw new Error('Bad response');
+    let res;
+    try {
+      res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload), signal: state.abortController.signal });
+    } catch (fetchErr) {
+      throw new Error('NETWORK: ' + fetchErr.message);
+    }
+    if (!res.ok || !res.body) throw new Error('Bad response: ' + res.status);
 
     const serverConvId = res.headers.get('X-Conversation-Id');
     if (serverConvId && isLocalId(chat.id)) { chat.id = serverConvId; state.activeChatId = serverConvId; renderChatList(); }
@@ -1131,7 +1182,13 @@ formEl.addEventListener('submit', async (e) => {
     } else {
       console.error(err);
       const last = state.messages[state.messages.length - 1];
-      if (last && last.role === 'assistant') last.content = 'Something went wrong. Please try again.';
+      if (last && last.role === 'assistant') {
+        if (err.message.startsWith('NETWORK:')) {
+          last.content = 'Could not reach the server. Please check your connection and try again.';
+        } else {
+          last.content = 'Something went wrong. Please try again.';
+        }
+      }
       renderMessages();
     }
   } finally {
@@ -1147,6 +1204,14 @@ formEl.addEventListener('submit', async (e) => {
 async function saveEditAndSend(newText) {
   const trimmed = newText.trim();
   if (!trimmed) return;
+
+  // Safety: if a generation is running, abort it cleanly so we don't race
+  if (state.isGenerating) {
+    if (state.abortController) { try { state.abortController.abort(); } catch {} }
+    state.abortController = null;
+    state.isGenerating = false;
+  }
+
   const editId = state.editingMessageId;
   const editIdx = state.messages.findIndex(m => m.id === editId);
   if (editIdx < 0) return;
@@ -1174,17 +1239,30 @@ async function saveEditAndSend(newText) {
   state.messages.push(assistantMsg);
   renderMessages();
 
-  state.isGenerating = true; inputEl.disabled = true; updateSendButton();
+  // CRITICAL: activate stop button (isGenerating true) BEFORE the fetch
+  state.isGenerating = true;
+  inputEl.disabled = true;
+  updateSendButton();
   state.abortController = new AbortController();
 
   let fullText = '';
   try {
     const endpoint = state.user ? '/api/chat' : '/api/chat/guest';
-    const payload = { messages: state.messages.filter(m => m.role === 'user' || (m.role === 'assistant' && m.content)).map(m => ({ role: m.role, content: m.content })) };
+    const payload = {
+      messages: state.messages
+        .filter(m => m.role === 'user' || (m.role === 'assistant' && m.content))
+        .map(m => ({ role: m.role, content: m.content }))
+    };
     if (state.user && chat && !isLocalId(chat.id)) payload.conversationId = chat.id;
 
-    const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload), signal: state.abortController.signal });
+    let res;
+    try {
+      res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload), signal: state.abortController.signal });
+    } catch (fetchErr) {
+      throw new Error('NETWORK: ' + fetchErr.message);
+    }
     if (!res.ok || !res.body) throw new Error('Bad response');
+
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let buf = '', firstChunk = true;
@@ -1212,12 +1290,41 @@ async function saveEditAndSend(newText) {
     v.aiReplies[v.currentIndex] = fullText;
     v.aiFiles[v.currentIndex] = [];
     renderMessages();
+
+    // Persist version history to backend for logged-in users
+    if (state.user && chat && !isLocalId(chat.id) && userMsg.id && !userMsg.id.startsWith('user_')) {
+      try {
+        await fetch(`/api/chat/messages/${userMsg.id}/sync-versions`, {
+          method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userMessageContent: userMsg.content,
+            userMessageFiles: userMsg.files || [],
+            versions: v.versions,
+            versionFiles: v.files,
+            aiReplies: v.aiReplies,
+            aiFiles: v.aiFiles,
+            currentVersionIndex: v.currentIndex,
+            assistantContent: fullText,
+            assistantFiles: []
+          })
+        });
+      } catch (e) { console.warn('sync versions failed', e); }
+    }
   } catch (err) {
-    if (err.name === 'AbortError') v.aiReplies[v.currentIndex] = fullText || '*Stopped.*';
-    else { console.error(err); v.aiReplies[v.currentIndex] = 'Something went wrong.'; }
+    if (err.name === 'AbortError') {
+      v.aiReplies[v.currentIndex] = fullText || '*Stopped.*';
+    } else {
+      console.error(err);
+      v.aiReplies[v.currentIndex] = err.message.startsWith('NETWORK:')
+        ? 'Could not reach the server. Please check your connection.'
+        : 'Something went wrong.';
+    }
     renderMessages();
   } finally {
-    state.isGenerating = false; inputEl.disabled = false; state.abortController = null; updateSendButton();
+    state.isGenerating = false;
+    inputEl.disabled = false;
+    state.abortController = null;
+    updateSendButton();
   }
 }
 
@@ -1384,6 +1491,7 @@ async function handleLoginSuccess(data) {
   state.attachments = [];
   state._selectedFiles.clear();
   state._multiSelectMode = false;
+  state.messageVersions = {};
 
   state.token = data.accessToken;
   state.user = data.user;
@@ -1507,18 +1615,13 @@ function openProfileModal() {
       <h3>${escapeHtml(u.display_name || u.email || 'Your profile')}</h3>
       <p class="modal-sub">${escapeHtml(u.email || '')}</p>
     </div>
-    <div class="settings-section">
-      <h4>Member since</h4>
-      <p>${formatDate(u.created_at) || 'Recently'}</p>
-    </div>
+    <div class="settings-section"><h4>Member since</h4><p>${formatDate(u.created_at) || 'Recently'}</p></div>
     <div class="settings-divider"></div>
-    <div class="settings-section">
-      <h4>Two-factor authentication</h4>
+    <div class="settings-section"><h4>Two-factor authentication</h4>
       <p><span class="status-badge ${u.totp_enabled ? 'on' : 'off'}">${u.totp_enabled ? 'Enabled' : 'Disabled'}</span></p>
     </div>
     <div class="settings-divider"></div>
-    <div class="settings-section">
-      <h4>Account ID</h4>
+    <div class="settings-section"><h4>Account ID</h4>
       <p style="font-family: ui-monospace, monospace; font-size: 0.75rem; word-break: break-all;">${escapeHtml(u.id || '')}</p>
     </div>`;
   profileModal.classList.remove('hidden');
@@ -1819,6 +1922,7 @@ function confirmLogout() {
     onConfirm: async () => {
       try { await fetch('/api/auth/sessions-current', { method: 'DELETE', headers: authHeaders() }); } catch {}
       state.token = null; state.user = null; state.chats = []; state.activeChatId = null; state.messages = [];
+      state.messageVersions = {};
       localStorage.removeItem('deeprwa_token');
       renderUser(); renderChatList(); renderWelcome(); settingsModal.classList.add('hidden');
       toast('Logged out', 'info');
@@ -1826,7 +1930,7 @@ function confirmLogout() {
   });
 }
 
-// ============ SHARE ============
+// ============ SHARE (includes all versions) ============
 async function shareChat(chatId) {
   const chat = state.chats.find(c => c.id === chatId); if (!chat) return;
   let msgs = chat.messages || [];
@@ -1834,12 +1938,25 @@ async function shareChat(chatId) {
     try {
       const res = await fetch(`/api/conversations/${chatId}/messages`, { headers: authHeaders() });
       const d = await res.json();
-      msgs = (d.messages || []).map(m => ({ role: m.role, content: m.content, files: m.files || [] }));
+      msgs = (d.messages || []).map(m => ({ id: m.id, role: m.role, content: m.content, files: m.files || [] }));
+      // Populate messageVersions from server data
+      (d.messages || []).forEach(m => {
+        if (m.role === 'user' && m.versions && m.versions.length > 0) {
+          state.messageVersions[m.id] = {
+            versions: m.versions,
+            files: m.version_files || [],
+            aiReplies: m.ai_replies || [],
+            aiFiles: m.ai_files || [],
+            currentIndex: m.current_version_index || 0
+          };
+        }
+      });
     } catch {}
   }
   if (!msgs.length) { toast('Nothing to share yet', 'error'); return; }
   await postShare(msgs);
 }
+
 async function shareSingleMessage(idx) {
   const msg = state.messages[idx]; if (!msg) return;
   const msgs = [msg];
@@ -1847,25 +1964,33 @@ async function shareSingleMessage(idx) {
   if (prev && prev.role === 'user') msgs.unshift(prev);
   await postShare(msgs);
 }
+
 async function postShare(msgs) {
+  // Enrich every message with its version data if present
   const enriched = msgs.map(m => {
     const out = { role: m.role, content: m.content, files: m.files || [] };
     if (m.id && state.messageVersions[m.id]) {
       const v = state.messageVersions[m.id];
-      out.versions = v.versions; out.versionFiles = v.files; out.aiReplies = v.aiReplies; out.aiFiles = v.aiFiles; out.currentVersionIndex = v.currentIndex;
+      out.versions = v.versions || [];
+      out.versionFiles = v.files || [];
+      out.aiReplies = v.aiReplies || [];
+      out.aiFiles = v.aiFiles || [];
+      out.currentVersionIndex = v.currentIndex || 0;
     }
     return out;
   }).filter(m => (m.content && m.content.trim()) || (m.files && m.files.length));
+
   const payloadStr = JSON.stringify({ messages: enriched });
-  if (payloadStr.length > 25 * 1024 * 1024) { toast('Share is too large.', 'error'); return; }
+  if (payloadStr.length > 25 * 1024 * 1024) { toast('Share is too large. Try removing some files.', 'error'); return; }
   try {
     const res = await fetch('/api/share/guest', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payloadStr });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
     showShareModal(data.url);
-    toast('Share link created — it will work anywhere.', 'success');
+    toast('Share link created — versions and files included.', 'success');
   } catch { toast('Could not create share link', 'error'); }
 }
+
 function showShareModal(url) { shareLinkInput.value = url; shareModal.classList.remove('hidden'); }
 shareModalClose.addEventListener('click', () => shareModal.classList.add('hidden'));
 shareModal.addEventListener('click', (e) => { if (e.target === shareModal) shareModal.classList.add('hidden'); });
