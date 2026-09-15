@@ -212,9 +212,7 @@ async function init() {
         localStorage.removeItem('deeprwa_token');
         renderUser();
       }
-    } catch {
-      renderUser();
-    }
+    } catch { renderUser(); }
   }
   startSessionCheck();
 }
@@ -262,10 +260,7 @@ function renderUser() {
         <i data-lucide="chevron-up"></i>
       </button>`;
     refreshIcons();
-    $('accountBtn').addEventListener('click', (e) => {
-      e.stopPropagation();
-      toggleAccountDropdown(e.currentTarget);
-    });
+    $('accountBtn').addEventListener('click', (e) => { e.stopPropagation(); toggleAccountDropdown(e.currentTarget); });
   } else {
     sidebarFooter.innerHTML = `
       <button class="auth-btn" id="authBtn">
@@ -367,17 +362,17 @@ function renderFilesList() {
       sidebarContent.innerHTML = files.map(f => {
         const isImg = (f.type || '').startsWith('image/');
         const url = f.url || f.public_url || '';
-        const link = url ? `<a href="${url}" target="_blank" style="text-decoration:none;color:inherit;">` : '';
-        const closeLink = url ? `</a>` : '';
-        return `<div class="file-item">${link}
+        const inner = `
           ${isImg && url
-            ? `<img src="${url}" class="file-thumb-sm" />`
+            ? `<img src="${url}" class="file-thumb-sm" loading="lazy" />`
             : `<div class="file-thumb-sm"><i data-lucide="file-text"></i></div>`}
           <div class="file-item-info">
             <div class="file-item-name" title="${escapeHtml(f.name || 'file')}">${escapeHtml(f.name || 'file')}</div>
             <div class="file-item-meta">${timeAgo(f.created_at)}</div>
-          </div>${closeLink}
-        </div>`;
+          </div>`;
+        return url
+          ? `<a class="file-item" href="${url}" target="_blank" rel="noopener">${inner}</a>`
+          : `<div class="file-item">${inner}</div>`;
       }).join('');
       refreshIcons();
     })
@@ -390,8 +385,7 @@ sidebarContent.addEventListener('click', (e) => {
   const menuBtn = e.target.closest('.chat-item-menu');
   if (menuBtn) {
     e.stopPropagation();
-    const rect = menuBtn.getBoundingClientRect();
-    openChatMenu(menuBtn.dataset.menu, rect);
+    openChatMenu(menuBtn.dataset.menu, menuBtn.getBoundingClientRect());
     return;
   }
   const item = e.target.closest('.chat-item');
@@ -658,14 +652,18 @@ function renderMessages() {
   refreshIcons();
 }
 
+// Thumbnails only — no names for docs. All clickable to open full view.
 function renderFilesInline(files) {
   if (!files || !files.length) return '';
   return `<div class="msg-files">${files.map(f => {
     const isImg = (f.type || '').startsWith('image/');
     const url = f.url || f.public_url || '';
-    return isImg && url
-      ? `<img src="${url}" class="msg-file-thumb" />`
-      : `<div class="msg-file-doc"><i data-lucide="file-text"></i><span>${escapeHtml(f.name || 'file')}</span></div>`;
+    const inner = isImg && url
+      ? `<img src="${url}" class="msg-file-thumb" loading="lazy" alt="attachment" />`
+      : `<div class="msg-file-doc"><i data-lucide="file-text"></i></div>`;
+    return url
+      ? `<a href="${url}" target="_blank" rel="noopener">${inner}</a>`
+      : `<div>${inner}</div>`;
   }).join('')}</div>`;
 }
 
@@ -901,10 +899,7 @@ formEl.addEventListener('submit', async (e) => {
 
   if (isFirstMessage && text) {
     const title = await requestTitle(text);
-    if (title) {
-      chat.title = title;
-      renderChatList();
-    }
+    if (title) { chat.title = title; renderChatList(); }
   }
 
   state.isGenerating = true;
@@ -1245,9 +1240,7 @@ function renderLoginForm() {
       if (!res.ok) { resetBtn(btn); toast(data.error || 'Login failed', 'error'); return; }
       state.authModal.pendingToken = data.pendingToken;
       renderVerifyCodeForm('login', data.requires2fa);
-    } catch (err) {
-      resetBtn(btn); toast('Network error', 'error');
-    }
+    } catch (err) { resetBtn(btn); toast('Network error', 'error'); }
   };
 }
 
@@ -1283,9 +1276,7 @@ function renderSignupForm() {
       if (!res.ok) { resetBtn(btn); toast(data.error || 'Signup failed', 'error'); return; }
       state.authModal.pendingToken = data.pendingToken;
       renderVerifyCodeForm('signup', false);
-    } catch {
-      resetBtn(btn); toast('Network error', 'error');
-    }
+    } catch { resetBtn(btn); toast('Network error', 'error'); }
   };
 }
 
@@ -1337,9 +1328,7 @@ function renderVerifyCodeForm(type, needs2fa) {
       renderUser();
       await loadConversations();
       toast(type === 'signup' ? 'Welcome to DeepRWA!' : 'Logged in', 'success');
-    } catch {
-      resetBtn(btn); toast('Network error', 'error');
-    }
+    } catch { resetBtn(btn); toast('Network error', 'error'); }
   };
 }
 
@@ -1505,18 +1494,11 @@ function renderProfileTab() {
   settingsContent.innerHTML = `
     <h3>Profile</h3>
     <p class="modal-sub">Your account information.</p>
-    <div class="settings-section">
-      <h4>Email</h4>
-      <p>${escapeHtml(u.email || '')}</p>
-    </div>
+    <div class="settings-section"><h4>Email</h4><p>${escapeHtml(u.email || '')}</p></div>
     <div class="settings-divider"></div>
-    <div class="settings-section">
-      <h4>Member since</h4>
-      <p>${formatDate(u.created_at) || 'Recently'}</p>
-    </div>
+    <div class="settings-section"><h4>Member since</h4><p>${formatDate(u.created_at) || 'Recently'}</p></div>
     <div class="settings-divider"></div>
-    <div class="settings-section">
-      <h4>Two-factor authentication</h4>
+    <div class="settings-section"><h4>Two-factor authentication</h4>
       <p><span class="status-badge ${u.totp_enabled ? 'on' : 'off'}">${u.totp_enabled ? 'Enabled' : 'Disabled'}</span></p>
     </div>`;
 }
@@ -1525,7 +1507,6 @@ function renderAccountTab() {
   settingsContent.innerHTML = `
     <h3>Account</h3>
     <p class="modal-sub">Manage your email, password, and account.</p>
-
     <div class="settings-section">
       <h4>Change email</h4>
       <p>Current: <strong>${escapeHtml(state.user.email || '')}</strong></p>
@@ -1535,9 +1516,7 @@ function renderAccountTab() {
         <button class="btn-primary" id="sendEmailCodeBtn" style="width:auto;padding:0.55rem 1rem;">Send code</button>
       </div>
     </div>
-
     <div class="settings-divider"></div>
-
     <div class="settings-section">
       <h4>Change password</h4>
       <p>Update your account password.</p>
@@ -1549,9 +1528,7 @@ function renderAccountTab() {
         <button class="btn-primary" id="sendPwCodeBtn" style="width:auto;padding:0.55rem 1rem;">Send code</button>
       </div>
     </div>
-
     <div class="settings-divider"></div>
-
     <div class="settings-section danger-zone">
       <h4>Danger zone</h4>
       <p>Permanently delete your account and all associated data. This action cannot be undone.</p>
@@ -1559,7 +1536,6 @@ function renderAccountTab() {
     </div>`;
   refreshIcons();
   attachPasswordToggles(settingsContent);
-
   $('changeEmailBtn').onclick = () => { $('changeEmailArea').classList.toggle('hidden'); };
   $('sendEmailCodeBtn').onclick = () => {
     const newEmail = $('newEmailInput')?.value.trim();
@@ -1703,9 +1679,7 @@ function renderSecurityTab() {
     <div class="settings-section">
       <h4>Authenticator app</h4>
       <p>Status: <span class="status-badge ${enabled ? 'on' : 'off'}">${enabled ? 'Enabled' : 'Disabled'}</span></p>
-      ${enabled
-        ? `<button class="btn-danger" id="disable2faBtn">Disable 2FA</button>`
-        : `<button class="btn-primary" id="enable2faBtn" style="width:auto;padding:0.55rem 1rem;">Enable 2FA</button>`}
+      ${enabled ? `<button class="btn-danger" id="disable2faBtn">Disable 2FA</button>` : `<button class="btn-primary" id="enable2faBtn" style="width:auto;padding:0.55rem 1rem;">Enable 2FA</button>`}
     </div>`;
   refreshIcons();
   if (enabled) $('disable2faBtn').onclick = () => disable2FA();
@@ -1720,22 +1694,17 @@ async function setup2FA() {
     if (!res.ok) { toast(data.error || 'Failed', 'error'); renderSecurityTab(); return; }
     settingsContent.innerHTML = `
       <h3>Enable 2FA</h3>
-      <p class="modal-sub">Scan this QR code with your authenticator app (Google Authenticator, Authy, 1Password, etc.)</p>
+      <p class="modal-sub">Scan this QR code with your authenticator app.</p>
       <div class="qr-wrap"><img src="${data.qrDataUrl}" alt="QR code" /></div>
       <p style="font-size:0.83rem;color:var(--text-muted);margin-bottom:0.5rem;">Or enter this key manually:</p>
-      <div class="secret-box">
-        <code>${escapeHtml(data.secret)}</code>
-        <button class="btn-secondary" id="copySecret" style="padding:0.4rem 0.7rem;font-size:0.8rem;">Copy</button>
-      </div>
+      <div class="secret-box"><code>${escapeHtml(data.secret)}</code><button class="btn-secondary" id="copySecret" style="padding:0.4rem 0.7rem;font-size:0.8rem;">Copy</button></div>
       <div style="margin-top:1rem;">
         <input type="text" id="faSetupCode" placeholder="Enter 6-digit code from app" maxlength="6" class="modal-input code-input" inputmode="numeric" />
         <button class="btn-primary" id="confirm2faBtn">Verify & enable</button>
       </div>
       <button class="link-btn" id="cancel2fa">Cancel</button>`;
     refreshIcons();
-    $('copySecret').onclick = async () => {
-      try { await navigator.clipboard.writeText(data.secret); toast('Secret copied', 'success', 2000); } catch {}
-    };
+    $('copySecret').onclick = async () => { try { await navigator.clipboard.writeText(data.secret); toast('Secret copied', 'success', 2000); } catch {} };
     $('cancel2fa').onclick = () => renderSecurityTab();
     $('confirm2faBtn').onclick = async () => {
       const code = $('faSetupCode').value.trim();
@@ -1743,11 +1712,7 @@ async function setup2FA() {
       const btn = $('confirm2faBtn');
       setBtnLoading(btn, 'Verifying…');
       try {
-        const r = await fetch('/api/auth/2fa/enable', {
-          method: 'POST',
-          headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-          body: JSON.stringify({ code })
-        });
+        const r = await fetch('/api/auth/2fa/enable', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) });
         const d = await r.json();
         if (!r.ok) { resetBtn(btn); toast(d.error || 'Invalid code', 'error'); return; }
         state.user.totp_enabled = true;
@@ -1773,11 +1738,7 @@ async function disable2FA() {
     const btn = $('confirmDisableBtn');
     setBtnLoading(btn, 'Disabling…');
     try {
-      const r = await fetch('/api/auth/2fa/disable', {
-        method: 'POST',
-        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code })
-      });
+      const r = await fetch('/api/auth/2fa/disable', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) });
       const d = await r.json();
       if (!r.ok) { resetBtn(btn); toast(d.error || 'Invalid code', 'error'); return; }
       state.user.totp_enabled = false;
@@ -1798,82 +1759,51 @@ async function renderSessionsTab() {
     settingsContent.innerHTML = `
       <h3>Sessions</h3>
       <p class="modal-sub">Devices currently signed in to your account.</p>
-      ${current ? `
-        <div class="settings-section">
-          <h4>This device</h4>
-          <div class="session-item session-current">
-            <div class="session-info">
-              <div class="session-device">${escapeHtml(current.device || 'Current device')}</div>
-              <div class="session-meta">${escapeHtml(current.ip || '')} · Active ${timeAgo(current.last_active)}</div>
-            </div>
-          </div>
-        </div>` : ''}
+      ${current ? `<div class="settings-section"><h4>This device</h4>
+        <div class="session-item session-current"><div class="session-info">
+          <div class="session-device">${escapeHtml(current.device || 'Current device')}</div>
+          <div class="session-meta">${escapeHtml(current.ip || '')} · Active ${timeAgo(current.last_active)}</div>
+        </div></div></div>` : ''}
       <div class="settings-divider"></div>
       <div class="settings-section">
         <h4>Other sessions (${others.length})</h4>
-        ${others.length === 0
-          ? `<p>No other active sessions.</p>`
-          : others.map(s => `
-              <div class="session-item">
-                <div class="session-info">
-                  <div class="session-device">${escapeHtml(s.device || 'Unknown device')}</div>
-                  <div class="session-meta">${escapeHtml(s.ip || '')} · Active ${timeAgo(s.last_active)}</div>
-                </div>
-                <button class="btn-secondary" data-logout-session="${s.id}" style="padding:0.4rem 0.7rem;font-size:0.8rem;">Log out</button>
-              </div>`).join('')}
+        ${others.length === 0 ? `<p>No other active sessions.</p>`
+          : others.map(s => `<div class="session-item"><div class="session-info">
+              <div class="session-device">${escapeHtml(s.device || 'Unknown device')}</div>
+              <div class="session-meta">${escapeHtml(s.ip || '')} · Active ${timeAgo(s.last_active)}</div>
+            </div><button class="btn-secondary" data-logout-session="${s.id}" style="padding:0.4rem 0.7rem;font-size:0.8rem;">Log out</button></div>`).join('')}
         ${others.length > 0 ? `<button class="btn-danger" id="logoutAllBtn" style="width:auto;padding:0.55rem 1rem;margin-top:0.5rem;">Log out all other sessions</button>` : ''}
       </div>`;
     refreshIcons();
     settingsContent.querySelectorAll('[data-logout-session]').forEach(btn => {
       btn.onclick = () => confirmAction({
-        title: 'Log out this session?',
-        text: 'That device will need to log in again.',
-        confirmLabel: 'Log out',
+        title: 'Log out this session?', text: 'That device will need to log in again.', confirmLabel: 'Log out',
         onConfirm: async () => {
-          try {
-            await fetch(`/api/auth/sessions/${btn.dataset.logoutSession}`, { method: 'DELETE', headers: authHeaders() });
-            toast('Session logged out', 'success');
-            renderSessionsTab();
-          } catch { toast('Failed', 'error'); }
+          try { await fetch(`/api/auth/sessions/${btn.dataset.logoutSession}`, { method: 'DELETE', headers: authHeaders() }); toast('Session logged out', 'success'); renderSessionsTab(); }
+          catch { toast('Failed', 'error'); }
         }
       });
     });
     const allBtn = $('logoutAllBtn');
     if (allBtn) allBtn.onclick = () => confirmAction({
-      title: 'Log out all other sessions?',
-      text: 'All devices except this one will be signed out.',
-      confirmLabel: 'Log out all',
+      title: 'Log out all other sessions?', text: 'All devices except this one will be signed out.', confirmLabel: 'Log out all',
       onConfirm: async () => {
-        try {
-          await fetch('/api/auth/sessions-all-others', { method: 'DELETE', headers: authHeaders() });
-          toast('All other sessions logged out', 'success');
-          renderSessionsTab();
-        } catch { toast('Failed', 'error'); }
+        try { await fetch('/api/auth/sessions-all-others', { method: 'DELETE', headers: authHeaders() }); toast('All other sessions logged out', 'success'); renderSessionsTab(); }
+        catch { toast('Failed', 'error'); }
       }
     });
-  } catch {
-    settingsContent.innerHTML = `<h3>Sessions</h3><p class="modal-sub">Could not load sessions.</p>`;
-  }
+  } catch { settingsContent.innerHTML = `<h3>Sessions</h3><p class="modal-sub">Could not load sessions.</p>`; }
 }
 
 // ============ LOGOUT ============
 function confirmLogout() {
   confirmAction({
-    title: 'Log out?',
-    text: 'You will need to log in again to access your chats.',
-    confirmLabel: 'Log out',
-    danger: false,
+    title: 'Log out?', text: 'You will need to log in again to access your chats.', confirmLabel: 'Log out', danger: false,
     onConfirm: () => {
-      state.token = null;
-      state.user = null;
-      state.chats = [];
-      state.activeChatId = null;
-      state.messages = [];
+      state.token = null; state.user = null; state.chats = []; state.activeChatId = null; state.messages = [];
       state._filesCache = null;
       localStorage.removeItem('deeprwa_token');
-      renderUser();
-      renderChatList();
-      renderWelcome();
+      renderUser(); renderChatList(); renderWelcome();
       settingsModal.classList.add('hidden');
       toast('Logged out', 'info');
     }
@@ -1906,28 +1836,18 @@ async function postShare(msgs) {
     const out = { role: m.role, content: m.content, files: m.files || [] };
     if (m.id && state.messageVersions[m.id]) {
       const v = state.messageVersions[m.id];
-      out.versions = v.versions;
-      out.versionFiles = v.files;
-      out.aiReplies = v.aiReplies;
-      out.aiFiles = v.aiFiles;
-      out.currentVersionIndex = v.currentIndex;
+      out.versions = v.versions; out.versionFiles = v.files; out.aiReplies = v.aiReplies; out.aiFiles = v.aiFiles; out.currentVersionIndex = v.currentIndex;
     }
     return out;
   }).filter(m => (m.content && m.content.trim()) || (m.files && m.files.length));
   try {
-    const res = await fetch('/api/share/guest', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: enriched })
-    });
+    const res = await fetch('/api/share/guest', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: enriched }) });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
     showShareModal(data.url);
   } catch (e) { toast('Could not create share link', 'error'); }
 }
-function showShareModal(url) {
-  shareLinkInput.value = url;
-  shareModal.classList.remove('hidden');
-}
+function showShareModal(url) { shareLinkInput.value = url; shareModal.classList.remove('hidden'); }
 shareModalClose.addEventListener('click', () => shareModal.classList.add('hidden'));
 shareModal.addEventListener('click', (e) => { if (e.target === shareModal) shareModal.classList.add('hidden'); });
 copyShareLink.addEventListener('click', async () => {
@@ -1946,5 +1866,4 @@ function closeAllModals() {
   accountDropdown.classList.add('hidden');
 }
 
-// ============ BOOT ============
 init();
