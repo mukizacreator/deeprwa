@@ -1,4 +1,4 @@
-// DeepRWA — Complete backend (rev.2.8.4)
+// DeepRWA — Complete backend (rev.2.9.0)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -454,99 +454,247 @@ const PROVIDERS = [
   { name: 'Pollinations', fn: streamPollinations }
 ];
 
-// ============ TITLE ============
-function looksLikeCode(text) {
-  const t = String(text || '');
-  if (t.length < 20) return false;
-  const symbolCount = (t.match(/[{}()\[\]<>;=+\-*/%&|!?@#$^~`]/g) || []).length;
-  if (symbolCount > 15 && symbolCount / t.length > 0.05) return true;
-  const codeKeywords = /\b(function|const|let|var|return|import|export|class|def|async|await|fetch\s*\(|=>|===|!==|if\s*\(|for\s*\(|while\s*\()/;
-  return codeKeywords.test(t);
+// ============ TITLE GENERATION ============
+// Full ChatGPT-style title system: language-aware shortcuts, image-request patterns,
+// multi-provider ladder, robust output cleaning, and local fallback.
+
+function isGreetingOnly(msg) {
+  const n = String(msg || '').toLowerCase().replace(/[’‘`]/g, "'").replace(/[^\p{L}\p{N}\s']/gu, ' ').replace(/\s+/g, ' ').trim();
+  if (!n || n.length > 30) return false;
+  if (GREETING_EXACT.has(n)) return true;
+  return /^(hi|hey|hello|yo|muraho|mwaramutse|mwiriwe|bonjour|salut|jambo|habari|hola|ciao|hallo|hei)\b/.test(n) && n.split(' ').length <= 3;
 }
 
-function startsWithCodeKeyword(text) {
-  const t = String(text || '');
-  if (/^\s*(const|let|var|function|def|class|import|from)\s/.test(t)) return true;
-  if (/^\s*#!/.test(t)) return true;
-  return false;
+function isCreatorQuestion(msg) {
+  const n = String(msg || '').toLowerCase().replace(/[’‘`]/g, "'").replace(/[^\p{L}\p{N}\s']/gu, ' ').replace(/\s+/g, ' ').trim();
+  if (!n || n.length > 60) return false;
+  return IDENTITY_EXACT_PATTERNS.some(r => r.test(n));
 }
 
-// Better fallback: strip question words and filler, capitalize topic keywords
-function smartFallbackTitle(text) {
-  const questionWords = new Set(['what','where','when','how','why','who','which','is','are','was','were','can','could','would','should','do','does','did','have','has','had','the','a','an','of','to','for','with','about','in','on','at','by','from','and','or','but','this','that','these','those','it','they','them','their','tell','me','give','show','find','please','some','any','all','very','just','now','here','there','see','look','make','made','need','want','like','know','help','using','use','used','information','info']);
-  const cleaned = String(text || '').replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
-  const words = cleaned.split(' ').filter(w => w.length > 2 && !questionWords.has(w.toLowerCase())).slice(0, 4);
-  if (words.length === 0) return 'New chat';
-  return words.map(w => w[0].toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+function isImageRequest(msg) {
+  const n = String(msg || '').toLowerCase();
+  return /\b(create|generate|make|draw|produce|provide|give|show|find|get|send)\b[\s\S]{0,40}\b(image|photo|picture|illustration|drawing)\b/.test(n)
+      || /\b(image|photo|picture|illustration|drawing)\s+of\b/.test(n)
+      || /\bdraw\s+(me\s+)?(a|an|the)\b/.test(n);
+}
+
+function greetingLabel(msg) {
+  const t = String(msg || '').toLowerCase();
+  if (/muraho|mwaramutse|mwiriwe|wiriwe|amakuru|bite/.test(t)) return 'Greeting';
+  if (/bonjour|salut|bonsoir|coucou/.test(t)) return 'Salutation';
+  if (/jambo|habari|hujambo/.test(t)) return 'Salamu';
+  if (/thanks|thank you|thx|asante|merci/.test(t)) return 'Thanks';
+  if (/bye|goodbye|kwaheri|au revoir/.test(t)) return 'Goodbye';
+  return 'Greeting';
+}
+
+function extractImagePrompt(msg) {
+  const n = String(msg || '')
+    .replace(/\b(create|generate|make|draw|produce|provide|give|show|find|get|send|me|please|a|an|the|image|photo|picture|illustration|drawing|of|for)\b/gi, ' ')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return n;
+}
+
+function cleanTitle(raw, originalMsg) {
+  let t = String(raw || '').trim();
+  if (!t) return null;
+
+  // Strip surrounding quotes (any flavour)
+  t = t.replace(/^["'`“”‘’]+|["'`“”‘’]+$/g, '');
+  // Strip trailing periods
+  t = t.replace(/\.+$/, '').trim();
+  // Strip "Title:" / "Chat title:" / "Chat:" prefix
+  if (/^(title|chat title|chat)\s*[:\-]\s*/i.test(t)) {
+    t = t.replace(/^(title|chat title|chat)\s*[:\-]\s*/i, '').trim();
+  }
+  // Multi-line: pick shortest meaningful line
+  const lines = t.split('\n').map(l => l.trim()).filter(Boolean);
+  if (lines.length > 1) {
+    const short = lines.find(l => l.length <= 60 && !/^(sure|here|the title|of course|okay)/i.test(l)) || lines[0];
+    t = short;
+  }
+  // Strip any remaining quotes/backticks at the ends
+  t = t.replace(/^["'`“”‘’]+|["'`“”‘’]+$/g, '').trim();
+  t = t.replace(/\.+$/, '').trim();
+
+  if (!t) return null;
+
+  // Reject if identical to the user's message
+  const msgNorm = String(originalMsg || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  const tNorm = t.toLowerCase().replace(/\s+/g, ' ').trim();
+  if (tNorm === msgNorm) return null;
+
+  // Hard cap
+  if (t.length > 80) t = t.substring(0, 80).trim();
+
+  return t;
+}
+
+function buildTitlePrompt(msg) {
+  const truncated = String(msg).substring(0, 800);
+  return `You write short titles for chat conversations, in the style of ChatGPT sidebar names.
+
+Read the USER MESSAGE below. Reply with ONLY the conversation title — never repeat the user's exact words.
+
+Strict rules:
+- 2 to 6 words. Title Case or sentence case.
+- Focus on the TOPIC or INTENT, not a quote of their sentence.
+- No quotation marks, no trailing period, no prefix like "Title:".
+- If the message is a greeting or small talk, reply exactly: Greeting
+- If the message asks who you are / who made you, reply exactly: About This Assistant
+- If the message asks for an image/photo/picture of something, use the pattern: X Photo (e.g. "Maize Photo", "Dairy Cow Photo", "Coffee Farm Photo")
+- If the message asks for the meaning/definition of something, use: Meaning of X
+- If the message asks how to do something, use: How to X
+- If the message describes a problem, use: X Problem or X Diagnosis
+
+Examples:
+USER: "Hi, what is your name?" → Greeting and Introduction
+USER: "What is the agriculture mean?" → Meaning of Agriculture
+USER: "How do I treat tomato blight?" → Tomato Blight Treatment
+USER: "My maize leaves are yellow with brown spots, what should I do?" → Maize Leaf Yellowing Diagnosis
+USER: "create a photo of maize" → Maize Photo
+USER: "generate an image of cows in a field" → Cows in Field Photo
+USER: "provide a photo of a coffee farm" → Coffee Farm Photo
+USER: "Hello" → Greeting
+USER: "Who created you?" → About This Assistant
+
+USER MESSAGE:
+${truncated}
+
+Title:`;
+}
+
+async function callTitleModel({ url, headers, model, prompt, timeoutMs = 20000 }) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.4,
+        max_tokens: 400,
+        stream: false
+      }),
+      signal: ctrl.signal
+    });
+    if (!res.ok) {
+      const t = await res.text().catch(() => '');
+      const e = new Error(`HTTP ${res.status}: ${t.slice(0, 100)}`);
+      e.status = res.status;
+      throw e;
+    }
+    const data = await res.json();
+    return data.choices?.[0]?.message?.content || '';
+  } finally { clearTimeout(timer); }
+}
+
+async function generateTitleViaProviders(msg) {
+  const prompt = buildTitlePrompt(msg);
+
+  // Groq
+  if (process.env.GROQ_API_KEY) {
+    for (const model of ['openai/gpt-oss-120b', 'openai/gpt-oss-20b']) {
+      try {
+        const raw = await callTitleModel({
+          url: 'https://api.groq.com/openai/v1/chat/completions',
+          headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
+          model,
+          prompt
+        });
+        const cleaned = cleanTitle(raw, msg);
+        if (cleaned) { console.log(`[title] Groq ${model}: "${cleaned}"`); return cleaned; }
+      } catch (e) {
+        console.warn(`[title] Groq ${model} failed:`, e.message);
+      }
+    }
+  }
+
+  // OpenRouter
+  if (process.env.OPENROUTER_API_KEY) {
+    try {
+      const raw = await callTitleModel({
+        url: 'https://openrouter.ai/api/v1/chat/completions',
+        headers: {
+          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          'HTTP-Referer': 'https://deeprwa.agentdomains.co',
+          'X-Title': 'DeepRWA'
+        },
+        model: 'openrouter/free',
+        prompt
+      });
+      const cleaned = cleanTitle(raw, msg);
+      if (cleaned) { console.log(`[title] OpenRouter: "${cleaned}"`); return cleaned; }
+    } catch (e) {
+      console.warn('[title] OpenRouter failed:', e.message);
+    }
+  }
+
+  // Gemini
+  if (process.env.GEMINI_API_KEY) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.4, maxOutputTokens: 30 }
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        const cleaned = cleanTitle(raw, msg);
+        if (cleaned) { console.log(`[title] Gemini: "${cleaned}"`); return cleaned; }
+      }
+    } catch (e) {
+      console.warn('[title] Gemini failed:', e.message);
+    }
+  }
+
+  return null;
 }
 
 async function generateChatTitle(firstMessage) {
-  if (!firstMessage) return 'New chat';
-  if (isGreeting(firstMessage)) return 'Greeting';
-  if (isIdentityQuestion(firstMessage)) return 'About DeepRWA';
+  const msg = String(firstMessage || '').trim();
+  if (!msg) return 'New chat';
 
-  const fullText = String(firstMessage).slice(0, 500);
-
-  if (looksLikeCode(fullText)) {
-    return startsWithCodeKeyword(fullText) ? 'Code' : 'Code help';
+  if (isGreetingOnly(msg)) {
+    const label = greetingLabel(msg);
+    console.log(`[title] greeting shortcut: "${label}"`);
+    return label;
+  }
+  if (isCreatorQuestion(msg)) {
+    console.log(`[title] creator shortcut: "About This Assistant"`);
+    return 'About This Assistant';
   }
 
-  const prompt = [
-    { role: 'system', content: 'You name chat conversations. Read the user\'s first message and reply with ONLY a 2-4 word title describing the topic. Do NOT repeat the user\'s words verbatim. Do NOT use quotes, punctuation, or prefixes. Do NOT answer the question. Examples: "Rwandan History", "Kigali Hotels", "Coffee Prices Rwanda", "Volcanoes Park Visit", "Umuganda Culture"' },
-    { role: 'user', content: fullText.slice(0, 300) }
-  ];
+  const isImg = isImageRequest(msg);
 
-  try {
-    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'openai/gpt-oss-120b', messages: prompt, max_completion_tokens: 20, reasoning_effort: 'none', temperature: 0.6 })
-    });
-    if (res.ok) {
-      const data = await res.json();
-      let t = (data.choices?.[0]?.message?.content || '').trim()
-        .replace(/^["'`\s]+|["'`\s]+$/g, '')
-        .replace(/^Title:\s*/i, '')
-        .split('\n')[0].trim()
-        .replace(/[.!?,;:]+$/, '');
-      if (t && t.length >= 3 && t.length <= 60) {
-        console.log(`[title] Groq: "${t}"`);
-        return t;
-      }
-    }
-  } catch (e) { console.warn('[title] Groq failed:', e.message); }
+  const fromLLM = await generateTitleViaProviders(msg);
+  if (fromLLM) return fromLLM;
 
-  try {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
-    const res = await fetch(url, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text: `Name this conversation in 2-4 words describing the topic. Reply ONLY with the title. Do not repeat the user's words.\n\nMessage: "${fullText.slice(0, 300)}"` }] }],
-        generationConfig: { temperature: 0.6, maxOutputTokens: 25 }
-      })
-    });
-    if (res.ok) {
-      const data = await res.json();
-      let t = (data.candidates?.[0]?.content?.parts?.[0]?.text || '').trim()
-        .replace(/^["'`\s]+|["'`\s]+$/g, '')
-        .replace(/^Title:\s*/i, '')
-        .split('\n')[0].trim()
-        .replace(/[.!?,;:]+$/, '');
-      if (t && t.length >= 3 && t.length <= 60) {
-        console.log(`[title] Gemini: "${t}"`);
-        return t;
-      }
-    }
-  } catch (e) { console.warn('[title] Gemini failed:', e.message); }
+  if (isImg) {
+    const p = extractImagePrompt(msg).split(/\s+/).slice(0, 4).join(' ');
+    const t = p ? `${p} Photo` : 'Image Request';
+    console.log(`[title] image fallback: "${t}"`);
+    return t;
+  }
 
-  const fallback = smartFallbackTitle(fullText);
-  console.log(`[title] fallback: "${fallback}"`);
-  return fallback;
+  const words = msg.replace(/\s+/g, ' ').split(' ').slice(0, 5);
+  const t = words.join(' ') + (msg.split(/\s+/).length > 5 ? '…' : '');
+  console.log(`[title] local fallback: "${t}"`);
+  return t || 'New chat';
 }
 
 // ============ ROUTES ============
-app.get('/health', (req, res) => res.json({ status: 'ok', service: 'DeepRWA', version: '2.8.4', time: new Date().toISOString() }));
-app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '2.8.4', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
+app.get('/health', (req, res) => res.json({ status: 'ok', service: 'DeepRWA', version: '2.9.0', time: new Date().toISOString() }));
+app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '2.9.0', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
 app.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nSitemap: https://deeprwa.agentdomains.co/sitemap.xml\n`));
 app.get('/sitemap.xml', (req, res) => res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>https://deeprwa.agentdomains.co/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>\n</urlset>`));
 
@@ -931,7 +1079,6 @@ app.post('/api/chat', requireAuth, async (req, res) => {
     convId = conv.id;
     console.log(`[chat] new conv created for user ${req.userId.slice(0,8)}: "${title}"`);
   }
-  // CRITICAL FIX: find the LAST USER message, not the last message (frontend pushes an assistant placeholder after the user msg)
   const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
   if (lastUserMsg) {
     const filesArray = Array.isArray(lastUserMsg.files) ? lastUserMsg.files : [];
