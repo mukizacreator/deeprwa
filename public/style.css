@@ -1,4 +1,5 @@
-/* DeepRWA — Universal responsive stylesheet */
+/* DeepRWA — Universal responsive stylesheet (rev.3.1.0)
+   Touch-safe on phones, tablets, foldables, touch laptops, pens, mice. */
 
 /* ============ RESET & TOKENS ============ */
 :root {
@@ -58,6 +59,7 @@
 
 html, body {
   height: 100%;
+  min-height: 100vh;
   min-height: 100dvh;
   background: var(--bg);
   color: var(--text);
@@ -67,6 +69,8 @@ html, body {
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   overscroll-behavior-y: none;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 body {
@@ -78,15 +82,168 @@ body {
 img, svg, video { max-width: 100%; height: auto; display: block; }
 button { font-family: inherit; }
 
-/* Touch / pen responsiveness: make every interactive element respond
-   to a single tap without the 300ms legacy delay and without needing hover. */
-button, a, [role="button"],
-.chip, .nav-item, .chat-item, .file-item, .file-item-wrap,
-.msg-action, .attach-btn, .send-btn, .icon-btn, .new-chat-btn, .auth-btn,
-.files-ms-btn, .link-btn, .vs-btn, .settings-tab, .modal-close, .input-toggle,
-.file-checkbox, .file-remove, .file-item-menu, .chat-item-menu,
-.account-info, .edit-textarea, .modal-input, #input {
+/* =========================================================
+   UNIVERSAL TOUCH / POINTER RULES
+   Applied to every interactive element on every device:
+   phones, tablets, foldables, touch laptops, pens, mice.
+   ========================================================= */
+button,
+a,
+[role="button"],
+input,
+textarea,
+select,
+.chip,
+.nav-item,
+.chat-item,
+.file-item,
+.file-item-wrap,
+.file-item-menu,
+.chat-item-menu,
+.msg-action,
+.msg-file-btn,
+.attach-btn,
+.send-btn,
+.icon-btn,
+.new-chat-btn,
+.auth-btn,
+.files-ms-btn,
+.link-btn,
+.vs-btn,
+.settings-tab,
+.modal-close,
+.input-toggle,
+.file-checkbox,
+.file-remove,
+.account-info,
+.edit-actions button,
+.session-item button,
+.dropdown button,
+.chat-menu button,
+.file-menu button {
   touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Buttons and icon-only controls get no text selection / no long-press callout.
+   Inputs and message content are NOT included — users must be able to select
+   and paste into those. */
+button,
+[role="button"],
+.icon-btn,
+.new-chat-btn,
+.auth-btn,
+.send-btn,
+.attach-btn,
+.chip,
+.nav-item,
+.settings-tab,
+.msg-action,
+.files-ms-btn,
+.link-btn,
+.vs-btn,
+.modal-close,
+.input-toggle,
+.file-item-menu,
+.chat-item-menu,
+.file-remove,
+.dropdown button,
+.chat-menu button,
+.file-menu button {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  user-select: none;
+}
+
+/* Icons inside buttons must never intercept the tap.
+   Taps always land on the parent button. */
+button svg,
+button i,
+.icon-btn svg,
+.icon-btn i,
+.new-chat-btn svg,
+.new-chat-btn i,
+.auth-btn svg,
+.auth-btn i,
+.send-btn svg,
+.send-btn i,
+.attach-btn svg,
+.attach-btn i,
+.chip svg,
+.chip i,
+.nav-item svg,
+.nav-item i,
+.settings-tab svg,
+.settings-tab i,
+.msg-action svg,
+.msg-action i,
+.files-ms-btn svg,
+.files-ms-btn i,
+.link-btn svg,
+.link-btn i,
+.vs-btn svg,
+.vs-btn i,
+.modal-close svg,
+.modal-close i,
+.input-toggle svg,
+.input-toggle i,
+.file-item-menu svg,
+.file-item-menu i,
+.chat-item-menu svg,
+.chat-item-menu i,
+.dropdown button svg,
+.dropdown button i,
+.chat-menu button svg,
+.chat-menu button i,
+.file-menu button svg,
+.file-menu button i {
+  pointer-events: none;
+}
+
+/* Instant visual feedback on press — works on touch and mouse alike. */
+button:active:not(:disabled),
+[role="button"]:active,
+.icon-btn:active,
+.new-chat-btn:active,
+.auth-btn:active,
+.send-btn:active:not(:disabled),
+.attach-btn:active,
+.chip:active,
+.nav-item:active,
+.settings-tab:active,
+.msg-action:active,
+.files-ms-btn:active,
+.link-btn:active,
+.vs-btn:active:not(:disabled),
+.modal-close:active,
+.input-toggle:active,
+.file-item-menu:active,
+.chat-item-menu:active,
+.file-remove:active,
+.dropdown button:active,
+.chat-menu button:active,
+.file-menu button:active {
+  transform: scale(0.96);
+}
+
+/* Focus ring for keyboard users only — touch users never see it. */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+[role="button"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Prevent iOS auto-zoom: every focusable text field is ≥ 16px. */
+#input,
+.modal-input,
+.edit-textarea,
+.code-input,
+.share-link-row input {
+  font-size: max(16px, var(--fs-md));
 }
 
 .bubble, .assistant-text, .file-item-name, .chat-item-title,
@@ -97,6 +254,7 @@ button, a, [role="button"],
 
 .app {
   display: flex;
+  height: 100vh;
   height: 100dvh;
   width: 100%;
   min-height: 0;
@@ -145,15 +303,15 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   background: transparent;
   border: none;
   color: var(--text-muted);
-  width: 36px;
-  height: 36px;
-  min-width: 36px;
-  min-height: 36px;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
   border-radius: 8px;
   display: grid;
   place-items: center;
   cursor: pointer;
-  transition: background 0.15s, color 0.15s;
+  transition: background 0.15s, color 0.15s, transform 0.06s;
   flex-shrink: 0;
 }
 .icon-btn:hover { background: var(--surface-2); color: var(--text); }
@@ -173,8 +331,8 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   font-weight: 500;
   cursor: pointer;
   text-align: left;
-  transition: background 0.15s, border-color 0.15s;
-  min-height: 40px;
+  transition: background 0.15s, border-color 0.15s, transform 0.06s;
+  min-height: 44px;
 }
 .new-chat-btn:hover { background: var(--surface-3); border-color: var(--border-strong); }
 .new-chat-btn svg { width: 17px; height: 17px; }
@@ -197,8 +355,8 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   font-size: var(--fs-sm);
   cursor: pointer;
   text-align: left;
-  transition: background 0.15s, color 0.15s;
-  min-height: 38px;
+  transition: background 0.15s, color 0.15s, transform 0.06s;
+  min-height: 44px;
 }
 .nav-item:hover { background: var(--surface-2); color: var(--text); }
 .nav-item.active { background: var(--surface-2); color: var(--text); }
@@ -210,6 +368,8 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   overflow-x: hidden;
   padding: var(--space-xs) var(--space-sm);
   min-height: 0;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
 }
 
 .sidebar-empty {
@@ -244,7 +404,7 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   cursor: pointer;
   transition: background 0.15s;
   position: relative;
-  min-height: 38px;
+  min-height: 44px;
 }
 .chat-item:hover { background: var(--surface-2); }
 .chat-item.active { background: var(--surface-3); }
@@ -258,28 +418,26 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   text-overflow: ellipsis;
   min-width: 0;
 }
-/* Chat item menu — visible by default so touch / pen users can tap it.
-   Faded in only on devices that truly have a fine pointer + hover. */
+/* Chat item menu — ALWAYS VISIBLE on every device.
+   Hover is only used to emphasise the background, never to reveal. */
 .chat-item-menu {
   background: transparent;
   border: none;
   color: var(--text-muted);
-  width: 26px;
-  height: 26px;
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  min-height: 32px;
   border-radius: 4px;
   display: grid;
   place-items: center;
   cursor: pointer;
   opacity: 1;
-  transition: opacity 0.15s, background 0.15s;
+  transition: background 0.15s, color 0.15s;
   flex-shrink: 0;
 }
 .chat-item-menu:hover { background: var(--surface-3); color: var(--text); }
 .chat-item-menu svg { width: 14px; height: 14px; }
-@media (hover: hover) and (pointer: fine) {
-  .chat-item-menu { opacity: 0; }
-  .chat-item:hover .chat-item-menu { opacity: 1; }
-}
 
 /* Files */
 .file-item-wrap {
@@ -290,7 +448,7 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   border-radius: 8px;
   position: relative;
   transition: background 0.12s;
-  min-height: 46px;
+  min-height: 48px;
 }
 .file-item-wrap:hover { background: var(--surface-2); }
 .file-item {
@@ -307,7 +465,7 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   text-align: left;
   cursor: pointer;
   min-width: 0;
-  min-height: 40px;
+  min-height: 44px;
 }
 .file-thumb-sm {
   width: 38px; height: 38px;
@@ -324,39 +482,38 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
 .file-item-info { flex: 1; min-width: 0; }
 .file-item-name { font-size: var(--fs-sm); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .file-item-meta { font-size: var(--fs-xs); color: var(--text-dim); }
-/* File item menu — visible by default so touch / pen users can tap it. */
+/* File item menu — ALWAYS VISIBLE. */
 .file-item-menu {
   flex-shrink: 0;
   background: transparent;
   border: none;
   color: var(--text-muted);
-  width: 30px; height: 30px;
+  width: 36px; height: 36px;
+  min-width: 36px; min-height: 36px;
   border-radius: 6px;
   display: grid; place-items: center;
   cursor: pointer;
   opacity: 1;
-  transition: opacity 0.15s, background 0.15s;
+  transition: background 0.15s, color 0.15s;
 }
 .file-item-menu:hover { background: var(--surface-3); color: var(--text); }
 .file-item-menu svg { width: 15px; height: 15px; }
-@media (hover: hover) and (pointer: fine) {
-  .file-item-menu { opacity: 0; }
-  .file-item-wrap:hover .file-item-menu,
-  .file-item-menu:focus { opacity: 1; }
-}
 
 .file-checkbox {
   position: relative;
   display: inline-block;
-  width: 22px; height: 22px;
-  min-width: 22px; min-height: 22px;
+  width: 44px; height: 44px;
+  min-width: 44px; min-height: 44px;
   flex-shrink: 0;
   cursor: pointer;
-  margin-left: var(--space-xs);
+  margin-left: 0;
 }
 .file-checkbox input { position: absolute; opacity: 0; width: 0; height: 0; }
 .file-checkbox-mark {
-  position: absolute; inset: 0;
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: 22px; height: 22px;
   border: 1.5px solid var(--border-strong);
   border-radius: 5px;
   background: var(--surface);
@@ -397,8 +554,8 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   font-size: var(--fs-xs);
   font-weight: 500;
   cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
-  min-height: 34px;
+  transition: background 0.15s, border-color 0.15s, transform 0.06s;
+  min-height: 44px;
 }
 .files-ms-btn:hover { background: var(--surface-3); border-color: var(--border-strong); }
 .files-ms-btn.danger { color: var(--danger); border-color: var(--danger-border); }
@@ -413,7 +570,7 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   border: 1px solid var(--border-strong);
   border-radius: 10px;
   padding: 4px;
-  min-width: 160px;
+  min-width: 180px;
   max-width: calc(100vw - 20px);
   z-index: 200;
   box-shadow: 0 10px 30px rgba(0,0,0,0.6);
@@ -431,8 +588,8 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   cursor: pointer;
   border-radius: 6px;
   text-align: left;
-  transition: background 0.1s;
-  min-height: 36px;
+  transition: background 0.1s, transform 0.06s;
+  min-height: 44px;
 }
 .chat-menu button:hover, .file-menu button:hover, .dropdown button:hover { background: var(--surface-3); }
 .chat-menu button.danger, .file-menu button.danger, .dropdown button.danger { color: var(--danger); }
@@ -441,6 +598,7 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
 
 .sidebar-footer {
   padding: var(--space-md);
+  padding-bottom: calc(var(--space-md) + env(safe-area-inset-bottom, 0px));
   border-top: 1px solid var(--border);
   position: relative;
   flex-shrink: 0;
@@ -458,8 +616,8 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   font-size: var(--fs-sm);
   font-weight: 500;
   cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
-  min-height: 42px;
+  transition: background 0.15s, border-color 0.15s, transform 0.06s;
+  min-height: 44px;
 }
 .auth-btn:hover { background: var(--surface-2); border-color: var(--border-strong); }
 .auth-btn svg { width: 16px; height: 16px; }
@@ -508,6 +666,7 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   align-items: center;
   gap: var(--space-sm);
   padding: var(--space-md) var(--space-lg);
+  padding-top: calc(var(--space-md) + env(safe-area-inset-top, 0px));
   border-bottom: 1px solid var(--border);
   background: var(--bg);
   flex-shrink: 0;
@@ -527,6 +686,8 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   padding: var(--space-lg) var(--space-md) var(--space-md);
   scroll-behavior: smooth;
   min-height: 0;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
 }
 .chat > * {
   max-width: 780px;
@@ -574,8 +735,8 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   border-radius: 999px;
   font-size: var(--fs-sm);
   cursor: pointer;
-  transition: background 0.15s, border-color 0.15s, color 0.15s;
-  min-height: 36px;
+  transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.06s;
+  min-height: 44px;
 }
 .chip:hover { background: var(--surface-2); color: var(--text); border-color: var(--border-strong); }
 
@@ -597,6 +758,8 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   font-size: var(--fs-md);
   border: 1px solid var(--border);
   min-width: 0;
+  user-select: text;
+  -webkit-user-select: text;
 }
 .msg-files {
   display: flex;
@@ -655,6 +818,8 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   font-size: var(--fs-md);
   color: var(--text);
   min-width: 0;
+  user-select: text;
+  -webkit-user-select: text;
 }
 .assistant-text p { margin: 0 0 0.75rem; }
 .assistant-text p:last-child { margin-bottom: 0; }
@@ -703,8 +868,7 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   margin: 0 0 0.75rem;
 }
 
-/* Message actions — visible by default so touch / pen users can tap them.
-   Faded behind hover only on devices that truly have a fine pointer + hover. */
+/* Message actions — ALWAYS VISIBLE on every device, no hover required. */
 .msg-actions {
   display: flex;
   gap: 2px;
@@ -714,28 +878,23 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   flex-wrap: wrap;
 }
 .msg-actions-user { justify-content: flex-end; }
-@media (hover: hover) and (pointer: fine) {
-  .msg-actions { opacity: 0; }
-  .msg:hover .msg-actions,
-  .msg:focus-within .msg-actions { opacity: 1; }
-}
 .msg-action {
   background: transparent;
   border: none;
   color: var(--text-dim);
-  width: 30px; height: 30px;
-  min-width: 30px; min-height: 30px;
-  border-radius: 5px;
+  width: 40px; height: 40px;
+  min-width: 40px; min-height: 40px;
+  border-radius: 6px;
   display: grid;
   place-items: center;
   cursor: pointer;
-  transition: background 0.15s, color 0.15s;
+  transition: background 0.15s, color 0.15s, transform 0.06s;
 }
 .msg-action:hover { background: var(--surface-2); color: var(--text); }
 .msg-action.active { color: var(--accent); }
 .msg-action.active[data-action="dislike"] { color: var(--danger); }
 .msg-action.copied { color: var(--rwa-green); }
-.msg-action svg { width: 14px; height: 14px; }
+.msg-action svg { width: 15px; height: 15px; }
 
 /* Version switcher */
 .version-switcher {
@@ -754,12 +913,13 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   background: transparent;
   border: none;
   color: var(--text-muted);
-  width: 26px; height: 26px;
+  width: 36px; height: 36px;
+  min-width: 36px; min-height: 36px;
   border-radius: 50%;
   display: grid;
   place-items: center;
   cursor: pointer;
-  transition: background 0.15s, color 0.15s;
+  transition: background 0.15s, color 0.15s, transform 0.06s;
 }
 .vs-btn:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
 .vs-btn:disabled { opacity: 0.3; cursor: not-allowed; }
@@ -775,7 +935,7 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   border-radius: 10px;
   color: var(--text);
   font-family: inherit;
-  font-size: var(--fs-md);
+  font-size: max(16px, var(--fs-md));
   padding: var(--space-md);
   resize: none;
   outline: none;
@@ -796,7 +956,7 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   padding: 0.55rem 1rem;
   font-size: var(--fs-sm);
   margin: 0;
-  min-height: 40px;
+  min-height: 44px;
 }
 .edit-actions svg { width: 14px; height: 14px; }
 
@@ -825,7 +985,8 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
 
 /* ============ COMPOSER ============ */
 .composer {
-  padding: var(--space-md) var(--space-md) calc(var(--space-md) + env(safe-area-inset-bottom));
+  padding: var(--space-md) var(--space-md);
+  padding-bottom: calc(var(--space-md) + env(safe-area-inset-bottom, 0px));
   background: var(--bg);
   flex-shrink: 0;
 }
@@ -857,8 +1018,8 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
 .file-remove {
   position: absolute;
   top: 3px; right: 3px;
-  width: 20px; height: 20px;
-  min-width: 20px; min-height: 20px;
+  width: 26px; height: 26px;
+  min-width: 26px; min-height: 26px;
   border-radius: 50%;
   background: rgba(0,0,0,0.75);
   border: none;
@@ -867,8 +1028,10 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   place-items: center;
   cursor: pointer;
   padding: 0;
+  transition: transform 0.06s, background 0.15s;
 }
-.file-remove svg { width: 11px; height: 11px; }
+.file-remove:hover { background: rgba(0,0,0,0.9); }
+.file-remove svg { width: 13px; height: 13px; }
 
 .composer-inner {
   display: flex;
@@ -881,8 +1044,8 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
 }
 .attach-btn {
   flex-shrink: 0;
-  width: 40px; height: 40px;
-  min-width: 40px; min-height: 40px;
+  width: 44px; height: 44px;
+  min-width: 44px; min-height: 44px;
   border-radius: 50%;
   background: transparent;
   border: none;
@@ -890,7 +1053,7 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   display: grid;
   place-items: center;
   cursor: pointer;
-  transition: background 0.15s, color 0.15s;
+  transition: background 0.15s, color 0.15s, transform 0.06s;
 }
 .attach-btn:hover { background: var(--surface-2); color: var(--text); }
 .attach-btn svg { width: 18px; height: 18px; }
@@ -904,12 +1067,14 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   box-shadow: none !important;
   color: var(--text);
   font-family: inherit;
-  font-size: var(--fs-md);
+  font-size: max(16px, var(--fs-md));
   padding: var(--space-sm) var(--space-xs);
   resize: none;
   max-height: 400px;
   line-height: 1.5;
   -webkit-appearance: none;
+  user-select: text;
+  -webkit-user-select: text;
 }
 #input:focus, #input:active {
   outline: none !important;
@@ -920,8 +1085,8 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
 
 .send-btn {
   flex-shrink: 0;
-  width: 40px; height: 40px;
-  min-width: 40px; min-height: 40px;
+  width: 44px; height: 44px;
+  min-width: 44px; min-height: 44px;
   border-radius: 50%;
   border: none;
   background: var(--accent);
@@ -929,7 +1094,7 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   display: grid;
   place-items: center;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 0.15s, transform 0.06s;
 }
 .send-btn:hover:not(:disabled):not(.generating) { background: var(--accent-hover); }
 .send-btn:disabled { background: var(--surface-2); color: var(--text-dim); cursor: not-allowed; }
@@ -944,7 +1109,7 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   0%, 100% { box-shadow: 0 0 0 0 rgba(239,83,80,0.25); }
   50% { box-shadow: 0 0 0 6px rgba(239,83,80,0); }
 }
-.send-btn svg { width: 17px; height: 17px; }
+.send-btn svg { width: 18px; height: 18px; }
 
 .composer-disclaimer {
   font-size: var(--fs-xs);
@@ -965,8 +1130,12 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   place-items: center;
   z-index: 100;
   backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
   padding: var(--space-md);
+  padding-top: calc(var(--space-md) + env(safe-area-inset-top, 0px));
+  padding-bottom: calc(var(--space-md) + env(safe-area-inset-bottom, 0px));
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 .modal {
   background: var(--surface);
@@ -977,8 +1146,10 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   width: 100%;
   position: relative;
   box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+  max-height: calc(100vh - 2 * var(--space-md));
   max-height: calc(100dvh - 2 * var(--space-md));
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 .modal-settings { max-width: 720px; padding: 0; }
 .modal-close {
@@ -988,13 +1159,14 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   background: transparent;
   border: none;
   color: var(--text-muted);
-  width: 34px; height: 34px;
-  min-width: 34px; min-height: 34px;
+  width: 44px; height: 44px;
+  min-width: 44px; min-height: 44px;
   border-radius: 6px;
   display: grid;
   place-items: center;
   cursor: pointer;
   z-index: 2;
+  transition: background 0.15s, color 0.15s, transform 0.06s;
 }
 .modal-close:hover { background: var(--surface-2); color: var(--text); }
 .modal-close svg { width: 18px; height: 18px; }
@@ -1015,26 +1187,28 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   border-radius: 8px;
   color: var(--text);
   font-family: inherit;
-  font-size: var(--fs-md);
+  font-size: max(16px, var(--fs-md));
   padding: var(--space-md);
   outline: none;
   margin-bottom: var(--space-sm);
   transition: border-color 0.15s;
   min-height: 44px;
+  user-select: text;
+  -webkit-user-select: text;
 }
 .modal-input:focus { border-color: var(--accent); }
 .input-wrap { position: relative; margin-bottom: var(--space-sm); }
-.input-wrap .modal-input { margin-bottom: 0; padding-right: 2.75rem; }
+.input-wrap .modal-input { margin-bottom: 0; padding-right: 3rem; }
 .input-toggle {
   position: absolute;
-  right: var(--space-sm);
+  right: 6px;
   top: 50%;
   transform: translateY(-50%);
   background: transparent;
   border: none;
   color: var(--text-muted);
-  width: 32px; height: 32px;
-  min-width: 32px; min-height: 32px;
+  width: 36px; height: 36px;
+  min-width: 36px; min-height: 36px;
   border-radius: 6px;
   display: grid;
   place-items: center;
@@ -1044,7 +1218,7 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
 .input-toggle svg { width: 16px; height: 16px; }
 .code-input {
   text-align: center;
-  font-size: var(--fs-xl);
+  font-size: max(16px, var(--fs-xl));
   letter-spacing: 6px;
   font-weight: 700;
   padding-left: var(--space-md);
@@ -1060,7 +1234,7 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   font-size: var(--fs-md);
   font-weight: 600;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 0.15s, transform 0.06s;
   margin-top: var(--space-xs);
   display: inline-flex;
   align-items: center;
@@ -1082,7 +1256,8 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   display: inline-flex;
   align-items: center;
   gap: var(--space-xs);
-  min-height: 40px;
+  min-height: 44px;
+  transition: background 0.15s, transform 0.06s;
 }
 .btn-secondary:hover { background: var(--surface-3); }
 .btn-danger {
@@ -1094,7 +1269,8 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   font-size: var(--fs-md);
   font-weight: 600;
   cursor: pointer;
-  min-height: 40px;
+  min-height: 44px;
+  transition: background 0.15s, transform 0.06s;
 }
 .btn-danger:hover { background: var(--danger-hover); }
 .modal-switch {
@@ -1124,6 +1300,7 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   margin-left: auto;
   margin-right: auto;
   transition: opacity 0.15s;
+  min-height: 44px;
 }
 .link-btn:hover:not(:disabled) { text-decoration: underline; }
 .link-btn:disabled { opacity: 0.35; cursor: not-allowed; text-decoration: none; pointer-events: none; }
@@ -1136,9 +1313,11 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   border-radius: 8px;
   color: var(--text);
   font-family: ui-monospace, monospace;
-  font-size: var(--fs-sm);
+  font-size: max(16px, var(--fs-sm));
   padding: var(--space-md);
   outline: none;
+  user-select: text;
+  -webkit-user-select: text;
 }
 .share-link-row .btn-primary { width: auto; padding: var(--space-md) var(--space-lg); margin: 0; }
 
@@ -1146,6 +1325,7 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
 .settings-layout {
   display: flex;
   min-height: 480px;
+  min-height: min(480px, calc(100vh - 2 * var(--space-md)));
   min-height: min(480px, calc(100dvh - 2 * var(--space-md)));
 }
 .settings-sidebar {
@@ -1171,8 +1351,8 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   font-size: var(--fs-sm);
   cursor: pointer;
   text-align: left;
-  transition: background 0.15s, color 0.15s;
-  min-height: 38px;
+  transition: background 0.15s, color 0.15s, transform 0.06s;
+  min-height: 44px;
 }
 .settings-tab:hover { background: var(--surface-2); color: var(--text); }
 .settings-tab.active { background: var(--surface-3); color: var(--text); }
@@ -1184,6 +1364,7 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   max-height: 70vh;
   max-height: min(70vh, calc(100dvh - 2 * var(--space-md)));
   min-width: 0;
+  -webkit-overflow-scrolling: touch;
 }
 .settings-section { margin-bottom: var(--space-lg); }
 .settings-section h4 {
@@ -1204,7 +1385,7 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   padding: var(--space-sm) var(--space-md);
   font-size: var(--fs-sm);
   margin: 0;
-  min-height: 40px;
+  min-height: 44px;
 }
 .settings-divider { height: 1px; background: var(--border); margin: var(--space-lg) 0; }
 .danger-zone {
@@ -1274,6 +1455,7 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   flex-direction: column;
   gap: var(--space-md);
   max-height: 85vh;
+  max-height: 85dvh;
 }
 .file-view-header {
   display: flex;
@@ -1301,16 +1483,19 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   align-items: center;
   justify-content: center;
   min-height: 200px;
+  -webkit-overflow-scrolling: touch;
 }
 .file-view-img {
   max-width: 100%;
   max-height: 70vh;
+  max-height: 70dvh;
   border-radius: 10px;
   margin: 0 auto;
 }
 .file-view-pdf {
   width: 100%;
   height: 70vh;
+  height: 70dvh;
   border: 1px solid var(--border);
   border-radius: 10px;
 }
@@ -1337,7 +1522,7 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
 /* ============ TOASTS ============ */
 .toast-container {
   position: fixed;
-  top: var(--space-md);
+  top: calc(var(--space-md) + env(safe-area-inset-top, 0px));
   right: var(--space-md);
   z-index: 9999;
   display: flex;
@@ -1381,27 +1566,72 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* ============ LAPTOP / SMALL DESKTOP (<= 1100px) ============ */
+/* =========================================================
+   HOVER-NONE OVERRIDES (phones, tablets, touchscreens)
+   Neutralise hover so the FIRST tap fires the action and no
+   hover state sticks. `:active` provides the feedback.
+   ========================================================= */
+@media (hover: none) {
+  .icon-btn:hover,
+  .chat-item:hover,
+  .file-item-wrap:hover,
+  .chip:hover,
+  .nav-item:hover,
+  .settings-tab:hover,
+  .msg-action:hover,
+  .files-ms-btn:hover,
+  .link-btn:hover,
+  .new-chat-btn:hover,
+  .auth-btn:hover,
+  .attach-btn:hover,
+  .modal-close:hover,
+  .input-toggle:hover,
+  .file-item-menu:hover,
+  .chat-item-menu:hover,
+  .file-remove:hover,
+  .btn-primary:hover,
+  .btn-secondary:hover,
+  .btn-danger:hover,
+  .dropdown button:hover,
+  .chat-menu button:hover,
+  .file-menu button:hover {
+    background: revert;
+    color: revert;
+    border-color: revert;
+    transform: none;
+  }
+  .link-btn:hover { text-decoration: none; }
+  .assistant-text a:hover { text-decoration: none; }
+  .msg-file-thumb:hover,
+  .msg-file-doc:hover { transform: none; }
+}
+
+/* =========================================================
+   BREAKPOINTS
+   ========================================================= */
+
+/* LAPTOP / SMALL DESKTOP (<= 1100px) */
 @media (max-width: 1100px) {
   :root { --sidebar-w: 240px; }
 }
 
-/* ============ TABLET (<= 900px) ============ */
+/* TABLET (<= 900px) */
 @media (max-width: 900px) {
   :root { --sidebar-w: 220px; }
   .topbar-brand { display: flex; }
   .topbar-brand .brand-name { font-size: var(--fs-sm); }
 }
 
-/* ============ MOBILE / SMALL TABLET (<= 820px) ============ */
+/* MOBILE / SMALL TABLET (<= 820px) */
 @media (max-width: 820px) {
   .sidebar {
     position: fixed;
     top: 0; left: 0; bottom: 0;
     z-index: 50;
-    transform: translateX(-100%);
+    transform: translateX(-105%);
     box-shadow: 4px 0 24px rgba(0,0,0,0.5);
-    width: min(280px, 85vw);
+    width: min(320px, 85vw);
+    transition: transform 0.22s ease;
   }
   .sidebar.open { transform: translateX(0); }
   .sidebar-collapse-btn { display: none; }
@@ -1409,8 +1639,8 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   .menu-btn { display: grid; }
   .expand-btn { display: none !important; }
   .topbar-brand { display: flex; }
-  body.sidebar-collapsed .sidebar { width: min(280px, 85vw); transform: translateX(-100%); }
-  .modal-settings { max-width: 100%; margin: 0; height: 100%; border-radius: 0; max-height: 100dvh; }
+  body.sidebar-collapsed .sidebar { width: min(320px, 85vw); transform: translateX(-105%); }
+  .modal-settings { max-width: 100%; margin: 0; height: 100%; height: 100dvh; border-radius: 0; max-height: 100dvh; }
   .settings-layout { flex-direction: column; min-height: auto; height: 100%; }
   .settings-sidebar {
     width: 100%;
@@ -1421,7 +1651,9 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
     border-radius: 0;
     padding: var(--space-sm);
     flex-shrink: 0;
+    scrollbar-width: none;
   }
+  .settings-sidebar::-webkit-scrollbar { display: none; }
   .settings-tab {
     white-space: nowrap;
     padding: var(--space-sm) var(--space-md);
@@ -1429,15 +1661,17 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   }
   .settings-content { max-height: none; flex: 1; }
   .modal-file-view { width: 100vw; height: 100dvh; max-width: 100%; border-radius: 0; margin: 0; padding: var(--space-md); }
-  .file-view-pdf { height: 60vh; }
+  .file-view-pdf { height: 60dvh; }
+  .msg-user .bubble { max-width: 92%; }
+  .msg-files { max-width: 92%; }
 }
 
-/* ============ SMALL PHONE (<= 600px) ============ */
+/* SMALL PHONE (<= 600px) */
 @media (max-width: 600px) {
   .chat { padding: var(--space-md) var(--space-md) var(--space-sm); }
-  .composer { padding: var(--space-sm) var(--space-md) calc(var(--space-sm) + env(safe-area-inset-bottom)); }
-  .msg-user .bubble { max-width: 90%; font-size: var(--fs-base); }
-  .msg-files { max-width: 90%; }
+  .composer { padding: var(--space-sm) var(--space-md); padding-bottom: calc(var(--space-sm) + env(safe-area-inset-bottom, 0px)); }
+  .msg-user .bubble { max-width: 94%; font-size: var(--fs-base); }
+  .msg-files { max-width: 94%; }
   .msg-file-thumb {
     width: clamp(64px, 20vw, 90px);
     height: clamp(64px, 20vw, 90px);
@@ -1446,48 +1680,59 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   .welcome { min-height: 50vh; padding: var(--space-md); }
   .toast-container {
     top: auto;
-    bottom: calc(var(--space-md) + env(safe-area-inset-bottom));
+    bottom: calc(var(--space-md) + env(safe-area-inset-bottom, 0px));
     right: var(--space-sm);
     left: var(--space-sm);
     max-width: none;
   }
   .toast { max-width: none; }
   .modal { padding: var(--space-md); max-width: 100%; }
-  .code-input { letter-spacing: 4px; font-size: var(--fs-lg); }
-  .msg-action { width: 34px; height: 34px; min-width: 34px; min-height: 34px; }
-  .msg-action svg { width: 15px; height: 15px; }
+  .code-input { letter-spacing: 4px; font-size: max(16px, var(--fs-lg)); }
 }
 
-/* ============ VERY SMALL PHONE (<= 380px) ============ */
+/* VERY SMALL PHONE (<= 380px) */
 @media (max-width: 380px) {
   .brand-name { font-size: var(--fs-sm); }
   .brand-tag { display: none; }
   .chips { gap: 4px; }
   .chip { padding: 0.4rem 0.7rem; font-size: var(--fs-xs); }
-  .send-btn, .attach-btn { width: 36px; height: 36px; min-width: 36px; min-height: 36px; }
-  .send-btn svg, .attach-btn svg { width: 16px; height: 16px; }
+  .send-btn, .attach-btn { width: 40px; height: 40px; min-width: 40px; min-height: 40px; }
+  .send-btn svg, .attach-btn svg { width: 17px; height: 17px; }
+  .icon-btn { width: 40px; height: 40px; min-width: 40px; min-height: 40px; }
   .files-ms-btn span { display: none; }
+  .msg-action { width: 36px; height: 36px; min-width: 36px; min-height: 36px; }
+  .msg-action svg { width: 14px; height: 14px; }
+  .composer-inner { padding: 5px; }
+  #input { padding: 4px 2px; }
 }
 
-/* ============ LANDSCAPE MOBILE ============ */
+/* LANDSCAPE MOBILE (wide + short) */
 @media (max-height: 500px) and (orientation: landscape) {
   .welcome { min-height: 40vh; gap: var(--space-sm); padding: var(--space-md); }
   .welcome-logo { width: 48px; }
   .welcome p { display: none; }
   .chips { margin-top: 0.25rem; }
+  .chat { padding: var(--space-sm) var(--space-md); }
+  #input { max-height: min(38vh, 200px); }
+  .modal { max-height: calc(100dvh - 2 * var(--space-sm)); }
 }
 
-/* ============ TOUCH DEVICES ============ */
-@media (hover: none) {
-  .msg-actions { opacity: 1; }
-  .chat-item-menu { opacity: 1; }
-  .file-item-menu { opacity: 1; }
-  .chip:hover, .icon-btn:hover, .send-btn:hover, .attach-btn:hover,
-  .new-chat-btn:hover, .auth-btn:hover, .nav-item:hover,
-  .file-item-wrap:hover, .chat-item:hover { transform: none; }
+/* SHORT LAPTOP VIEWPORTS (>= 1000px wide, <= 600px tall) */
+@media (min-width: 1000px) and (max-height: 600px) {
+  .welcome { gap: var(--space-sm); min-height: 40vh; }
+  .welcome-logo { width: 64px; }
+  #input { max-height: min(38vh, 220px); }
 }
 
-/* ============ PREFERS-REDUCED-MOTION ============ */
+/* LARGE DESKTOP (>= 1440px) */
+@media (min-width: 1440px) {
+  :root { --fs-base: 15px; --fs-md: 16px; }
+  .chat > * { max-width: 860px; }
+}
+
+/* =========================================================
+   ACCESSIBILITY
+   ========================================================= */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
@@ -1497,8 +1742,6 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   }
 }
 
-/* ============ LIGHT MODE PREFERENCE ============ */
 @media (prefers-color-scheme: light) {
-  /* DeepRWA is designed dark — but respect the OS preference minimally */
-  /* Comment out the block below if you want to force dark mode always */
+  /* DeepRWA is designed dark — respect OS preference minimally. */
 }
