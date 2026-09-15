@@ -2,7 +2,11 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes, viewport-fit=cover" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="format-detection" content="telephone=no" />
 <title>DeepRWA — Your AI Guide to Rwanda</title>
 <meta name="description" content="DeepRWA is an AI assistant specialised in everything about Rwanda." />
 <meta name="theme-color" content="#000000" />
@@ -84,7 +88,7 @@
       <form class="composer-inner" id="composer">
         <button type="button" class="attach-btn" id="attachBtn" aria-label="Attach"><i data-lucide="paperclip"></i></button>
         <input type="file" id="fileInput" multiple hidden accept="image/*,application/pdf,text/*,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.md,.csv,.json" />
-        <textarea id="input" rows="1" placeholder="Ask anything about Rwanda…" autocomplete="off"></textarea>
+        <textarea id="input" rows="1" placeholder="Ask anything about Rwanda…" autocomplete="off" autocorrect="off" autocapitalize="sentences" spellcheck="false" enterkeyhint="send"></textarea>
         <button type="button" class="send-btn" id="sendBtn" disabled aria-label="Send">
           <i data-lucide="arrow-up" class="icon-send"></i>
           <i data-lucide="square" class="icon-stop hidden"></i>
@@ -187,4 +191,4 @@
 
 <script src="/main.js"></script>
 </body>
-</html>b
+</html>
