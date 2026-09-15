@@ -1,4 +1,4 @@
-// DeepRWA — Complete backend (rev.2.8.3)
+// DeepRWA — Complete backend (rev.2.8.4)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -198,25 +198,33 @@ const SYSTEM_PROMPT = `You are **DeepRWA** — a professional, world-class AI as
 - If the user asks a longer, compound, or meta question (e.g. "Are you able to read files?", "Can you help me with X?", "What can you do?"), answer it like a normal professional assistant — do NOT paste the identity line.
 
 ## SCOPE
-You answer **only** questions about Rwanda. Everything about Rwanda is in scope.
+You answer **only** questions about Rwanda. Everything about Rwanda is in scope: geography, provinces/districts/sectors/cells/villages, products and their prices, notable people, history, culture, tourism, travel, events, news, official services, education, agriculture, business, and general daily life.
+
 If the user asks about **any other country** or a topic unrelated to Rwanda, reply exactly: "I am specialised only in topics about Rwanda. I cannot answer questions about other countries or topics."
 
-## FILE SCOPE (critical)
-Files (images, PDFs, text) uploaded by the user are subject to the same scope rule:
-- If the file content is about Rwanda, analyse it fully.
-- If the file content is clearly NOT about Rwanda, politely decline: "The file you uploaded appears to be about [topic], which is outside my scope. I'm specialised only in Rwanda. Please upload something Rwanda-related, or ask me a question about Rwanda."
+## FILE SCOPE (STRICT — this is the most-violated rule)
+Before analysing ANY attached file, you must silently determine whether the file's content is about Rwanda.
+
+- If the file **is about Rwanda** (Rwandan people, places, culture, history, geography, food, language, products, prices, news, companies, institutions, etc.): analyse it fully and answer the user's question about it.
+- If the file is **clearly NOT about Rwanda** (e.g. a foreign country's business directory, a European or American scholarship, foreign exam notes, foreign tax documents, foreign university material, a generic software manual, a foreign company's data, a non-Rwandan news article, etc.): you MUST politely decline using EXACTLY this template:
+  "The file you uploaded appears to be about [short topic], which is outside my scope. I'm specialised only in Rwanda. Please upload something Rwanda-related, or ask me a question about Rwanda."
+- NEVER describe, summarise, extract, quote, or analyse the content of an out-of-scope file — not even partially, not even if the user insists or rephrases. The refusal must be complete.
+- If the file's topic is ambiguous, ask first: "Is this file related to Rwanda? If yes, I'll analyse it in detail."
 
 ## GREETINGS AND SMALL TALK
-Greetings, thanks, goodbyes, "how are you" are NOT out of scope. Respond warmly and briefly, then invite a Rwanda-related question.
+Greetings ("hi", "muraho", "bonjour", "jambo", "hello"), thanks, goodbyes, and "how are you" are NOT out of scope. Respond warmly and briefly, then invite a Rwanda-related question. Recognise greetings in any language and reply in the same language.
 
 ## META QUESTIONS ABOUT YOU
-Questions about your own capabilities (e.g. "Are you able to read files?", "What can you help with?", "Can you analyse documents?") are IN SCOPE — answer them truthfully and concisely as DeepRWA (you can read/analyse images, PDFs, text files; you answer about Rwanda; you can web search; etc.).
+Questions about your own capabilities (e.g. "Are you able to read files?", "What can you help with?", "Can you analyse documents?") are IN SCOPE — answer them truthfully and concisely as DeepRWA: you can read and analyse images, PDFs, and text files; you answer questions about Rwanda; you can perform web searches; you support many languages; etc.
+
+## GENERAL KNOWLEDGE
+You may use general world knowledge to contextualise your Rwanda answers (e.g. comparing Rwandan coffee to Ethiopian coffee, explaining Kinyarwanda's Bantu roots, describing Rwanda's place in East Africa). But you must not answer standalone questions about other countries or unrelated topics.
 
 ## LANGUAGE RULE
-Always reply in the **exact language the user wrote in**.
+Always reply in the **exact language the user wrote in**. Kinyarwanda → Kinyarwanda. French → French. Arabic → Arabic. Chinese → Chinese. Never switch to English unless the user does.
 
 ## FORMATTING (critical)
-- NEVER use horizontal rules / horizontal lines (---, ___, <hr>).
+- NEVER use horizontal rules / horizontal lines (---, ___, <hr>). They look unprofessional.
 - Use headings (##, ###) and bullet lists instead.
 - Use **bold** for emphasis.
 - Markdown only. No raw HTML.
@@ -463,6 +471,15 @@ function startsWithCodeKeyword(text) {
   return false;
 }
 
+// Better fallback: strip question words and filler, capitalize topic keywords
+function smartFallbackTitle(text) {
+  const questionWords = new Set(['what','where','when','how','why','who','which','is','are','was','were','can','could','would','should','do','does','did','have','has','had','the','a','an','of','to','for','with','about','in','on','at','by','from','and','or','but','this','that','these','those','it','they','them','their','tell','me','give','show','find','please','some','any','all','very','just','now','here','there','see','look','make','made','need','want','like','know','help','using','use','used','information','info']);
+  const cleaned = String(text || '').replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+  const words = cleaned.split(' ').filter(w => w.length > 2 && !questionWords.has(w.toLowerCase())).slice(0, 4);
+  if (words.length === 0) return 'New chat';
+  return words.map(w => w[0].toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+}
+
 async function generateChatTitle(firstMessage) {
   if (!firstMessage) return 'New chat';
   if (isGreeting(firstMessage)) return 'Greeting';
@@ -471,13 +488,11 @@ async function generateChatTitle(firstMessage) {
   const fullText = String(firstMessage).slice(0, 500);
 
   if (looksLikeCode(fullText)) {
-    const lang = startsWithCodeKeyword(fullText) ? 'Code' : 'Code help';
-    console.log(`[title] code detected → "${lang}"`);
-    return lang;
+    return startsWithCodeKeyword(fullText) ? 'Code' : 'Code help';
   }
 
   const prompt = [
-    { role: 'system', content: 'You name chat conversations. Read the user\'s first message and reply with ONLY a 2-5 word title that describes the topic. Do NOT repeat the user\'s words. Do NOT use quotes, punctuation, or prefixes. Examples: "Rwandan History", "Kigali Hotels", "Coffee Prices Rwanda", "Volcanoes Park Visit", "Umuganda Culture"' },
+    { role: 'system', content: 'You name chat conversations. Read the user\'s first message and reply with ONLY a 2-4 word title describing the topic. Do NOT repeat the user\'s words verbatim. Do NOT use quotes, punctuation, or prefixes. Do NOT answer the question. Examples: "Rwandan History", "Kigali Hotels", "Coffee Prices Rwanda", "Volcanoes Park Visit", "Umuganda Culture"' },
     { role: 'user', content: fullText.slice(0, 300) }
   ];
 
@@ -485,7 +500,7 @@ async function generateChatTitle(firstMessage) {
     const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'openai/gpt-oss-120b', messages: prompt, max_completion_tokens: 25, reasoning_effort: 'none', temperature: 0.5 })
+      body: JSON.stringify({ model: 'openai/gpt-oss-120b', messages: prompt, max_completion_tokens: 20, reasoning_effort: 'none', temperature: 0.6 })
     });
     if (res.ok) {
       const data = await res.json();
@@ -506,8 +521,8 @@ async function generateChatTitle(firstMessage) {
     const res = await fetch(url, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text: `Name this conversation in 2-5 words. Reply ONLY with the title. Do not repeat the user's words.\n\nMessage: "${fullText.slice(0, 300)}"` }] }],
-        generationConfig: { temperature: 0.5, maxOutputTokens: 30 }
+        contents: [{ role: 'user', parts: [{ text: `Name this conversation in 2-4 words describing the topic. Reply ONLY with the title. Do not repeat the user's words.\n\nMessage: "${fullText.slice(0, 300)}"` }] }],
+        generationConfig: { temperature: 0.6, maxOutputTokens: 25 }
       })
     });
     if (res.ok) {
@@ -524,16 +539,14 @@ async function generateChatTitle(firstMessage) {
     }
   } catch (e) { console.warn('[title] Gemini failed:', e.message); }
 
-  const stop = new Set(['the','a','an','is','are','was','were','to','of','and','or','but','in','on','at','for','with','about','by','from','as','this','that','it','be','i','you','we','they','he','she','my','your','our']);
-  const words = fullText.replace(/\s+/g, ' ').split(' ').filter(w => w.length > 2 && !stop.has(w.toLowerCase())).slice(0, 5);
-  const fallback = words.join(' ').slice(0, 60).replace(/[.!?,;:]+$/, '');
+  const fallback = smartFallbackTitle(fullText);
   console.log(`[title] fallback: "${fallback}"`);
-  return fallback || 'New chat';
+  return fallback;
 }
 
 // ============ ROUTES ============
-app.get('/health', (req, res) => res.json({ status: 'ok', service: 'DeepRWA', version: '2.8.3', time: new Date().toISOString() }));
-app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '2.8.3', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
+app.get('/health', (req, res) => res.json({ status: 'ok', service: 'DeepRWA', version: '2.8.4', time: new Date().toISOString() }));
+app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '2.8.4', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
 app.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nSitemap: https://deeprwa.agentdomains.co/sitemap.xml\n`));
 app.get('/sitemap.xml', (req, res) => res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>https://deeprwa.agentdomains.co/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>\n</urlset>`));
 
@@ -918,11 +931,20 @@ app.post('/api/chat', requireAuth, async (req, res) => {
     convId = conv.id;
     console.log(`[chat] new conv created for user ${req.userId.slice(0,8)}: "${title}"`);
   }
-  const lastMsg = messages[messages.length - 1];
-  if (lastMsg?.role === 'user') {
-    const filesArray = Array.isArray(lastMsg.files) ? lastMsg.files : [];
-    await supabase.from('messages').insert({ conversation_id: convId, role: 'user', content: lastMsg.content, files: filesArray });
-    console.log(`[chat] user msg saved (${filesArray.length} files)`);
+  // CRITICAL FIX: find the LAST USER message, not the last message (frontend pushes an assistant placeholder after the user msg)
+  const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
+  if (lastUserMsg) {
+    const filesArray = Array.isArray(lastUserMsg.files) ? lastUserMsg.files : [];
+    const { error: insErr } = await supabase.from('messages').insert({
+      conversation_id: convId,
+      role: 'user',
+      content: lastUserMsg.content,
+      files: filesArray
+    });
+    if (insErr) console.warn(`[chat] failed to save user msg:`, insErr.message);
+    else console.log(`[chat] user msg saved (${filesArray.length} files)`);
+  } else {
+    console.warn(`[chat] no user message found in payload`);
   }
   res.setHeader('X-Conversation-Id', convId);
   await streamChatResponse(messages, res, convId, attachments || []);
