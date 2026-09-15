@@ -1,4 +1,4 @@
-// DeepRWA — Complete frontend logic (rev.2.8.2)
+// DeepRWA — Complete frontend logic (rev.2.9.0)
 
 // ============ CLIENT ID ============
 function getOrCreateClientId() {
@@ -1047,6 +1047,50 @@ async function collectAttachmentsForAI(attachments) {
   }
   return out;
 }
+
+// Snapshot-based helpers — take explicit array (immune to state.attachments being cleared)
+async function collectAttachmentsForAISnapshot(attachments) {
+  const out = [];
+  for (const a of attachments) {
+    try {
+      if (a.type.startsWith('image/') && a.file.size < 4 * 1024 * 1024) out.push({ name: a.name, mime: a.type, data: await fileToBase64(a.file) });
+      else if (a.type === 'application/pdf' && a.file.size < 6 * 1024 * 1024) out.push({ name: a.name, mime: 'application/pdf', data: await fileToBase64(a.file) });
+      else if (a.type === 'text/plain' || a.type === 'text/markdown' || a.type === 'text/csv' || a.type === 'application/json') {
+        const text = await a.file.text();
+        out.push({ name: a.name, mime: 'text/plain', data: btoa(unescape(encodeURIComponent(text.slice(0, 30000)))) });
+      }
+    } catch {}
+  }
+  return out;
+}
+
+async function uploadAttachmentsSnapshot(attachments) {
+  if (!state.user || !attachments.length) return null;
+  const uploaded = [];
+  for (const att of attachments) {
+    try {
+      if (att.file.size > 10 * 1024 * 1024) { toast(`${att.name} is over 10 MB — kept locally`, 'error'); uploaded.push({ name: att.name, type: att.type, url: att.url }); continue; }
+      const base64 = await fileToBase64(att.file);
+      const res = await fetch('/api/upload', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ name: att.name, type: att.type, data: base64 }) });
+      if (res.ok) { const d = await res.json(); uploaded.push({ name: d.name, type: d.type, url: d.url }); }
+      else { uploaded.push({ name: att.name, type: att.type, url: att.url }); }
+    } catch { uploaded.push({ name: att.name, type: att.type, url: att.url }); }
+  }
+  return uploaded;
+}
+
+async function attachmentsToDataUrlsSnapshot(attachments) {
+  const out = [];
+  for (const att of attachments) {
+    try {
+      if (att.file.size > 5 * 1024 * 1024) { out.push({ name: att.name, type: att.type, dataUrl: att.url }); continue; }
+      const dataUrl = await fileToDataURL(att.file);
+      out.push({ name: att.name, type: att.type, dataUrl });
+    } catch {}
+  }
+  return out;
+}
+
 async function requestTitle(text) {
   try {
     const res = await fetch('/api/chat/title', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: text }) });
@@ -1055,12 +1099,14 @@ async function requestTitle(text) {
   } catch { return null; }
 }
 
-// ============ SEND MESSAGE ============
+// ============ SEND MESSAGE (optimistic render) ============
 formEl.addEventListener('submit', async (e) => {
   e.preventDefault();
   if (state.isGenerating) return;
   const text = inputEl.value.trim();
   if (!text && !state.attachments.length) return;
+
+  // ── IMMEDIATE UI: lock, snapshot, clear composer, render message ──
   state.isGenerating = true;
   inputEl.disabled = true;
   updateSendButton();
@@ -1072,26 +1118,26 @@ formEl.addEventListener('submit', async (e) => {
       chat = { id: makeLocalId(), title: 'New chat', messages: [], pinned: false, createdAt: nowISO(), updatedAt: nowISO() };
       state.chats.unshift(chat); state.activeChatId = chat.id; isNewChat = true; renderChatList();
     }
-
-    const attachmentsForAI = await collectAttachmentsForAI(state.attachments);
-    let filesForMsg;
-    if (state.user) filesForMsg = await uploadAttachmentsToServer() || [];
-    else filesForMsg = await attachmentsToDataUrls(state.attachments);
-
     const isFirstMessage = isNewChat || chat.title === 'New chat' || !chat.messages.length;
 
+    // 1. Snapshot attachments BEFORE clearing composer
+    const attachmentsSnapshot = [...state.attachments];
+    const localFiles = attachmentsSnapshot.map(f => ({ name: f.name, type: f.type, url: f.url }));
+
+    // 2. Clear composer and welcome screen NOW
     inputEl.value = ''; autoGrow();
     state.attachments = []; renderFilePreviews();
     chatEl.querySelector('.welcome')?.remove();
 
-    const userMsg = { id: 'user_' + Date.now(), role: 'user', content: text, files: filesForMsg, _createdAt: nowISO() };
+    // 3. Render user message immediately with local blob URLs
+    const userMsg = { id: 'user_' + Date.now(), role: 'user', content: text, files: localFiles, _createdAt: nowISO() };
     state.messages.push(userMsg); chat.messages = state.messages;
 
     const assistantMsg = { id: 'asst_' + Date.now(), role: 'assistant', content: '', files: [], _createdAt: nowISO() };
     state.messages.push(assistantMsg);
     renderMessages();
 
-    // CHAT TITLE — resolve chat by id in current state after loadConversations may have replaced it
+    // 4. Title in the background (non-blocking)
     if (isFirstMessage && text) {
       requestTitle(text).then(title => {
         if (!title) return;
@@ -1101,10 +1147,19 @@ formEl.addEventListener('submit', async (e) => {
       }).catch(() => {});
     }
 
+    // 5. NOW process attachments (the slow part)
+    const attachmentsForAI = await collectAttachmentsForAISnapshot(attachmentsSnapshot);
+    let filesForMsg;
+    if (state.user) filesForMsg = await uploadAttachmentsSnapshot(attachmentsSnapshot) || [];
+    else filesForMsg = await attachmentsToDataUrlsSnapshot(attachmentsSnapshot);
+
+    // 6. Swap local blob URLs with persisted URLs
+    userMsg.files = filesForMsg;
+    renderMessages();
+
     state.abortController = new AbortController();
 
     const endpoint = state.user ? '/api/chat' : '/api/chat/guest';
-    // Include files array for user messages so backend can persist them
     const payload = {
       messages: state.messages.map(m => {
         const out = { role: m.role, content: m.content };
@@ -1157,7 +1212,6 @@ formEl.addEventListener('submit', async (e) => {
       if (actEl) actEl.classList.remove('hidden');
       if (state.user) await loadConversations();
       if (state.view === 'files') renderFilesList();
-      // Second refresh after a short delay to catch DB settle
       setTimeout(() => { if (state.view === 'files') renderFilesList(); }, 800);
     } else { assistantMsg.content = 'No response received.'; renderMessages(); }
   } catch (err) {
@@ -1875,7 +1929,6 @@ async function shareChat(chatId) {
 
 async function shareSingleMessage(idx) {
   const msg = state.messages[idx]; if (!msg) return;
-
   let userMsg = null, assistantMsg = null;
   if (msg.role === 'assistant') {
     assistantMsg = msg;
@@ -1886,14 +1939,11 @@ async function shareSingleMessage(idx) {
     const next = state.messages[idx + 1];
     if (next && next.role === 'assistant') assistantMsg = next;
   }
-
   const msgs = [];
-
   let currentUserContent = userMsg?.content || '';
   let currentUserFiles = userMsg?.files || [];
   let currentAiContent = assistantMsg?.content || '';
   let currentAiFiles = assistantMsg?.files || [];
-
   if (userMsg && userMsg.id && state.messageVersions[userMsg.id]) {
     const v = state.messageVersions[userMsg.id];
     const i = Math.max(0, Math.min(v.currentIndex || 0, v.versions.length - 1));
@@ -1902,10 +1952,8 @@ async function shareSingleMessage(idx) {
     currentAiContent = v.aiReplies[i] ?? currentAiContent;
     currentAiFiles = v.aiFiles[i] ?? currentAiFiles;
   }
-
   if (userMsg) msgs.push({ role: 'user', content: currentUserContent, files: currentUserFiles });
   if (assistantMsg) msgs.push({ role: 'assistant', content: currentAiContent, files: currentAiFiles });
-
   if (!msgs.length) { toast('Nothing to share', 'error'); return; }
   await postShare(msgs, { includeVersions: false });
 }
@@ -1924,7 +1972,6 @@ async function postShare(msgs, opts = {}) {
     }
     return out;
   }).filter(m => (m.content && m.content.trim()) || (m.files && m.files.length));
-
   const payloadStr = JSON.stringify({ messages: enriched });
   if (payloadStr.length > 25 * 1024 * 1024) { toast('Share is too large. Try removing some files.', 'error'); return; }
   try {
