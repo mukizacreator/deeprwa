@@ -1,4 +1,4 @@
-// DeepRWA — Complete frontend logic (rev.3.1.0)
+// DeepRWA — Complete frontend logic (rev.3.3.0)
 
 // ============ CLIENT ID ============
 function getOrCreateClientId() {
@@ -36,7 +36,9 @@ const state = {
   _loginAt: 0,
   _filesCache: [],
   _selectedFiles: new Set(),
-  _multiSelectMode: false
+  _multiSelectMode: false,
+  _chatMultiSelectMode: false,
+  _selectedChats: new Set()
 };
 
 // ============ DOM ============
@@ -62,6 +64,12 @@ const filesSelectAllBtn = $('filesSelectAllBtn');
 const filesDeleteSelectedBtn = $('filesDeleteSelectedBtn');
 const filesDeleteCountLabel = $('filesDeleteCountLabel');
 const filesCancelSelectBtn = $('filesCancelSelectBtn');
+const chatsMultiBar = $('chatsMultiBar');
+const chatsSelectAllBtn = $('chatsSelectAllBtn');
+const chatsPinSelectedBtn = $('chatsPinSelectedBtn');
+const chatsDeleteSelectedBtn = $('chatsDeleteSelectedBtn');
+const chatsDeleteCountLabel = $('chatsDeleteCountLabel');
+const chatsCancelSelectBtn = $('chatsCancelSelectBtn');
 const authModal = $('authModal');
 const authModalBody = $('authModalBody');
 const authModalClose = $('authModalClose');
@@ -95,11 +103,6 @@ const toastContainer = $('toastContainer');
 function refreshIcons() { if (window.lucide) window.lucide.createIcons(); }
 function escapeHtml(t) { return String(t || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
-// Sanitises markdown input before it is handed to `marked`.
-// - preserves fenced ``` code blocks untouched
-// - normalises stray HTML the model sometimes emits outside code blocks
-//   (<br>, <hr>, <a href>…</a>, and various block tags)
-// - then escapes remaining < and > so nothing is ever interpreted as HTML
 function escapeHtmlOutsideCode(text) {
   const lines = (text || '').split('\n');
   let inCode = false;
@@ -118,9 +121,6 @@ function escapeHtmlOutsideCode(text) {
   }).join('\n');
 }
 
-// Renders markdown to safe HTML.
-// - removes <hr>
-// - forces every rendered link to open in a new tab, safely
 function renderMarkdown(text) {
   const safe = escapeHtmlOutsideCode(text || '');
   let html;
@@ -302,6 +302,7 @@ function startSessionCheck() {
 async function forceSignOut(reason) {
   state.token = null; state.user = null; state.chats = []; state.activeChatId = null; state.messages = [];
   state._selectedFiles.clear(); state._multiSelectMode = false;
+  state._selectedChats.clear(); state._chatMultiSelectMode = false;
   localStorage.removeItem('deeprwa_token');
   renderUser(); renderChatList(); renderWelcome(); closeAllModals();
   toast(reason || 'Signed out', 'info');
@@ -377,31 +378,156 @@ sidebarNav.addEventListener('click', (e) => {
   state.view = item.dataset.view;
   state._selectedFiles.clear();
   state._multiSelectMode = false;
+  state._selectedChats.clear();
+  state._chatMultiSelectMode = false;
   renderChatList();
 });
 
 // ============ CHAT LIST ============
+function updateChatsMultiBar() {
+  if (!state._chatMultiSelectMode || !state.chats.length) {
+    chatsMultiBar.classList.add('hidden');
+    return;
+  }
+  chatsMultiBar.classList.remove('hidden');
+  const n = state._selectedChats.size;
+  chatsDeleteCountLabel.textContent = n > 0 ? `Delete (${n})` : 'Delete';
+  chatsDeleteSelectedBtn.disabled = n === 0;
+  chatsPinSelectedBtn.disabled = n === 0;
+
+  // Determine whether all-selected chats are pinned (to swap icon + tooltip)
+  const selectedIds = Array.from(state._selectedChats);
+  const allSelectedArePinned = selectedIds.length > 0 && selectedIds.every(id => {
+    const c = state.chats.find(x => x.id === id);
+    return c && c.pinned;
+  });
+  chatsPinSelectedBtn.innerHTML = allSelectedArePinned
+    ? '<i data-lucide="pin-off"></i>'
+    : '<i data-lucide="pin"></i>';
+  chatsPinSelectedBtn.title = allSelectedArePinned ? 'Unpin selected' : 'Pin selected';
+  chatsPinSelectedBtn.setAttribute('aria-label', allSelectedArePinned ? 'Unpin selected' : 'Pin selected');
+
+  const allSelected = state.chats.length > 0 && state.chats.every(c => state._selectedChats.has(c.id));
+  chatsSelectAllBtn.innerHTML = allSelected
+    ? '<i data-lucide="check-square"></i><span>Deselect all</span>'
+    : '<i data-lucide="square"></i><span>Select all</span>';
+  refreshIcons();
+}
+
 function renderChatList() {
-  if (state.view === 'files') { updateMultiBar(); renderFilesList(); return; }
+  if (state.view === 'files') {
+    chatsMultiBar.classList.add('hidden');
+    updateMultiBar();
+    renderFilesList();
+    return;
+  }
   filesMultiBar.classList.add('hidden');
+  updateChatsMultiBar();
+
   if (!state.chats.length) {
     sidebarContent.innerHTML = `<div class="sidebar-empty"><p>No chats yet</p><span>Start a conversation with DeepRWA</span></div>`;
     return;
   }
-  const pinned = state.chats.filter(c => c.pinned);
-  const rest = state.chats.filter(c => !c.pinned);
-  const renderOne = (c) => `
-    <div class="chat-item ${c.id === state.activeChatId ? 'active' : ''}" data-id="${c.id}">
+
+  const inMulti = state._chatMultiSelectMode;
+
+  const renderOne = (c) => {
+    if (inMulti) {
+      const checked = state._selectedChats.has(c.id);
+      return `<div class="chat-item ${checked ? 'selected' : ''}" data-id="${c.id}">
+        <label class="file-checkbox" title="Select">
+          <input type="checkbox" data-chat-check="${c.id}" ${checked ? 'checked' : ''} />
+          <span class="file-checkbox-mark"></span>
+        </label>
+        <span class="chat-item-title" title="${escapeHtml(c.title || 'New chat')}">${escapeHtml(c.title || 'New chat')}</span>
+      </div>`;
+    }
+    return `<div class="chat-item ${c.id === state.activeChatId ? 'active' : ''}" data-id="${c.id}">
       <i data-lucide="${c.pinned ? 'pin' : 'message-square'}" class="chat-item-icon"></i>
       <span class="chat-item-title" title="${escapeHtml(c.title || 'New chat')}">${escapeHtml(c.title || 'New chat')}</span>
       <button class="chat-item-menu" data-menu="${c.id}" aria-label="Menu"><i data-lucide="more-horizontal"></i></button>
     </div>`;
-  let html = '';
-  if (pinned.length) html += `<div class="sidebar-section">Pinned</div>` + pinned.map(renderOne).join('');
-  if (rest.length) html += (pinned.length ? `<div class="sidebar-section">Chats</div>` : '') + rest.map(renderOne).join('');
-  sidebarContent.innerHTML = html;
+  };
+
+  if (inMulti) {
+    sidebarContent.innerHTML = state.chats.map(renderOne).join('');
+  } else {
+    const pinned = state.chats.filter(c => c.pinned);
+    const rest = state.chats.filter(c => !c.pinned);
+    let html = '';
+    if (pinned.length) html += `<div class="sidebar-section">Pinned</div>` + pinned.map(renderOne).join('');
+    if (rest.length) html += (pinned.length ? `<div class="sidebar-section">Chats</div>` : '') + rest.map(renderOne).join('');
+    sidebarContent.innerHTML = html;
+  }
   refreshIcons();
 }
+
+// ============ CHATS MULTI-SELECT BAR ============
+chatsSelectAllBtn.addEventListener('click', () => {
+  const allSelected = state.chats.length > 0 && state.chats.every(c => state._selectedChats.has(c.id));
+  if (allSelected) state._selectedChats.clear();
+  else state.chats.forEach(c => state._selectedChats.add(c.id));
+  renderChatList();
+});
+
+chatsCancelSelectBtn.addEventListener('click', () => {
+  state._chatMultiSelectMode = false;
+  state._selectedChats.clear();
+  renderChatList();
+});
+
+chatsPinSelectedBtn.addEventListener('click', async () => {
+  const ids = Array.from(state._selectedChats);
+  if (!ids.length) return;
+  const allPinned = ids.every(id => {
+    const c = state.chats.find(x => x.id === id);
+    return c && c.pinned;
+  });
+  const targetPinned = !allPinned;
+
+  for (const id of ids) {
+    const c = state.chats.find(x => x.id === id);
+    if (!c) continue;
+    c.pinned = targetPinned;
+    if (state.user && !isLocalId(id)) {
+      try {
+        await fetch(`/api/conversations/${id}`, {
+          method: 'PATCH',
+          headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pinned: c.pinned })
+        });
+      } catch {}
+    }
+  }
+  state._chatMultiSelectMode = false;
+  state._selectedChats.clear();
+  renderChatList();
+  toast(`${ids.length} chat(s) ${targetPinned ? 'pinned' : 'unpinned'}`, 'success');
+});
+
+chatsDeleteSelectedBtn.addEventListener('click', () => {
+  const count = state._selectedChats.size;
+  if (!count) return;
+  confirmAction({
+    title: `Delete ${count} chat(s)?`,
+    text: 'They will be removed from your chat list.',
+    confirmLabel: 'Delete',
+    onConfirm: async () => {
+      const ids = Array.from(state._selectedChats);
+      for (const id of ids) {
+        if (state.user && !isLocalId(id)) {
+          try { await fetch(`/api/conversations/${id}`, { method: 'DELETE', headers: authHeaders() }); } catch {}
+        }
+        state.chats = state.chats.filter(c => c.id !== id);
+        if (state.activeChatId === id) newChatSilent();
+      }
+      state._selectedChats.clear();
+      state._chatMultiSelectMode = false;
+      renderChatList();
+      toast(`${ids.length} chat(s) deleted`, 'success');
+    }
+  });
+});
 
 // ============ FILES LIST ============
 async function renderFilesList() {
@@ -489,25 +615,77 @@ function renderFilesArray(files, isGuest = false) {
   refreshIcons();
 }
 
-// ============ FILE MENU (3-dot) ============
+// ============ SIDEBAR INTERACTION ============
 sidebarContent.addEventListener('click', (e) => {
-  const menuBtn = e.target.closest('[data-file-menu]');
-  if (menuBtn) {
+  // Files: ⋮ menu
+  const fileMenuBtn = e.target.closest('[data-file-menu]');
+  if (fileMenuBtn) {
     e.stopPropagation();
-    openFileMenu(parseInt(menuBtn.dataset.fileMenu), menuBtn.getBoundingClientRect());
+    openFileMenu(parseInt(fileMenuBtn.dataset.fileMenu), fileMenuBtn.getBoundingClientRect());
     return;
   }
+
+  // Files: open preview (but not when clicking the checkbox)
   const fileBtn = e.target.closest('[data-file-view]');
   if (fileBtn && !e.target.closest('.file-checkbox')) {
     try { const d = JSON.parse(fileBtn.dataset.fileView); showFileView(d.url, d.name, d.type); } catch {}
     return;
   }
+
+  // Chats: ⋮ menu
   const chatMenuBtn = e.target.closest('.chat-item-menu');
-  if (chatMenuBtn) { e.stopPropagation(); openChatMenu(chatMenuBtn.dataset.menu, chatMenuBtn.getBoundingClientRect()); return; }
-  const item = e.target.closest('.chat-item');
-  if (item) selectChat(item.dataset.id);
+  if (chatMenuBtn) {
+    e.stopPropagation();
+    openChatMenu(chatMenuBtn.dataset.menu, chatMenuBtn.getBoundingClientRect());
+    return;
+  }
+
+  // Chats: click on row
+  const chatItem = e.target.closest('.chat-item');
+  if (chatItem) {
+    if (state._chatMultiSelectMode) {
+      // If the click was on the checkbox label, let the change handler deal with it.
+      if (e.target.closest('.file-checkbox')) return;
+      const id = chatItem.dataset.id;
+      const chk = chatItem.querySelector('[data-chat-check]');
+      if (chk) {
+        chk.checked = !chk.checked;
+        if (chk.checked) state._selectedChats.add(id);
+        else state._selectedChats.delete(id);
+        chatItem.classList.toggle('selected', chk.checked);
+        updateChatsMultiBar();
+      }
+      return;
+    }
+    selectChat(chatItem.dataset.id);
+    return;
+  }
 });
 
+sidebarContent.addEventListener('change', (e) => {
+  const chatChk = e.target.closest('[data-chat-check]');
+  if (chatChk) {
+    const id = chatChk.dataset.chatCheck;
+    if (chatChk.checked) state._selectedChats.add(id);
+    else state._selectedChats.delete(id);
+    const item = chatChk.closest('.chat-item');
+    if (item) item.classList.toggle('selected', chatChk.checked);
+    updateChatsMultiBar();
+    return;
+  }
+  const fileChk = e.target.closest('[data-file-check]');
+  if (fileChk) {
+    const idx = parseInt(fileChk.dataset.fileCheck);
+    const f = state._filesCache[idx];
+    if (!f) return;
+    const key = fileKey(f, idx);
+    if (fileChk.checked) state._selectedFiles.add(key);
+    else state._selectedFiles.delete(key);
+    updateMultiBar();
+  }
+});
+
+// ============ FILE MENU ============
 function openFileMenu(idx, rect) {
   document.querySelectorAll('.file-menu').forEach(m => m.remove());
   const f = state._filesCache[idx];
@@ -543,7 +721,7 @@ function openFileMenu(idx, rect) {
   });
 }
 
-// ============ MULTI-SELECT BAR ============
+// ============ FILES MULTI-SELECT BAR ============
 filesSelectAllBtn.addEventListener('click', () => {
   const allSelected = state._filesCache.length > 0 && state._filesCache.every((f, idx) => state._selectedFiles.has(fileKey(f, idx)));
   if (allSelected) state._selectedFiles.clear();
@@ -574,18 +752,6 @@ filesDeleteSelectedBtn.addEventListener('click', () => {
       toast(`${toDelete.length} file(s) deleted`, 'success');
     }
   });
-});
-
-sidebarContent.addEventListener('change', (e) => {
-  const chk = e.target.closest('[data-file-check]');
-  if (!chk) return;
-  const idx = parseInt(chk.dataset.fileCheck);
-  const f = state._filesCache[idx];
-  if (!f) return;
-  const key = fileKey(f, idx);
-  if (chk.checked) state._selectedFiles.add(key);
-  else state._selectedFiles.delete(key);
-  updateMultiBar();
 });
 
 async function deleteFiles(files) {
@@ -633,9 +799,10 @@ function openChatMenu(id, rect) {
   const menu = document.createElement('div');
   menu.className = 'chat-menu';
   menu.style.left = Math.max(8, Math.min(rect.left - 140, window.innerWidth - 200)) + 'px';
-  menu.style.top = Math.min(rect.bottom + 4, window.innerHeight - 200) + 'px';
+  menu.style.top = Math.min(rect.bottom + 4, window.innerHeight - 220) + 'px';
   menu.innerHTML = `
-    <button data-act="pin"><i data-lucide="pin"></i>${chat.pinned ? 'Unpin' : 'Pin'}</button>
+    <button data-act="pin"><i data-lucide="${chat.pinned ? 'pin-off' : 'pin'}"></i>${chat.pinned ? 'Unpin' : 'Pin'}</button>
+    <button data-act="multi"><i data-lucide="check-square"></i>Multi-select</button>
     <button data-act="share"><i data-lucide="share-2"></i>Share</button>
     <button data-act="rename"><i data-lucide="pencil"></i>Rename</button>
     <button data-act="delete" class="danger"><i data-lucide="trash-2"></i>Delete</button>`;
@@ -647,6 +814,12 @@ function openChatMenu(id, rect) {
     const btn = ev.target.closest('button'); if (!btn) return;
     const act = btn.dataset.act; menu.remove();
     if (act === 'pin') await togglePin(id);
+    else if (act === 'multi') {
+      state._chatMultiSelectMode = true;
+      state._selectedChats.clear();
+      state._selectedChats.add(id);
+      renderChatList();
+    }
     else if (act === 'share') await shareChat(id);
     else if (act === 'rename') openRenameModal(id);
     else if (act === 'delete') askDelete(id);
@@ -728,6 +901,8 @@ function createNewChat() {
   state.chats.unshift(chat);
   state.activeChatId = chat.id;
   state.messages = []; state.attachments = []; state.editingMessageId = null;
+  state._chatMultiSelectMode = false;
+  state._selectedChats.clear();
   renderFilePreviews(); renderWelcome(); renderChatList(); updateSendButton();
   inputEl.focus(); closeSidebar();
 }
@@ -1449,7 +1624,9 @@ function renderVerifyCodeForm(type) {
 
 async function handleLoginSuccess(data) {
   state.chats = []; state.activeChatId = null; state.messages = []; state.attachments = [];
-  state._selectedFiles.clear(); state._multiSelectMode = false; state.messageVersions = {};
+  state._selectedFiles.clear(); state._multiSelectMode = false;
+  state._selectedChats.clear(); state._chatMultiSelectMode = false;
+  state.messageVersions = {};
   state.token = data.accessToken;
   state.user = data.user;
   state._loginAt = Date.now();
@@ -1932,6 +2109,7 @@ function confirmLogout() {
       try { await fetch('/api/auth/sessions-current', { method: 'DELETE', headers: authHeaders() }); } catch {}
       state.token = null; state.user = null; state.chats = []; state.activeChatId = null; state.messages = [];
       state.messageVersions = {};
+      state._selectedChats.clear(); state._chatMultiSelectMode = false;
       localStorage.removeItem('deeprwa_token');
       renderUser(); renderChatList(); renderWelcome(); settingsModal.classList.add('hidden');
       toast('Logged out', 'info');
