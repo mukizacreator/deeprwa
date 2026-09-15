@@ -1,4 +1,4 @@
-// DeepRWA — Complete frontend logic (rev.3.0.0)
+// DeepRWA — Complete frontend logic (rev.3.0.1)
 
 // ============ CLIENT ID ============
 function getOrCreateClientId() {
@@ -94,22 +94,62 @@ const toastContainer = $('toastContainer');
 // ============ UTILS ============
 function refreshIcons() { if (window.lucide) window.lucide.createIcons(); }
 function escapeHtml(t) { return String(t || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+// Sanitises markdown input before it is handed to `marked`.
+// - preserves fenced ``` code blocks untouched
+// - normalises stray HTML the model sometimes emits outside code blocks
+//   (<br>, <hr>, <a href>…</a>, and various block tags)
+// - then escapes remaining < and > so nothing is ever interpreted as HTML
 function escapeHtmlOutsideCode(text) {
-  const lines = (text || '').split('\n'); let inCode = false;
+  const lines = (text || '').split('\n');
+  let inCode = false;
   return lines.map(line => {
     if (/^\s*```/.test(line)) { inCode = !inCode; return line; }
     if (inCode) return line;
-    return line.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    let cleaned = line
+      // literal <br> / <hr> become real line breaks (marked's `breaks: true` renders them as <br>)
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<hr\s*\/?>/gi, '\n')
+      // <a href="url" ...>text</a>  →  markdown [text](url)
+      .replace(/<a\s+[^>]*?href\s*=\s*["']([^"']*)["'][^>]*?>(.*?)<\/a>/gi, '[$2]($1)')
+      // strip stray block / inline HTML tags the model shouldn't emit
+      .replace(/<\/?(p|div|span|strong|em|b|i|u|ul|ol|li|blockquote|table|thead|tbody|tr|td|th|h[1-6]|section|article|header|footer|nav|aside|main|pre|code|sup|sub|small|mark|del|ins|figure|figcaption|picture|source|video|audio|canvas|iframe|form|input|button|select|textarea|label|fieldset|legend|details|summary|body|html|head|title|meta|link|script|style)[^>]*>/gi, '')
+      // strip HTML comments
+      .replace(/<!--[\s\S]*?-->/g, '');
+
+    // Escape anything left so it can never be interpreted as HTML by the browser.
+    return cleaned.replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }).join('\n');
 }
+
+// Renders markdown to safe HTML.
+// - removes <hr> (kept from original DeepRWA behaviour)
+// - forces every rendered link to open in a new tab, safely
 function renderMarkdown(text) {
   const safe = escapeHtmlOutsideCode(text || '');
   let html;
-  try { html = window.marked.parse(safe, { breaks: true, gfm: true }); }
-  catch { return safe.replace(/\n/g, '<br>'); }
+  try {
+    html = window.marked.parse(safe, { breaks: true, gfm: true });
+  } catch {
+    return safe.replace(/\n/g, '<br>');
+  }
+
+  // No horizontal rules ever
   html = html.replace(/<hr\s*\/?>/gi, '');
+
+  // Ensure every <a> opens in a new tab with safe rel attributes.
+  html = html.replace(/<a\s+([^>]*?)>/gi, (_match, attrs) => {
+    const cleanedAttrs = attrs
+      .replace(/\btarget\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+      .replace(/\brel\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+      .trim();
+    return `<a ${cleanedAttrs ? cleanedAttrs + ' ' : ''}target="_blank" rel="noopener noreferrer">`;
+  });
+
   return html;
 }
+
 function scrollBottom() { chatEl.scrollTop = chatEl.scrollHeight; }
 function authHeaders() {
   const h = { 'X-Client-Id': CLIENT_ID };
@@ -842,12 +882,12 @@ function showFileView(url, name, type) {
   fileViewBody.innerHTML = `
     <div class="file-view-header">
       <span class="file-view-name">${escapeHtml(name || 'file')}</span>
-      <a href="${url}" target="_blank" rel="noopener" class="btn-secondary" style="padding:0.4rem 0.8rem;font-size:0.8rem;">Open in new tab <i data-lucide="external-link"></i></a>
+      <a href="${url}" target="_blank" rel="noopener noreferrer" class="btn-secondary" style="padding:0.4rem 0.8rem;font-size:0.8rem;">Open in new tab <i data-lucide="external-link"></i></a>
     </div>
     <div class="file-view-content">
       ${isImg ? `<img src="${url}" alt="${escapeHtml(name)}" class="file-view-img" />`
         : isPdf ? `<iframe src="${url}" class="file-view-pdf" title="${escapeHtml(name)}"></iframe>`
-        : `<div class="file-view-other"><i data-lucide="file-text"></i><p>Preview not available for this file type.</p><a href="${url}" target="_blank" rel="noopener" class="btn-primary" style="width:auto;padding:0.6rem 1.2rem;">Open file</a></div>`}
+        : `<div class="file-view-other"><i data-lucide="file-text"></i><p>Preview not available for this file type.</p><a href="${url}" target="_blank" rel="noopener noreferrer" class="btn-primary" style="width:auto;padding:0.6rem 1.2rem;">Open file</a></div>`}
     </div>`;
   fileViewModal.classList.remove('hidden');
   refreshIcons();
