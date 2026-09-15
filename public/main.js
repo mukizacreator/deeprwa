@@ -789,7 +789,7 @@ chatEl.addEventListener('input', (e) => {
   }
 });
 
-// ============ HELPERS FOR UPLOAD ============
+// ============ HELPERS ============
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -804,7 +804,8 @@ async function uploadAttachmentsToServer() {
   const uploaded = [];
   for (const att of state.attachments) {
     try {
-      if (att.file.size > 20 * 1024 * 1024) {
+      if (att.file.size > 10 * 1024 * 1024) {
+        toast(`${att.name} is over 10 MB — kept locally only`, 'error');
         uploaded.push({ name: att.name, type: att.type, url: att.url });
         continue;
       }
@@ -878,7 +879,6 @@ formEl.addEventListener('submit', async (e) => {
     renderChatList();
   }
 
-  // Upload files if logged in
   const uploadedFiles = await uploadAttachmentsToServer();
   const filesForMsg = uploadedFiles || state.attachments.map(f => ({ name: f.name, type: f.type, url: f.url }));
   const imagesForAI = await collectImagesBase64(state.attachments);
@@ -1101,7 +1101,6 @@ async function saveEditAndSend(newText) {
     v.aiFiles[v.currentIndex] = [];
     renderMessages();
 
-    // Sync to backend if logged in and message has a real ID
     if (state.user && chat && !isLocalId(chat.id) && userMsg.id && !userMsg.id.startsWith('user_')) {
       try {
         await fetch(`/api/chat/messages/${userMsg.id}/sync-versions`, {
