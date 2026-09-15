@@ -88,14 +88,21 @@
   </div>
 </div>
 
-<!-- SETTINGS MODAL -->
+<!-- PROFILE MODAL (separate, info only) -->
+<div class="modal-backdrop hidden" id="profileModal">
+  <div class="modal">
+    <button class="modal-close" id="profileModalClose"><i data-lucide="x"></i></button>
+    <div class="modal-body" id="profileModalBody"></div>
+  </div>
+</div>
+
+<!-- SETTINGS MODAL (tabs: Account, Security, Sessions) -->
 <div class="modal-backdrop hidden" id="settingsModal">
   <div class="modal modal-settings">
     <button class="modal-close" id="settingsModalClose"><i data-lucide="x"></i></button>
     <div class="settings-layout">
       <nav class="settings-sidebar" id="settingsSidebar">
-        <button class="settings-tab active" data-tab="profile"><i data-lucide="user"></i><span>Profile</span></button>
-        <button class="settings-tab" data-tab="account"><i data-lucide="settings"></i><span>Account</span></button>
+        <button class="settings-tab active" data-tab="account"><i data-lucide="settings"></i><span>Account</span></button>
         <button class="settings-tab" data-tab="security"><i data-lucide="shield"></i><span>Security</span></button>
         <button class="settings-tab" data-tab="sessions"><i data-lucide="monitor"></i><span>Sessions</span></button>
       </nav>
@@ -153,7 +160,14 @@
   </div>
 </div>
 
-<!-- TOASTS -->
+<!-- FILE PREVIEW MODAL (view images/docs full-size) -->
+<div class="modal-backdrop hidden" id="fileViewModal">
+  <div class="modal modal-file-view">
+    <button class="modal-close" id="fileViewModalClose"><i data-lucide="x"></i></button>
+    <div class="file-view-body" id="fileViewBody"></div>
+  </div>
+</div>
+
 <div class="toast-container" id="toastContainer"></div>
 
 <script src="/main.js"></script>
