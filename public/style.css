@@ -1,4 +1,4 @@
-/* DeepRWA — Universal responsive stylesheet (rev.3.3.1)
+/* DeepRWA — Universal responsive stylesheet (rev.3.4.0)
    Touch-safe on phones, tablets, foldables, touch laptops, pens, mice. */
 
 /* ============ 1. TOKENS ============ */
@@ -257,10 +257,19 @@ textarea:focus-visible,
   word-break: break-word;
 }
 
+/* ============================================================
+   APP CONTAINER — keyboard-aware height
+   On mobile, when the soft keyboard appears, `100dvh` stays tall
+   because the layout viewport doesn't shrink — only the visual
+   viewport does. JS writes the visual viewport height into --vvh,
+   so the app shrinks with the keyboard: the composer stays above
+   the keyboard and the chat area remains scrollable.
+   ============================================================ */
 .app {
   display: flex;
   height: 100vh;
   height: 100dvh;
+  height: var(--vvh, 100dvh);
   width: 100%;
   min-height: 0;
 }
@@ -758,6 +767,7 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   min-height: 0;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
+  touch-action: pan-y;
 }
 .chat > * {
   max-width: 780px;
@@ -1341,7 +1351,6 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   margin-top: var(--space-md);
   flex-wrap: wrap;
 }
-/* Confirm-modal buttons sit inline at natural width with compact padding. */
 .modal-actions .btn-primary,
 .modal-actions .btn-danger,
 .modal-actions .btn-secondary {
