@@ -1,4 +1,4 @@
-// DeepRWA — Complete frontend logic (rev.3.3.3)
+// DeepRWA — Complete frontend logic (rev.3.3.4)
 
 // ============ CLIENT ID ============
 function getOrCreateClientId() {
@@ -15,10 +15,6 @@ function getOrCreateClientId() {
 const CLIENT_ID = getOrCreateClientId();
 
 // ============ AUTH MODAL STATE PERSISTENCE ============
-// On mobile, switching to the authenticator or email app can cause the
-// browser to discard and reload the tab. We save the modal's state to
-// sessionStorage (which survives reloads in the same tab) so it can be
-// restored when the user comes back.
 const AUTH_MODAL_KEY = 'deeprwa_auth_modal_v1';
 
 function saveAuthModalState(payload) {
@@ -35,6 +31,22 @@ function loadAuthModalState() {
 }
 function clearAuthModalState() {
   try { sessionStorage.removeItem(AUTH_MODAL_KEY); } catch {}
+}
+
+// ============ VISUAL VIEWPORT (keyboard-aware layout) ============
+// On mobile, when the soft keyboard appears, the visual viewport shrinks
+// but 100dvh does not follow on iOS. We set --vvh to the visual viewport
+// height so .app shrinks with the keyboard — composer stays visible above
+// the keyboard and the chat area remains scrollable.
+function setupVisualViewport() {
+  if (!window.visualViewport) return;
+  const apply = () => {
+    const vv = window.visualViewport;
+    document.documentElement.style.setProperty('--vvh', vv.height + 'px');
+  };
+  window.visualViewport.addEventListener('resize', apply);
+  window.visualViewport.addEventListener('scroll', apply);
+  apply();
 }
 
 // ============ STATE ============
@@ -286,6 +298,7 @@ async function compressImage(file, maxDimension = 1600, quality = 0.85) {
 
 // ============ INIT ============
 async function init() {
+  setupVisualViewport();
   renderUser(); renderChatList(); renderWelcome(); updateSendButton();
   inputEl.focus();
   if (state.token) {
@@ -310,8 +323,6 @@ async function init() {
       }
     } catch { renderUser(); }
   }
-  // Restore any open verification modal — this is what makes the modal
-  // survive a mobile tab reload after the user goes to fetch a code.
   restoreAuthModalState();
   startSessionCheck();
 }
