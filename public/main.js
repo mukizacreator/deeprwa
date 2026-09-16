@@ -1,4 +1,4 @@
-// DeepRWA — Complete frontend logic (rev.3.3.2)
+// DeepRWA — Complete frontend logic (rev.3.3.3)
 
 // ============ CLIENT ID ============
 function getOrCreateClientId() {
@@ -13,6 +13,29 @@ function getOrCreateClientId() {
   return id;
 }
 const CLIENT_ID = getOrCreateClientId();
+
+// ============ AUTH MODAL STATE PERSISTENCE ============
+// On mobile, switching to the authenticator or email app can cause the
+// browser to discard and reload the tab. We save the modal's state to
+// sessionStorage (which survives reloads in the same tab) so it can be
+// restored when the user comes back.
+const AUTH_MODAL_KEY = 'deeprwa_auth_modal_v1';
+
+function saveAuthModalState(payload) {
+  try {
+    if (!payload) sessionStorage.removeItem(AUTH_MODAL_KEY);
+    else sessionStorage.setItem(AUTH_MODAL_KEY, JSON.stringify(payload));
+  } catch {}
+}
+function loadAuthModalState() {
+  try {
+    const raw = sessionStorage.getItem(AUTH_MODAL_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+function clearAuthModalState() {
+  try { sessionStorage.removeItem(AUTH_MODAL_KEY); } catch {}
+}
 
 // ============ STATE ============
 const state = {
@@ -275,7 +298,6 @@ async function init() {
         renderUser();
         await loadConversations();
       } else {
-        // Session invalid or revoked — detect which
         let revoked = false;
         try {
           const d = await res.json();
@@ -288,15 +310,13 @@ async function init() {
       }
     } catch { renderUser(); }
   }
+  // Restore any open verification modal — this is what makes the modal
+  // survive a mobile tab reload after the user goes to fetch a code.
+  restoreAuthModalState();
   startSessionCheck();
 }
 
-// ============ SESSION CHECK (rewritten for reliability) ============
-// - Runs once shortly after page load (5s), not just 60s later.
-// - Repeats every 30 seconds.
-// - Also fires whenever the tab becomes visible again.
-// - No "grace period" that could block sign-out if the user refreshes
-//   frequently.
+// ============ SESSION CHECK ============
 function startSessionCheck() {
   if (state.sessionCheckInterval) clearInterval(state.sessionCheckInterval);
 
@@ -319,11 +339,8 @@ function startSessionCheck() {
       .catch(() => {});
   };
 
-  // First check 5s after page load (gives the initial /api/auth/me time to settle)
   setTimeout(doCheck, 5000);
-  // Then every 30 seconds
   state.sessionCheckInterval = setInterval(doCheck, 30000);
-  // And whenever the user switches back to this tab
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) doCheck();
   });
@@ -334,6 +351,7 @@ async function forceSignOut(reason) {
   state._selectedFiles.clear(); state._multiSelectMode = false;
   state._selectedChats.clear(); state._chatMultiSelectMode = false;
   localStorage.removeItem('deeprwa_token');
+  clearAuthModalState();
   renderUser(); renderChatList(); renderWelcome(); closeAllModals();
   toast(reason || 'Signed out', 'info');
 }
@@ -1549,10 +1567,20 @@ function openAuthModal(mode) {
   if (mode === 'login') renderLoginForm();
   else if (mode === 'signup') renderSignupForm();
 }
-authModalClose.addEventListener('click', () => authModal.classList.add('hidden'));
-authModal.addEventListener('click', (e) => { if (e.target === authModal) authModal.classList.add('hidden'); });
+
+authModalClose.addEventListener('click', () => {
+  authModal.classList.add('hidden');
+  clearAuthModalState();
+});
+authModal.addEventListener('click', (e) => {
+  if (e.target === authModal) {
+    authModal.classList.add('hidden');
+    clearAuthModalState();
+  }
+});
 
 function renderLoginForm() {
+  saveAuthModalState({ form: 'login' });
   authModalBody.innerHTML = `
     <h3>Log in to DeepRWA</h3>
     <p class="modal-sub">Save your chats and access them anywhere.</p>
@@ -1580,6 +1608,7 @@ function renderLoginForm() {
 }
 
 function renderSignupForm() {
+  saveAuthModalState({ form: 'signup' });
   authModalBody.innerHTML = `
     <h3>Create your DeepRWA account</h3>
     <p class="modal-sub">Save chats, access from any device.</p>
@@ -1611,6 +1640,7 @@ function renderSignupForm() {
 }
 
 function renderVerifyCodeForm(type) {
+  saveAuthModalState({ form: 'verify', type, pendingToken: state.authModal.pendingToken });
   authModalBody.innerHTML = `
     <h3>${type === 'signup' ? 'Verify your email' : 'Enter login code'}</h3>
     <p class="modal-sub">We sent a 6-digit code to your email.</p>
@@ -1628,6 +1658,7 @@ function renderVerifyCodeForm(type) {
       const data = await res.json();
       if (!res.ok) { toast(data.error || 'Could not resend', 'error'); return; }
       state.authModal.pendingToken = data.pendingToken;
+      saveAuthModalState({ form: 'verify', type, pendingToken: state.authModal.pendingToken });
       attachCountdown(resendBtn, 60); toast('Code resent', 'success');
     } catch { toast('Network error', 'error'); }
   };
@@ -1655,6 +1686,7 @@ async function handleLoginSuccess(data) {
   state.user = data.user;
   state._loginAt = Date.now();
   localStorage.setItem('deeprwa_token', data.accessToken);
+  clearAuthModalState();
   authModal.classList.add('hidden');
   renderFilePreviews(); renderWelcome(); renderUser();
   await loadConversations();
@@ -1662,6 +1694,7 @@ async function handleLoginSuccess(data) {
 }
 
 function render2FALoginForm(twofaToken) {
+  saveAuthModalState({ form: '2fa', twofaToken });
   authModalBody.innerHTML = `
     <h3>Two-factor authentication</h3>
     <p class="modal-sub">Enter the 6-digit code from your authenticator app.</p>
@@ -1682,6 +1715,7 @@ function render2FALoginForm(twofaToken) {
 
 // ============ FORGOT PASSWORD ============
 function renderForgotStep1() {
+  saveAuthModalState({ form: 'forgot-step1' });
   authModalBody.innerHTML = `
     <h3>Reset your password</h3>
     <p class="modal-sub">Enter the email registered to your account.</p>
@@ -1703,7 +1737,13 @@ function renderForgotStep1() {
     } catch { resetBtn(btn); toast('Network error', 'error'); }
   };
 }
+
 function renderForgotStep2() {
+  saveAuthModalState({
+    form: 'forgot-step2',
+    email: state.authModal.forgot.email,
+    pendingToken: state.authModal.forgot.pendingToken
+  });
   authModalBody.innerHTML = `
     <h3>Enter verification code</h3>
     <p class="modal-sub">We sent a 6-digit code to ${escapeHtml(state.authModal.forgot.email)}</p>
@@ -1719,6 +1759,11 @@ function renderForgotStep2() {
       const data = await res.json();
       if (!res.ok) { toast(data.error || 'Failed', 'error'); return; }
       state.authModal.forgot.pendingToken = data.pendingToken;
+      saveAuthModalState({
+        form: 'forgot-step2',
+        email: state.authModal.forgot.email,
+        pendingToken: state.authModal.forgot.pendingToken
+      });
       attachCountdown(resendBtn, 60); toast('Code resent', 'success');
     } catch { toast('Network error', 'error'); }
   };
@@ -1735,7 +1780,12 @@ function renderForgotStep2() {
     } catch { resetBtn(btn); toast('Network error', 'error'); }
   };
 }
+
 function renderForgotStep3() {
+  saveAuthModalState({
+    form: 'forgot-step3',
+    grantedToken: state.authModal.forgot.grantedToken
+  });
   authModalBody.innerHTML = `
     <h3>Set new password</h3>
     <p class="modal-sub">Choose a new password different from your current one.</p>
@@ -1757,6 +1807,54 @@ function renderForgotStep3() {
       renderLoginForm();
     } catch { resetBtn(btn); toast('Network error', 'error'); }
   };
+}
+
+// ============ RESTORE AUTH MODAL STATE (after a tab reload) ============
+function restoreAuthModalState() {
+  const saved = loadAuthModalState();
+  if (!saved || !saved.form) return;
+  try {
+    if (saved.form === 'login') {
+      authModal.classList.remove('hidden');
+      authModal.dataset.mode = 'login';
+      renderLoginForm();
+    } else if (saved.form === 'signup') {
+      authModal.classList.remove('hidden');
+      authModal.dataset.mode = 'signup';
+      renderSignupForm();
+    } else if (saved.form === 'verify') {
+      state.authModal.pendingToken = saved.pendingToken;
+      authModal.classList.remove('hidden');
+      authModal.dataset.mode = saved.type;
+      renderVerifyCodeForm(saved.type);
+    } else if (saved.form === '2fa') {
+      authModal.classList.remove('hidden');
+      render2FALoginForm(saved.twofaToken);
+    } else if (saved.form === 'forgot-step1') {
+      authModal.classList.remove('hidden');
+      renderForgotStep1();
+    } else if (saved.form === 'forgot-step2') {
+      state.authModal.forgot.email = saved.email;
+      state.authModal.forgot.pendingToken = saved.pendingToken;
+      authModal.classList.remove('hidden');
+      renderForgotStep2();
+    } else if (saved.form === 'forgot-step3') {
+      state.authModal.forgot.grantedToken = saved.grantedToken;
+      authModal.classList.remove('hidden');
+      renderForgotStep3();
+    } else if (saved.form === 'action-verify') {
+      if (!state.user) { clearAuthModalState(); return; }
+      state._pendingAction = saved.pendingAction;
+      settingsModal.classList.remove('hidden');
+      settingsSidebar.querySelectorAll('.settings-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === 'account'));
+      renderActionVerify(saved.action, saved.targetEmail);
+    } else {
+      clearAuthModalState();
+    }
+  } catch (e) {
+    console.warn('restoreAuthModalState failed:', e);
+    clearAuthModalState();
+  }
 }
 
 // ============ PROFILE MODAL ============
@@ -1792,8 +1890,16 @@ function openSettingsModal(tab = 'account') {
   settingsSidebar.querySelectorAll('.settings-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
   renderSettingsTab(tab);
 }
-settingsModalClose.addEventListener('click', () => settingsModal.classList.add('hidden'));
-settingsModal.addEventListener('click', (e) => { if (e.target === settingsModal) settingsModal.classList.add('hidden'); });
+settingsModalClose.addEventListener('click', () => {
+  settingsModal.classList.add('hidden');
+  clearAuthModalState();
+});
+settingsModal.addEventListener('click', (e) => {
+  if (e.target === settingsModal) {
+    settingsModal.classList.add('hidden');
+    clearAuthModalState();
+  }
+});
 settingsSidebar.addEventListener('click', (e) => {
   const tab = e.target.closest('.settings-tab'); if (!tab) return;
   settingsSidebar.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
@@ -1801,6 +1907,7 @@ settingsSidebar.addEventListener('click', (e) => {
   renderSettingsTab(tab.dataset.tab);
 });
 function renderSettingsTab(tab) {
+  clearAuthModalState();
   if (tab === 'account') renderAccountTab();
   else if (tab === 'security') renderSecurityTab();
   else if (tab === 'sessions') renderSessionsTab();
@@ -1914,6 +2021,12 @@ async function sendActionCode(action, extra = {}) {
 }
 
 function renderActionVerify(action, targetEmail) {
+  saveAuthModalState({
+    form: 'action-verify',
+    action,
+    targetEmail,
+    pendingAction: state._pendingAction
+  });
   const headline = action === 'change-email' ? 'Verify new email' : action === 'change-password' ? 'Verify password change' : 'Verify account deletion';
   const verifyLabel = action === 'change-email' ? 'Verify & change email' : action === 'change-password' ? 'Verify & change password' : 'Verify & delete';
   const workingLabel = action === 'change-email' ? 'Changing email…' : action === 'change-password' ? 'Changing password…' : 'Deleting account…';
@@ -1935,11 +2048,17 @@ function renderActionVerify(action, targetEmail) {
       const data = await res.json();
       if (!res.ok) { toast(data.error || 'Failed', 'error'); return; }
       state._pendingAction.token = data.pendingToken;
+      saveAuthModalState({
+        form: 'action-verify',
+        action,
+        targetEmail,
+        pendingAction: state._pendingAction
+      });
       attachCountdown(resendBtn, 60); toast('Code resent', 'success');
     } catch { toast('Network error', 'error'); }
   };
 
-  $('actBack').onclick = () => renderAccountTab();
+  $('actBack').onclick = () => renderSettingsTab('account');
 
   $('actVerify').onclick = async () => {
     const code = $('actCode').value.trim();
@@ -1960,6 +2079,7 @@ function renderActionVerify(action, targetEmail) {
         if (!r.ok) { resetBtn(btn); toast(d.error || 'Failed', 'error'); return; }
         state.user.email = d.newEmail;
         toast('Email changed to ' + d.newEmail, 'success');
+        clearAuthModalState();
         renderUser(); renderAccountTab();
       } else if (action === 'change-password') {
         const pw = state._pendingPw || {};
@@ -1968,6 +2088,7 @@ function renderActionVerify(action, targetEmail) {
         if (!r.ok) { resetBtn(btn); toast(d.error || 'Failed', 'error'); return; }
         state._pendingPw = null;
         toast('Password changed', 'success');
+        clearAuthModalState();
         renderAccountTab();
       } else if (action === 'delete-account') {
         const r = await fetch('/api/auth/account', { method: 'DELETE', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ grantedToken: vdata.grantedToken }) });
@@ -2137,6 +2258,7 @@ function confirmLogout() {
       state.token = null; state.user = null; state.chats = []; state.activeChatId = null; state.messages = [];
       state.messageVersions = {};
       state._selectedChats.clear(); state._chatMultiSelectMode = false;
+      clearAuthModalState();
       localStorage.removeItem('deeprwa_token');
       renderUser(); renderChatList(); renderWelcome(); settingsModal.classList.add('hidden');
       toast('Logged out', 'info');
@@ -2239,6 +2361,7 @@ function closeAllModals() {
   confirmModal.classList.add('hidden');
   fileViewModal.classList.add('hidden');
   accountDropdown.classList.add('hidden');
+  clearAuthModalState();
 }
 
 // ============ BOOT ============
