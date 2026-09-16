@@ -1,4 +1,4 @@
-// DeepRWA — Complete backend (rev.3.0.0)
+// DeepRWA — Complete backend (rev.3.0.1)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -183,6 +183,16 @@ async function trackSession(userId, req) {
 
 // ============ av.png ============
 app.get('/av.png', (req, res) => res.sendFile(path.join(__dirname, 'av.png')));
+
+// ============ HEALTH CHECK (kept awake by UptimeRobot) ============
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    service: 'DeepRWA',
+    version: '3.0.1',
+    time: new Date().toISOString()
+  });
+});
 
 // ============ SYSTEM PROMPT ============
 const SYSTEM_PROMPT = `You are **DeepRWA** — a professional, world-class AI assistant specialised exclusively in information about Rwanda.
@@ -467,15 +477,8 @@ const PROVIDERS = [
 ];
 
 // ============================================================
-// TITLE GENERATION — rev.3.0.0
-// Goals:
-//   - Never echo the user's wording back as the title
-//   - Understand the topic / intent, then produce a 2–6 word name
-//   - Greetings, thanks, identity questions get labelled, not quoted
-//   - The local fallback (used only when every LLM fails) never quotes
+// TITLE GENERATION
 // ============================================================
-
-// --- 1. GREETING / SMALL-TALK DETECTION (expanded) ---
 
 function isGreetingOnly(msg) {
   const n = normalise(msg);
@@ -485,14 +488,12 @@ function isGreetingOnly(msg) {
 
   const words = n.split(' ');
 
-  // A short message that begins with a greeting, with no substantive topic
   const startsWithGreeting = /^(hi|hey|hello|yo|hiya|howdy|sup|muraho|mwaramutse|mwiriwe|wiriwe|bonjour|salut|bonsoir|coucou|jambo|habari|hujambo|hola|ciao|hallo|hei|hej)\b/.test(n);
   if (startsWithGreeting && words.length <= 8) {
     const hasTopic = /\b(rwanda|kigali|rwandan|province|district|sector|cell|village|history|culture|tourism|tourist|price|cost|story|news|people|person|place|city|school|university|hospital|food|recipe|market|company|business|explain|tell me about|how to|how do i|what is|what are|where is|where are|when is|when was|why is|why are|who is|who are|who was|show me|give me)\b/.test(n);
     if (!hasTopic) return true;
   }
 
-  // Standalone small-talk phrases
   if (/^(how are you|how're you|how is it going|how's it going|how have you been|how are things|what's up|whats up|nice to meet you|long time no see|good (morning|afternoon|evening|night)|comment ca va|comment ça va|comment vas tu|comment allez vous)\b/.test(n)) return true;
 
   return false;
@@ -531,25 +532,15 @@ function extractImagePrompt(msg) {
   return n;
 }
 
-// --- 2. CLEANING + ECHO REJECTION ---
-
-// Reject any candidate title that is essentially a quote of the user's message.
 function isEchoOfMessage(title, originalMsg) {
   const tNorm = String(title || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
   const mNorm = String(originalMsg || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
   if (!tNorm || !mNorm) return false;
 
-  // Exact match
   if (tNorm === mNorm) return true;
-
-  // Title is a direct substring of the message (e.g. "Just Two Bubbles" inside "Just two bubbles: the user…")
   if (tNorm.length >= 4 && mNorm.includes(tNorm)) return true;
-
-  // Title is the start of the message word-for-word
   if (tNorm.length >= 4 && mNorm.startsWith(tNorm)) return true;
 
-  // Word-order subsequence: every content word of the title appears
-  // in the message, in the same order — that's a truncated quote.
   const tWords = tNorm.split(' ').filter(w => w.length >= 3);
   if (tWords.length < 2) return false;
   const mWords = mNorm.split(' ');
@@ -568,35 +559,26 @@ function cleanTitle(raw, originalMsg) {
   let t = String(raw || '').trim();
   if (!t) return null;
 
-  // Strip quotes (any flavour)
   t = t.replace(/^["'`“”‘’]+|["'`“”‘’]+$/g, '');
-  // Strip trailing periods / colons
   t = t.replace(/[.:;,!]+$/, '').trim();
-  // Strip "Title:" / "Chat title:" / "Chat:" prefix
   if (/^(title|chat title|chat)\s*[:\-]\s*/i.test(t)) {
     t = t.replace(/^(title|chat title|chat)\s*[:\-]\s*/i, '').trim();
   }
-  // Multi-line: pick the shortest meaningful line
   const lines = t.split('\n').map(l => l.trim()).filter(Boolean);
   if (lines.length > 1) {
     const short = lines.find(l => l.length <= 60 && !/^(sure|here|the title|of course|okay)/i.test(l)) || lines[0];
     t = short;
   }
-  // Strip any remaining quotes / backticks
   t = t.replace(/^["'`“”‘’]+|["'`“”‘’]+$/g, '').trim();
   t = t.replace(/\.+$/, '').trim();
   if (!t) return null;
 
-  // Hard cap
   if (t.length > 80) t = t.substring(0, 80).trim();
 
-  // Reject if the candidate is a quote of the message
   if (isEchoOfMessage(t, originalMsg)) return null;
 
   return t;
 }
-
-// --- 3. PROMPT ---
 
 function buildTitlePrompt(msg) {
   const truncated = String(msg).substring(0, 800);
@@ -649,8 +631,6 @@ ${truncated}
 Title:`;
 }
 
-// --- 4. LLM CALLS ---
-
 async function callTitleModel({ url, headers, model, prompt, timeoutMs = 20000 }) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -681,7 +661,6 @@ async function callTitleModel({ url, headers, model, prompt, timeoutMs = 20000 }
 async function generateTitleViaProviders(msg) {
   const prompt = buildTitlePrompt(msg);
 
-  // Groq
   if (process.env.GROQ_API_KEY) {
     for (const model of ['openai/gpt-oss-120b', 'openai/gpt-oss-20b']) {
       try {
@@ -700,7 +679,6 @@ async function generateTitleViaProviders(msg) {
     }
   }
 
-  // OpenRouter
   if (process.env.OPENROUTER_API_KEY) {
     try {
       const raw = await callTitleModel({
@@ -721,7 +699,6 @@ async function generateTitleViaProviders(msg) {
     }
   }
 
-  // Gemini
   if (process.env.GEMINI_API_KEY) {
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
@@ -747,8 +724,6 @@ async function generateTitleViaProviders(msg) {
 
   return null;
 }
-
-// --- 5. LOCAL FALLBACK (never echoes) ---
 
 const TITLE_STOPWORDS = new Set([
   'a','an','and','or','but','if','then','else','when','where','while','of','to','in','on','at','by',
@@ -776,7 +751,6 @@ function localFallbackTitle(msg, isImg) {
     return p ? `${p} Photo` : 'Image Request';
   }
 
-  // Common question forms
   const qPatterns = [
     { re: /\b(what is|what are|whats|what's)\b/i, prefix: 'Meaning of' },
     { re: /\b(define|definition of|meaning of)\b/i, prefix: 'Meaning of' },
@@ -792,29 +766,23 @@ function localFallbackTitle(msg, isImg) {
     }
   }
 
-  // Request patterns
   if (/\b(create|generate|draw|make|produce)\b/i.test(msg)) {
     const m = msg.match(/\b(create|generate|draw|make|produce)\b/i);
     const obj = extractObjectAfter(msg, m);
     return obj ? obj.substring(0, 60) : 'Request';
   }
 
-  // Topics explicitly mentioned
   if (/\b(rwanda|kigali)\b/i.test(msg)) return 'About Rwanda';
 
-  // Long / technical messages with no clear question: give a generic, non-echo label
   if (msg.length > 200) return 'Long Message';
   if (msg.length <= 20) return 'Short Message';
   return 'New chat';
 }
 
-// --- 6. ORCHESTRATOR ---
-
 async function generateChatTitle(firstMessage) {
   const msg = String(firstMessage || '').trim();
   if (!msg) return 'New chat';
 
-  // Deterministic shortcuts (no LLM needed)
   if (isGreetingOnly(msg)) {
     const label = greetingLabel(msg);
     console.log(`[title] greeting shortcut: "${label}"`);
@@ -827,19 +795,16 @@ async function generateChatTitle(firstMessage) {
 
   const isImg = isImageRequest(msg);
 
-  // Ask the LLM ladder
   const fromLLM = await generateTitleViaProviders(msg);
   if (fromLLM) return fromLLM;
 
-  // Deterministic, non-echoing fallback
   const fallback = localFallbackTitle(msg, isImg);
   console.log(`[title] local fallback: "${fallback}"`);
   return fallback;
 }
 
 // ============ ROUTES ============
-app.get('/health', (req, res) => res.json({ status: 'ok', service: 'DeepRWA', version: '3.0.0', time: new Date().toISOString() }));
-app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '3.0.0', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
+app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '3.0.1', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
 app.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nSitemap: https://deeprwa.agentdomains.co/sitemap.xml\n`));
 app.get('/sitemap.xml', (req, res) => res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>https://deeprwa.agentdomains.co/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>\n</urlset>`));
 
@@ -930,7 +895,28 @@ app.post('/api/auth/verify-2fa', async (req, res) => {
   res.json({ accessToken, user: { id: p.userId, email: p.email } });
 });
 
+// ============================================================
+// GET /api/auth/me — MODIFIED: also verifies the session is not revoked.
+// This makes refreshing a revoked device sign it out immediately.
+// ============================================================
 app.get('/api/auth/me', requireAuth, async (req, res) => {
+  const clientId = (req.headers['x-client-id'] || '').toString().trim().slice(0, 80) || null;
+  if (clientId && supabase) {
+    try {
+      const { data: sess } = await supabase
+        .from('sessions')
+        .select('revoked')
+        .eq('user_id', req.userId)
+        .eq('client_id', clientId)
+        .maybeSingle();
+      if (sess && sess.revoked === true) {
+        return res.status(401).json({ error: 'Session has been revoked', code: 'SESSION_REVOKED' });
+      }
+    } catch (e) {
+      console.warn('[auth/me] session check failed (non-fatal):', e.message);
+    }
+  }
+
   const { data } = await supabase.from('profiles').select('*').eq('id', req.userId).maybeSingle();
   res.json({ user: { id: req.userId, email: data?.email, display_name: data?.display_name, totp_enabled: data?.totp_enabled || false, created_at: data?.created_at } });
 });
