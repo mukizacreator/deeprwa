@@ -1,4 +1,4 @@
-// DeepRWA — Complete frontend logic (rev.3.3.1)
+// DeepRWA — Complete frontend logic (rev.3.3.2)
 
 // ============ CLIENT ID ============
 function getOrCreateClientId() {
@@ -275,28 +275,58 @@ async function init() {
         renderUser();
         await loadConversations();
       } else {
+        // Session invalid or revoked — detect which
+        let revoked = false;
+        try {
+          const d = await res.json();
+          if (d && d.code === 'SESSION_REVOKED') revoked = true;
+        } catch {}
         state.token = null;
         localStorage.removeItem('deeprwa_token');
         renderUser();
+        if (revoked) toast('Signed out from another device', 'info');
       }
     } catch { renderUser(); }
   }
   startSessionCheck();
 }
 
+// ============ SESSION CHECK (rewritten for reliability) ============
+// - Runs once shortly after page load (5s), not just 60s later.
+// - Repeats every 30 seconds.
+// - Also fires whenever the tab becomes visible again.
+// - No "grace period" that could block sign-out if the user refreshes
+//   frequently.
 function startSessionCheck() {
   if (state.sessionCheckInterval) clearInterval(state.sessionCheckInterval);
-  state.sessionCheckInterval = setInterval(() => {
+
+  const doCheck = () => {
     if (!state.token) return;
     const now = Date.now();
-    if (now - state.lastSessionCheck < 30000) return;
+    if (now - state.lastSessionCheck < 15000) return;
     state.lastSessionCheck = now;
-    if (state._loginAt && (Date.now() - state._loginAt) < 30000) return;
     fetch('/api/auth/session-check', { headers: authHeaders() })
-      .then(r => r.ok ? r.json() : null)
-      .then(d => { if (d && d.valid === false) forceSignOut('Signed out from another device'); })
+      .then(async (r) => {
+        if (r.ok) {
+          try {
+            const d = await r.json();
+            if (d && d.valid === false) forceSignOut('Signed out from another device');
+          } catch {}
+        } else if (r.status === 401) {
+          forceSignOut('Signed out from another device');
+        }
+      })
       .catch(() => {});
-  }, 60000);
+  };
+
+  // First check 5s after page load (gives the initial /api/auth/me time to settle)
+  setTimeout(doCheck, 5000);
+  // Then every 30 seconds
+  state.sessionCheckInterval = setInterval(doCheck, 30000);
+  // And whenever the user switches back to this tab
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) doCheck();
+  });
 }
 
 async function forceSignOut(reason) {
