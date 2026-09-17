@@ -1,4 +1,4 @@
-// DeepRWA — Complete frontend logic (rev.3.3.6)
+// DeepRWA — Complete frontend logic (rev.3.3.7)
 
 // ============ CLIENT ID ============
 function getOrCreateClientId() {
@@ -276,10 +276,13 @@ async function compressImage(file, maxDimension = 1600, quality = 0.85) {
   });
 }
 
-// ============ VOICE INPUT ============
+// ============ VOICE INPUT (fixed — auto-restarts, continues while speaking) ============
 let _voiceRecognition = null;
-let _voiceListening = false;
+let _voiceActive = false;
 let _voiceBaseText = '';
+let _voiceFinalBuffer = '';
+let _voiceRestartTimer = null;
+let _voiceLastError = '';
 
 function setupVoiceInput() {
   if (!micBtn) return;
@@ -288,48 +291,103 @@ function setupVoiceInput() {
     micBtn.style.display = 'none';
     return;
   }
+
   _voiceRecognition = new SR();
-  _voiceRecognition.continuous = false;
+  _voiceRecognition.continuous = true;
   _voiceRecognition.interimResults = true;
   _voiceRecognition.lang = navigator.language || 'en-US';
+  _voiceRecognition.maxAlternatives = 1;
 
   _voiceRecognition.onstart = () => {
-    _voiceListening = true;
-    _voiceBaseText = inputEl.value || '';
+    _voiceLastError = '';
     micBtn.classList.add('listening');
   };
+
   _voiceRecognition.onresult = (e) => {
-    let interim = '', final = '';
+    let interim = '';
+    let final = '';
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const t = e.results[i][0].transcript;
-      if (e.results[i].isFinal) final += t; else interim += t;
+      if (e.results[i].isFinal) final += t;
+      else interim += t;
     }
-    const piece = final || interim;
-    if (!piece) return;
+    if (final) _voiceFinalBuffer += final;
     const sep = _voiceBaseText && !/\s$/.test(_voiceBaseText) ? ' ' : '';
-    inputEl.value = _voiceBaseText + sep + piece;
-    autoGrow(); updateSendButton();
+    inputEl.value = _voiceBaseText + sep + _voiceFinalBuffer + interim;
+    autoGrow();
+    updateSendButton();
   };
+
   _voiceRecognition.onerror = (e) => {
-    _voiceListening = false;
-    micBtn.classList.remove('listening');
-    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') toast('Microphone access denied', 'error');
-    else if (e.error === 'no-speech') toast('No speech detected — tap mic to try again', 'info', 2500);
-    else if (e.error !== 'aborted') toast('Voice input error: ' + e.error, 'error');
+    _voiceLastError = e.error || '';
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+      _voiceActive = false;
+      micBtn.classList.remove('listening');
+      toast('Microphone access denied. Allow it in your browser settings.', 'error');
+    } else if (e.error === 'network') {
+      _voiceActive = false;
+      micBtn.classList.remove('listening');
+      toast('Voice needs an internet connection.', 'error');
+    } else if (e.error === 'audio-capture') {
+      _voiceActive = false;
+      micBtn.classList.remove('listening');
+      toast('No microphone found on this device.', 'error');
+    } else if (e.error === 'aborted' || e.error === 'no-speech') {
+      // benign — handled by onend
+    } else {
+      console.warn('[voice] error:', e.error);
+    }
   };
+
   _voiceRecognition.onend = () => {
-    _voiceListening = false;
-    micBtn.classList.remove('listening');
+    if (_voiceActive) {
+      // Auto-restart — the browser stopped listening (usually due to a pause).
+      // We keep going until the user taps the mic again.
+      if (_voiceRestartTimer) clearTimeout(_voiceRestartTimer);
+      _voiceRestartTimer = setTimeout(() => {
+        _voiceRestartTimer = null;
+        if (!_voiceActive) return;
+        try { _voiceRecognition.start(); } catch (err) {
+          // If it fails because it's already started, that's fine.
+          if (!/already started/i.test(err?.message || '')) {
+            _voiceActive = false;
+            micBtn.classList.remove('listening');
+          }
+        }
+      }, 250);
+    } else {
+      micBtn.classList.remove('listening');
+    }
   };
 
   micBtn.addEventListener('click', () => {
-    if (_voiceListening) { try { _voiceRecognition.stop(); } catch {} return; }
-    try { _voiceRecognition.start(); } catch (e) { console.warn('voice start failed', e); }
+    if (_voiceActive) {
+      stopVoiceInput();
+    } else {
+      startVoiceInput();
+    }
   });
 }
 
+function startVoiceInput() {
+  if (!_voiceRecognition) return;
+  _voiceActive = true;
+  _voiceBaseText = inputEl.value || '';
+  _voiceFinalBuffer = '';
+  micBtn.classList.add('listening');
+  try { _voiceRecognition.start(); } catch (err) {
+    if (!/already started/i.test(err?.message || '')) {
+      _voiceActive = false;
+      micBtn.classList.remove('listening');
+    }
+  }
+}
+
 function stopVoiceInput() {
-  if (_voiceListening && _voiceRecognition) { try { _voiceRecognition.stop(); } catch {} }
+  _voiceActive = false;
+  if (_voiceRestartTimer) { clearTimeout(_voiceRestartTimer); _voiceRestartTimer = null; }
+  if (_voiceRecognition) { try { _voiceRecognition.stop(); } catch {} }
+  micBtn.classList.remove('listening');
 }
 
 // ============ VOICE OUTPUT ============
@@ -1686,6 +1744,7 @@ async function selectChat(id) {
   if (state.isGenerating) return;
   const chat = state.chats.find(c => c.id === id); if (!chat) return;
   stopSpeaking();
+  stopVoiceInput();
   state.activeChatId = id; state.editingMessageId = null; state.editingValue = '';
   state.attachments = []; renderFilePreviews();
   if (state.user && !isLocalId(id)) {
