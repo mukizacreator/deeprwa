@@ -1,4 +1,4 @@
-// DeepRWA — Complete frontend logic (rev.3.3.7)
+// DeepRWA — Complete frontend logic (rev.3.3.8)
 
 // ============ CLIENT ID ============
 function getOrCreateClientId() {
@@ -276,21 +276,18 @@ async function compressImage(file, maxDimension = 1600, quality = 0.85) {
   });
 }
 
-// ============ VOICE INPUT (fixed — auto-restarts, continues while speaking) ============
+// ============ VOICE INPUT (fixed: no leftover text after Send) ============
 let _voiceRecognition = null;
 let _voiceActive = false;
 let _voiceBaseText = '';
 let _voiceFinalBuffer = '';
 let _voiceRestartTimer = null;
-let _voiceLastError = '';
+let _voiceSuppressResults = false;
 
 function setupVoiceInput() {
   if (!micBtn) return;
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) {
-    micBtn.style.display = 'none';
-    return;
-  }
+  if (!SR) { micBtn.style.display = 'none'; return; }
 
   _voiceRecognition = new SR();
   _voiceRecognition.continuous = true;
@@ -298,18 +295,14 @@ function setupVoiceInput() {
   _voiceRecognition.lang = navigator.language || 'en-US';
   _voiceRecognition.maxAlternatives = 1;
 
-  _voiceRecognition.onstart = () => {
-    _voiceLastError = '';
-    micBtn.classList.add('listening');
-  };
+  _voiceRecognition.onstart = () => { micBtn.classList.add('listening'); };
 
   _voiceRecognition.onresult = (e) => {
-    let interim = '';
-    let final = '';
+    if (_voiceSuppressResults) return;
+    let interim = '', final = '';
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const t = e.results[i][0].transcript;
-      if (e.results[i].isFinal) final += t;
-      else interim += t;
+      if (e.results[i].isFinal) final += t; else interim += t;
     }
     if (final) _voiceFinalBuffer += final;
     const sep = _voiceBaseText && !/\s$/.test(_voiceBaseText) ? ' ' : '';
@@ -319,39 +312,27 @@ function setupVoiceInput() {
   };
 
   _voiceRecognition.onerror = (e) => {
-    _voiceLastError = e.error || '';
     if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-      _voiceActive = false;
-      micBtn.classList.remove('listening');
+      _voiceActive = false; micBtn.classList.remove('listening');
       toast('Microphone access denied. Allow it in your browser settings.', 'error');
     } else if (e.error === 'network') {
-      _voiceActive = false;
-      micBtn.classList.remove('listening');
+      _voiceActive = false; micBtn.classList.remove('listening');
       toast('Voice needs an internet connection.', 'error');
     } else if (e.error === 'audio-capture') {
-      _voiceActive = false;
-      micBtn.classList.remove('listening');
+      _voiceActive = false; micBtn.classList.remove('listening');
       toast('No microphone found on this device.', 'error');
-    } else if (e.error === 'aborted' || e.error === 'no-speech') {
-      // benign — handled by onend
-    } else {
-      console.warn('[voice] error:', e.error);
     }
   };
 
   _voiceRecognition.onend = () => {
-    if (_voiceActive) {
-      // Auto-restart — the browser stopped listening (usually due to a pause).
-      // We keep going until the user taps the mic again.
+    if (_voiceActive && !_voiceSuppressResults) {
       if (_voiceRestartTimer) clearTimeout(_voiceRestartTimer);
       _voiceRestartTimer = setTimeout(() => {
         _voiceRestartTimer = null;
         if (!_voiceActive) return;
         try { _voiceRecognition.start(); } catch (err) {
-          // If it fails because it's already started, that's fine.
           if (!/already started/i.test(err?.message || '')) {
-            _voiceActive = false;
-            micBtn.classList.remove('listening');
+            _voiceActive = false; micBtn.classList.remove('listening');
           }
         }
       }, 250);
@@ -361,37 +342,41 @@ function setupVoiceInput() {
   };
 
   micBtn.addEventListener('click', () => {
-    if (_voiceActive) {
-      stopVoiceInput();
-    } else {
-      startVoiceInput();
-    }
+    if (_voiceActive) stopVoiceInput();
+    else startVoiceInput();
   });
 }
 
 function startVoiceInput() {
   if (!_voiceRecognition) return;
   _voiceActive = true;
+  _voiceSuppressResults = false;
   _voiceBaseText = inputEl.value || '';
   _voiceFinalBuffer = '';
   micBtn.classList.add('listening');
   try { _voiceRecognition.start(); } catch (err) {
     if (!/already started/i.test(err?.message || '')) {
-      _voiceActive = false;
-      micBtn.classList.remove('listening');
+      _voiceActive = false; micBtn.classList.remove('listening');
     }
   }
 }
 
 function stopVoiceInput() {
   _voiceActive = false;
+  _voiceSuppressResults = true;
   if (_voiceRestartTimer) { clearTimeout(_voiceRestartTimer); _voiceRestartTimer = null; }
   if (_voiceRecognition) { try { _voiceRecognition.stop(); } catch {} }
   micBtn.classList.remove('listening');
+  _voiceBaseText = '';
+  _voiceFinalBuffer = '';
+  setTimeout(() => { _voiceSuppressResults = false; }, 400);
 }
 
-// ============ VOICE OUTPUT ============
+// ============ VOICE OUTPUT (chunked for long messages) ============
 let _currentSpeakBtn = null;
+let _speakChunks = [];
+let _speakIndex = 0;
+let _speakSession = 0;
 
 function stripMarkdownForSpeech(text) {
   return String(text || '')
@@ -412,7 +397,38 @@ function stripMarkdownForSpeech(text) {
     .trim();
 }
 
+function chunkTextForSpeech(text, maxLen = 180) {
+  const sentences = String(text || '').split(/(?<=[.!?])\s+/).filter(Boolean);
+  const chunks = [];
+  let current = '';
+  for (const s of sentences) {
+    if ((current + ' ' + s).trim().length <= maxLen) {
+      current = (current + ' ' + s).trim();
+    } else {
+      if (current) { chunks.push(current); current = ''; }
+      if (s.length > maxLen) {
+        let piece = '';
+        for (const word of s.split(/\s+/)) {
+          if ((piece + ' ' + word).trim().length <= maxLen) {
+            piece = (piece + ' ' + word).trim();
+          } else {
+            if (piece) chunks.push(piece);
+            piece = word;
+          }
+        }
+        if (piece) current = piece;
+      } else {
+        current = s;
+      }
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
 function stopSpeaking() {
+  _speakSession++;
+  _speakChunks = []; _speakIndex = 0;
   if (window.speechSynthesis) { try { window.speechSynthesis.cancel(); } catch {} }
   if (_currentSpeakBtn) { _currentSpeakBtn.classList.remove('speaking'); _currentSpeakBtn = null; }
 }
@@ -426,32 +442,86 @@ function speakMessage(text, btn) {
   stopSpeaking();
   const clean = stripMarkdownForSpeech(text);
   if (!clean) { toast('Nothing to read', 'info'); return; }
-  const utter = new SpeechSynthesisUtterance(clean);
-  utter.lang = navigator.language || 'en-US';
-  utter.rate = 1.0;
-  utter.pitch = 1.0;
-  utter.onend = () => {
-    if (_currentSpeakBtn === btn) _currentSpeakBtn = null;
-    btn.classList.remove('speaking');
-  };
-  utter.onerror = () => {
-    if (_currentSpeakBtn === btn) _currentSpeakBtn = null;
-    btn.classList.remove('speaking');
-  };
+
+  _speakChunks = chunkTextForSpeech(clean);
+  _speakIndex = 0;
+  const mySession = _speakSession;
   _currentSpeakBtn = btn;
   btn.classList.add('speaking');
-  window.speechSynthesis.speak(utter);
+
+  const speakNext = () => {
+    if (mySession !== _speakSession) return;
+    if (_speakIndex >= _speakChunks.length) {
+      if (_currentSpeakBtn === btn) _currentSpeakBtn = null;
+      btn.classList.remove('speaking');
+      return;
+    }
+    const utter = new SpeechSynthesisUtterance(_speakChunks[_speakIndex]);
+    utter.lang = navigator.language || 'en-US';
+    utter.rate = 1.0;
+    utter.pitch = 1.0;
+    utter.onend = () => { if (mySession === _speakSession) { _speakIndex++; speakNext(); } };
+    utter.onerror = () => { if (mySession === _speakSession) { _speakIndex++; speakNext(); } };
+    try { window.speechSynthesis.speak(utter); } catch { /* stop */ }
+  };
+  speakNext();
 }
 
 window.addEventListener('beforeunload', () => stopSpeaking());
 
-// ============ SERVICE WORKER (PWA) ============
+// ============ IMAGE LIGHTBOX ============
+let _lightbox = null;
+
+function openLightbox(src) {
+  if (!src) return;
+  if (!_lightbox) {
+    _lightbox = document.createElement('div');
+    _lightbox.className = 'lightbox';
+    _lightbox.innerHTML = `
+      <button class="lightbox-close" aria-label="Close"><i data-lucide="x"></i></button>
+      <img alt="Preview" />
+    `;
+    _lightbox.addEventListener('click', (e) => {
+      if (e.target === _lightbox || e.target.closest('.lightbox-close')) {
+        _lightbox.classList.remove('open');
+      }
+    });
+    document.body.appendChild(_lightbox);
+  }
+  const img = _lightbox.querySelector('img');
+  img.src = src;
+  _lightbox.classList.add('open');
+  refreshIcons();
+}
+
+// ============ DOWNLOAD GENERATED IMAGE ============
+async function downloadGeneratedImage(url, filename) {
+  if (!url) return;
+  const safeName = (filename || 'deeprwa-image.jpg').replace(/[^\w.\-]+/g, '_');
+  try {
+    const res = await fetch(url, { mode: 'cors' });
+    if (!res.ok) throw new Error('fetch failed');
+    const blob = await res.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = safeName.endsWith('.jpg') || safeName.endsWith('.png') ? safeName : safeName + '.jpg';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 2500);
+    toast('Image downloaded', 'success', 2000);
+  } catch (e) {
+    window.open(url, '_blank', 'noopener,noreferrer');
+    toast('Opened in new tab', 'info', 2000);
+  }
+}
+
+// ============ SERVICE WORKER ============
 function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
   if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') return;
-  navigator.serviceWorker.register('/sw.js').catch((e) => {
-    console.warn('[sw] registration failed:', e.message);
-  });
+  navigator.serviceWorker.register('/sw.js').catch((e) => { console.warn('[sw]', e.message); });
 }
 
 // ============ INIT ============
@@ -1266,6 +1336,18 @@ function renderMessages() {
   scrollBottom(); refreshIcons();
 }
 
+function renderGeneratedImageBlock(file) {
+  const url = file.public_url || file.url || '';
+  if (!url) return '';
+  const filename = file.name || file.filename || 'deeprwa-image.jpg';
+  return `<div class="generated-image-wrap">
+    <img src="${url}" loading="lazy" alt="Generated image" class="generated-image" data-lightbox-src="${escapeHtml(url)}" />
+    <button type="button" class="gen-download-btn" data-download-url="${escapeHtml(url)}" data-download-name="${escapeHtml(filename)}" aria-label="Download image" title="Download">
+      <i data-lucide="download"></i>
+    </button>
+  </div>`;
+}
+
 function renderFilesInline(files) {
   if (!files || !files.length) return '';
   const normal = files.filter(f => !f.generated);
@@ -1283,14 +1365,7 @@ function renderFilesInline(files) {
     }).join('')}</div>`;
   }
   if (generated.length) {
-    html += generated.map(f => {
-      const caption = (f.name || '').replace(/\.jpg$/i, '').replace(/_/g, ' ');
-      return `<div class="generated-image-wrap" style="margin-top:0.75rem;max-width:min(100%,560px);">
-        <img src="${f.url}" loading="lazy" alt="${escapeHtml(caption || 'Generated image')}"
-          style="width:100%;height:auto;border-radius:12px;border:1px solid var(--border);background:var(--surface-2);display:block;" />
-        <div style="text-align:center;font-size:0.78rem;color:var(--text-dim);padding:8px 0;line-height:1.4;">${escapeHtml(caption)}</div>
-      </div>`;
-    }).join('');
+    html += generated.map(f => renderGeneratedImageBlock(f)).join('');
   }
   return html;
 }
@@ -1357,6 +1432,17 @@ function buildAssistantMessage(m, i) {
 
 // ============ MESSAGE ACTIONS ============
 chatEl.addEventListener('click', async (e) => {
+  const dlBtn = e.target.closest('[data-download-url]');
+  if (dlBtn) {
+    e.stopPropagation();
+    downloadGeneratedImage(dlBtn.dataset.downloadUrl, dlBtn.dataset.downloadName);
+    return;
+  }
+  const genImg = e.target.closest('[data-lightbox-src]');
+  if (genImg) {
+    openLightbox(genImg.dataset.lightboxSrc);
+    return;
+  }
   const fileBtn = e.target.closest('[data-msg-file]');
   if (fileBtn) {
     try { const d = JSON.parse(fileBtn.dataset.msgFile); showFileView(d.url, d.name, d.type); } catch {}
@@ -1560,19 +1646,15 @@ formEl.addEventListener('submit', async (e) => {
             scrollBottom();
           }
           if (j.image) {
+            const genFile = { url: j.image, public_url: j.image, type: 'image/jpeg', name: `generated-${Date.now()}.jpg`, generated: true };
             if (!assistantMsg.files) assistantMsg.files = [];
-            assistantMsg.files.push({ url: j.image, type: 'image/jpeg', name: (j.prompt || 'image') + '.jpg', generated: true });
+            assistantMsg.files.push(genFile);
             const body = chatEl.querySelector(`.msg-assistant[data-id="${assistantMsg.id}"] .assistant-body`);
             if (body && !body.querySelector('.generated-image-wrap')) {
-              const wrap = document.createElement('div');
-              wrap.className = 'generated-image-wrap';
-              wrap.style.cssText = 'margin-top:0.75rem;max-width:min(100%,560px);';
-              wrap.innerHTML = `<img src="${j.image}" loading="lazy" alt="${escapeHtml(j.prompt || 'Generated image')}" style="width:100%;height:auto;border-radius:12px;border:1px solid var(--border);background:var(--surface-2);min-height:220px;display:block;" /><div class="gen-cap" style="text-align:center;font-size:0.78rem;color:var(--text-dim);padding:8px 0;line-height:1.4;">Generating image…</div>`;
-              const img = wrap.querySelector('img');
-              const cap = wrap.querySelector('.gen-cap');
-              img.onload = () => { cap.textContent = j.prompt || ''; scrollBottom(); };
-              img.onerror = () => { cap.textContent = 'Image could not be generated. Please try again.'; };
-              body.appendChild(wrap);
+              const holder = document.createElement('div');
+              holder.innerHTML = renderGeneratedImageBlock(genFile);
+              body.appendChild(holder.firstElementChild);
+              refreshIcons();
               scrollBottom();
             }
           }
@@ -1675,19 +1757,15 @@ async function saveEditAndSend(newText) {
             scrollBottom();
           }
           if (j.image) {
+            const genFile = { url: j.image, public_url: j.image, type: 'image/jpeg', name: `generated-${Date.now()}.jpg`, generated: true };
             if (!assistantMsg.files) assistantMsg.files = [];
-            assistantMsg.files.push({ url: j.image, type: 'image/jpeg', name: (j.prompt || 'image') + '.jpg', generated: true });
+            assistantMsg.files.push(genFile);
             const body = chatEl.querySelector(`.msg-assistant[data-id="${assistantMsg.id}"] .assistant-body`);
             if (body && !body.querySelector('.generated-image-wrap')) {
-              const wrap = document.createElement('div');
-              wrap.className = 'generated-image-wrap';
-              wrap.style.cssText = 'margin-top:0.75rem;max-width:min(100%,560px);';
-              wrap.innerHTML = `<img src="${j.image}" loading="lazy" alt="${escapeHtml(j.prompt || 'Generated image')}" style="width:100%;height:auto;border-radius:12px;border:1px solid var(--border);background:var(--surface-2);min-height:220px;display:block;" /><div class="gen-cap" style="text-align:center;font-size:0.78rem;color:var(--text-dim);padding:8px 0;line-height:1.4;">Generating image…</div>`;
-              const img = wrap.querySelector('img');
-              const cap = wrap.querySelector('.gen-cap');
-              img.onload = () => { cap.textContent = j.prompt || ''; scrollBottom(); };
-              img.onerror = () => { cap.textContent = 'Image could not be generated. Please try again.'; };
-              body.appendChild(wrap);
+              const holder = document.createElement('div');
+              holder.innerHTML = renderGeneratedImageBlock(genFile);
+              body.appendChild(holder.firstElementChild);
+              refreshIcons();
               scrollBottom();
             }
           }
@@ -1774,17 +1852,8 @@ function openAuthModal(mode) {
   if (mode === 'login') renderLoginForm();
   else if (mode === 'signup') renderSignupForm();
 }
-
-authModalClose.addEventListener('click', () => {
-  authModal.classList.add('hidden');
-  clearAuthModalState();
-});
-authModal.addEventListener('click', (e) => {
-  if (e.target === authModal) {
-    authModal.classList.add('hidden');
-    clearAuthModalState();
-  }
-});
+authModalClose.addEventListener('click', () => { authModal.classList.add('hidden'); clearAuthModalState(); });
+authModal.addEventListener('click', (e) => { if (e.target === authModal) { authModal.classList.add('hidden'); clearAuthModalState(); } });
 
 function renderLoginForm() {
   saveAuthModalState({ form: 'login' });
@@ -1920,7 +1989,6 @@ function render2FALoginForm(twofaToken) {
   };
 }
 
-// ============ FORGOT PASSWORD ============
 function renderForgotStep1() {
   saveAuthModalState({ form: 'forgot-step1' });
   authModalBody.innerHTML = `
@@ -2005,7 +2073,6 @@ function renderForgotStep3() {
   };
 }
 
-// ============ RESTORE AUTH MODAL STATE ============
 function restoreAuthModalState() {
   const saved = loadAuthModalState();
   if (!saved || !saved.form) return;
@@ -2076,7 +2143,6 @@ function renderSettingsTab(tab) {
   refreshIcons();
 }
 
-// ============ ACCOUNT TAB ============
 function renderAccountTab() {
   settingsContent.innerHTML = `
     <h3>Account</h3>
@@ -2236,7 +2302,6 @@ function renderActionVerify(action, targetEmail) {
   };
 }
 
-// ============ SECURITY TAB ============
 function renderSecurityTab() {
   const enabled = state.user.totp_enabled;
   settingsContent.innerHTML = `
@@ -2319,7 +2384,6 @@ async function disable2FA() {
   };
 }
 
-// ============ SESSIONS TAB ============
 async function renderSessionsTab() {
   settingsContent.innerHTML = `<h3>Sessions</h3><p class="modal-sub">Loading…</p>`;
   try {
@@ -2377,13 +2441,9 @@ async function renderSessionsTab() {
   } catch { settingsContent.innerHTML = `<h3>Sessions</h3><p class="modal-sub">Could not load sessions.</p>`; }
 }
 
-// ============ LOGOUT ============
 function confirmLogout() {
   confirmAction({
-    title: 'Log out?',
-    text: 'You will need to log in again to access your chats.',
-    confirmLabel: 'Log out',
-    danger: true,
+    title: 'Log out?', text: 'You will need to log in again to access your chats.', confirmLabel: 'Log out', danger: true,
     onConfirm: async () => {
       try { await fetch('/api/auth/sessions-current', { method: 'DELETE', headers: authHeaders() }); } catch {}
       state.token = null; state.user = null; state.chats = []; state.activeChatId = null; state.messages = [];
@@ -2397,7 +2457,6 @@ function confirmLogout() {
   });
 }
 
-// ============ SHARE ============
 async function shareChat(chatId) {
   const chat = state.chats.find(c => c.id === chatId); if (!chat) return;
   let msgs = chat.messages || [];
