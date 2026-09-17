@@ -1,4 +1,4 @@
-/* DeepRWA — Universal responsive stylesheet (rev.3.4.0)
+/* DeepRWA — Universal responsive stylesheet (rev.3.5.0)
    Touch-safe on phones, tablets, foldables, touch laptops, pens, mice. */
 
 /* ============ 1. TOKENS ============ */
@@ -257,14 +257,6 @@ textarea:focus-visible,
   word-break: break-word;
 }
 
-/* ============================================================
-   APP CONTAINER — keyboard-aware height
-   On mobile, when the soft keyboard appears, `100dvh` stays tall
-   because the layout viewport doesn't shrink — only the visual
-   viewport does. JS writes the visual viewport height into --vvh,
-   so the app shrinks with the keyboard: the composer stays above
-   the keyboard and the chat area remains scrollable.
-   ============================================================ */
 .app {
   display: flex;
   height: 100vh;
@@ -370,15 +362,13 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   cursor: pointer;
   text-align: left;
   transition: background 0.15s, color 0.15s;
-  min-height: 40px;
+  min-height: 44px;
 }
 .nav-item:hover { background: var(--surface-2); color: var(--text); }
 .nav-item.active { background: var(--surface-2); color: var(--text); }
 .nav-item svg { width: 16px; height: 16px; }
 
-/* ============================================================
-   5. MULTI-SELECT BAR (shared by chats and files)
-   ============================================================ */
+/* ============ 5. MULTI-SELECT BAR ============ */
 .files-multiselect-bar,
 .chats-multiselect-bar {
   display: flex;
@@ -419,8 +409,8 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   line-height: 1;
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s;
-  min-height: 34px;
-  height: 34px;
+  min-height: 36px;
+  height: 36px;
   white-space: nowrap;
   flex-shrink: 0;
 }
@@ -472,7 +462,7 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   cursor: pointer;
   transition: background 0.15s;
   position: relative;
-  min-height: 40px;
+  min-height: 44px;
 }
 .chat-item:hover { background: var(--surface-2); }
 .chat-item.active { background: var(--surface-3); }
@@ -493,10 +483,10 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   background: transparent;
   border: none;
   color: var(--text-muted);
-  width: 32px;
-  height: 32px;
-  min-width: 32px;
-  min-height: 32px;
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  min-height: 36px;
   border-radius: 6px;
   display: grid;
   place-items: center;
@@ -652,7 +642,7 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   align-items: center;
   gap: 0.55rem;
   width: 100%;
-  padding: 8px 12px;
+  padding: 10px 12px;
   background: transparent;
   border: none;
   color: var(--text);
@@ -661,7 +651,7 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   border-radius: 6px;
   text-align: left;
   transition: background 0.1s;
-  min-height: 40px;
+  min-height: 44px;
 }
 .chat-menu button:hover, .file-menu button:hover, .dropdown button:hover { background: var(--surface-3); }
 .chat-menu button.danger, .file-menu button.danger, .dropdown button.danger { color: var(--danger); }
@@ -680,7 +670,7 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   display: flex;
   align-items: center;
   gap: var(--space-sm);
-  padding: 8px 12px;
+  padding: 10px 12px;
   background: transparent;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -811,12 +801,12 @@ body.sidebar-collapsed .sidebar { width: 0; border-right: none; }
   background: var(--surface);
   border: 1px solid var(--border);
   color: var(--text-muted);
-  padding: 8px 14px;
+  padding: 10px 16px;
   border-radius: 999px;
   font-size: var(--fs-sm);
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s, color 0.15s;
-  min-height: 40px;
+  min-height: 44px;
 }
 .chip:hover { background: var(--surface-2); color: var(--text); border-color: var(--border-strong); }
 
@@ -942,6 +932,13 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   margin: 0 0 0.75rem;
 }
 
+/* ============================================================
+   MESSAGE ACTIONS
+   Buttons are 44×44 (Apple HIG minimum). The .active / .copied
+   variants are declared with the SAME or HIGHER specificity than
+   :hover so they cannot be clobbered by the touch-device hover
+   reset (this was the like-button bug).
+   ============================================================ */
 .msg-actions {
   display: flex;
   gap: 2px;
@@ -954,8 +951,8 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   background: transparent;
   border: none;
   color: var(--text-dim);
-  width: 40px; height: 40px;
-  min-width: 40px; min-height: 40px;
+  width: 44px; height: 44px;
+  min-width: 44px; min-height: 44px;
   border-radius: 6px;
   display: grid;
   place-items: center;
@@ -963,10 +960,13 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   transition: background 0.15s, color 0.15s;
 }
 .msg-action:hover { background: var(--surface-2); color: var(--text); }
-.msg-action.active { color: var(--accent); }
-.msg-action.active[data-action="dislike"] { color: var(--danger); }
-.msg-action.copied { color: var(--rwa-green); }
-.msg-action svg { width: 15px; height: 15px; }
+.msg-action.active,
+.msg-action.active:hover { color: var(--accent); }
+.msg-action.active[data-action="dislike"],
+.msg-action.active[data-action="dislike"]:hover { color: var(--danger); }
+.msg-action.copied,
+.msg-action.copied:hover { color: var(--rwa-green); }
+.msg-action svg { width: 16px; height: 16px; }
 
 .version-switcher {
   display: inline-flex;
@@ -1414,7 +1414,7 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   display: flex;
   align-items: center;
   gap: 0.55rem;
-  padding: 8px 12px;
+  padding: 10px 12px;
   background: transparent;
   border: none;
   border-radius: 6px;
@@ -1423,7 +1423,7 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   cursor: pointer;
   text-align: left;
   transition: background 0.15s, color 0.15s;
-  min-height: 40px;
+  min-height: 44px;
 }
 .settings-tab:hover { background: var(--surface-2); color: var(--text); }
 .settings-tab.active { background: var(--surface-3); color: var(--text); }
@@ -1639,20 +1639,20 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
 
 /* ============================================================
    14. HOVER-NONE OVERRIDES (touch / pen)
+   Neutralises hover so the FIRST tap fires the action.
+   Every stateful class (.active, .copied, .selected) has its own
+   matching :hover rule with EQUAL OR HIGHER specificity, so the
+   generic hover reset can never override the state colour.
    ============================================================ */
 @media (hover: none) {
+  /* --- Generic resets: cancel the visual change on non-state elements --- */
   .icon-btn:hover { background: transparent; color: var(--text-muted); }
   .chat-item:hover { background: transparent; }
-  .chat-item.active:hover { background: var(--surface-3); }
-  .chat-item.selected:hover { background: rgba(59,110,245,0.10); }
   .file-item-wrap:hover { background: transparent; }
   .chip:hover { background: var(--surface); border-color: var(--border); color: var(--text-muted); }
   .nav-item:hover { background: transparent; color: var(--text-muted); }
-  .nav-item.active:hover { background: var(--surface-2); color: var(--text); }
   .settings-tab:hover { background: transparent; color: var(--text-muted); }
-  .settings-tab.active:hover { background: var(--surface-3); color: var(--text); }
   .msg-action:hover { background: transparent; color: var(--text-dim); }
-  .msg-action.copied:hover { color: var(--rwa-green); }
   .files-ms-btn:hover { background: transparent; border-color: var(--border); }
   .files-ms-btn.danger:hover { background: transparent; }
   .new-chat-btn:hover { background: var(--surface-2); border-color: var(--border); }
@@ -1674,6 +1674,21 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   .msg-file-thumb:hover,
   .msg-file-doc:hover { transform: none; border-color: var(--border); }
   .vs-btn:hover:not(:disabled) { background: transparent; color: var(--text-muted); }
+
+  /* --- State-preserving rules: MUST come after the resets above. ---
+     These keep the state colour even while the browser holds a
+     sticky :hover on a tapped element. This is what fixes the
+     like button on touch devices. */
+  .msg-action.active,
+  .msg-action.active:hover { color: var(--accent); }
+  .msg-action.active[data-action="dislike"],
+  .msg-action.active[data-action="dislike"]:hover { color: var(--danger); }
+  .msg-action.copied,
+  .msg-action.copied:hover { color: var(--rwa-green); }
+  .chat-item.active:hover { background: var(--surface-3); }
+  .chat-item.selected:hover { background: rgba(59,110,245,0.10); }
+  .nav-item.active:hover { background: var(--surface-2); color: var(--text); }
+  .settings-tab.active:hover { background: var(--surface-3); color: var(--text); }
 }
 
 /* ============================================================
@@ -1723,7 +1738,7 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   .settings-sidebar::-webkit-scrollbar { display: none; }
   .settings-tab {
     white-space: nowrap;
-    padding: 8px 12px;
+    padding: 10px 12px;
     flex-shrink: 0;
   }
   .settings-content { max-height: none; flex: 1; }
@@ -1760,12 +1775,12 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   .brand-name { font-size: var(--fs-sm); }
   .brand-tag { display: none; }
   .chips { gap: 4px; }
-  .chip { padding: 6px 10px; font-size: var(--fs-xs); }
-  .send-btn, .attach-btn { width: 40px; height: 40px; min-width: 40px; min-height: 40px; }
+  .chip { padding: 8px 12px; font-size: var(--fs-xs); }
+  .send-btn, .attach-btn { width: 42px; height: 42px; min-width: 42px; min-height: 42px; }
   .send-btn svg, .attach-btn svg { width: 17px; height: 17px; }
-  .icon-btn { width: 40px; height: 40px; min-width: 40px; min-height: 40px; }
-  .msg-action { width: 36px; height: 36px; min-width: 36px; min-height: 36px; }
-  .msg-action svg { width: 14px; height: 14px; }
+  .icon-btn { width: 42px; height: 42px; min-width: 42px; min-height: 42px; }
+  .msg-action { width: 40px; height: 40px; min-width: 40px; min-height: 40px; }
+  .msg-action svg { width: 15px; height: 15px; }
   .composer-inner { padding: 5px; }
   #input { padding: 4px 2px; }
   .files-ms-btn span { display: none; }
