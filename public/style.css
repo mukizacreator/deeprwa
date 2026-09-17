@@ -1820,3 +1820,49 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
 @media (prefers-color-scheme: light) {
   /* DeepRWA is designed dark — respect OS preference minimally. */
 }
+
+/* ============================================================
+   VOICE INPUT (mic button)
+   ============================================================ */
+.mic-btn {
+  flex-shrink: 0;
+  width: 44px; height: 44px;
+  min-width: 44px; min-height: 44px;
+  border-radius: 50%;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+.mic-btn:hover { background: var(--surface-2); color: var(--text); }
+.mic-btn svg { width: 18px; height: 18px; pointer-events: none; }
+.mic-btn:active { opacity: 0.72; }
+.mic-btn.listening {
+  background: var(--danger-soft);
+  color: var(--danger);
+  animation: mic-pulse 1.4s ease-in-out infinite;
+}
+.mic-btn.listening svg { color: var(--danger); }
+@keyframes mic-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239,83,80,0.35); }
+  50% { box-shadow: 0 0 0 8px rgba(239,83,80,0); }
+}
+
+@media (max-width: 380px) {
+  .mic-btn { width: 40px; height: 40px; min-width: 40px; min-height: 40px; }
+  .mic-btn svg { width: 17px; height: 17px; }
+}
+
+/* Voice output (speak button on messages) */
+.msg-action.speaking,
+.msg-action.speaking:hover { color: var(--accent); }
+
+@media (hover: none) {
+  .mic-btn:hover { background: transparent; color: var(--text-muted); }
+  .mic-btn.listening:hover { background: var(--danger-soft); color: var(--danger); }
+}
