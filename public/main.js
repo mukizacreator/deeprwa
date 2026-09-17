@@ -1,4 +1,4 @@
-// DeepRWA — Complete frontend logic (rev.3.3.5)
+// DeepRWA — Complete frontend logic (rev.3.3.6)
 
 // ============ CLIENT ID ============
 function getOrCreateClientId() {
@@ -16,22 +16,13 @@ const CLIENT_ID = getOrCreateClientId();
 
 // ============ AUTH MODAL STATE PERSISTENCE ============
 const AUTH_MODAL_KEY = 'deeprwa_auth_modal_v1';
-
 function saveAuthModalState(payload) {
-  try {
-    if (!payload) sessionStorage.removeItem(AUTH_MODAL_KEY);
-    else sessionStorage.setItem(AUTH_MODAL_KEY, JSON.stringify(payload));
-  } catch {}
+  try { if (!payload) sessionStorage.removeItem(AUTH_MODAL_KEY); else sessionStorage.setItem(AUTH_MODAL_KEY, JSON.stringify(payload)); } catch {}
 }
 function loadAuthModalState() {
-  try {
-    const raw = sessionStorage.getItem(AUTH_MODAL_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch { return null; }
+  try { const raw = sessionStorage.getItem(AUTH_MODAL_KEY); return raw ? JSON.parse(raw) : null; } catch { return null; }
 }
-function clearAuthModalState() {
-  try { sessionStorage.removeItem(AUTH_MODAL_KEY); } catch {}
-}
+function clearAuthModalState() { try { sessionStorage.removeItem(AUTH_MODAL_KEY); } catch {} }
 
 // ============ VISUAL VIEWPORT ============
 function setupVisualViewport() {
@@ -78,6 +69,7 @@ const chatEl = $('chat');
 const formEl = $('composer');
 const inputEl = $('input');
 const sendBtn = $('sendBtn');
+const micBtn = $('micBtn');
 const newChatBtn = $('newChatBtn');
 const sidebar = $('sidebar');
 const sidebarBackdrop = $('sidebarBackdrop');
@@ -284,9 +276,131 @@ async function compressImage(file, maxDimension = 1600, quality = 0.85) {
   });
 }
 
+// ============ VOICE INPUT ============
+let _voiceRecognition = null;
+let _voiceListening = false;
+let _voiceBaseText = '';
+
+function setupVoiceInput() {
+  if (!micBtn) return;
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) {
+    micBtn.style.display = 'none';
+    return;
+  }
+  _voiceRecognition = new SR();
+  _voiceRecognition.continuous = false;
+  _voiceRecognition.interimResults = true;
+  _voiceRecognition.lang = navigator.language || 'en-US';
+
+  _voiceRecognition.onstart = () => {
+    _voiceListening = true;
+    _voiceBaseText = inputEl.value || '';
+    micBtn.classList.add('listening');
+  };
+  _voiceRecognition.onresult = (e) => {
+    let interim = '', final = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const t = e.results[i][0].transcript;
+      if (e.results[i].isFinal) final += t; else interim += t;
+    }
+    const piece = final || interim;
+    if (!piece) return;
+    const sep = _voiceBaseText && !/\s$/.test(_voiceBaseText) ? ' ' : '';
+    inputEl.value = _voiceBaseText + sep + piece;
+    autoGrow(); updateSendButton();
+  };
+  _voiceRecognition.onerror = (e) => {
+    _voiceListening = false;
+    micBtn.classList.remove('listening');
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') toast('Microphone access denied', 'error');
+    else if (e.error === 'no-speech') toast('No speech detected — tap mic to try again', 'info', 2500);
+    else if (e.error !== 'aborted') toast('Voice input error: ' + e.error, 'error');
+  };
+  _voiceRecognition.onend = () => {
+    _voiceListening = false;
+    micBtn.classList.remove('listening');
+  };
+
+  micBtn.addEventListener('click', () => {
+    if (_voiceListening) { try { _voiceRecognition.stop(); } catch {} return; }
+    try { _voiceRecognition.start(); } catch (e) { console.warn('voice start failed', e); }
+  });
+}
+
+function stopVoiceInput() {
+  if (_voiceListening && _voiceRecognition) { try { _voiceRecognition.stop(); } catch {} }
+}
+
+// ============ VOICE OUTPUT ============
+let _currentSpeakBtn = null;
+
+function stripMarkdownForSpeech(text) {
+  return String(text || '')
+    .replace(/```[\s\S]*?```/g, ' code block ')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/!\[[^\]]*\]\([^)]+\)/g, '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/_([^_]+)_/g, '$1')
+    .replace(/^\s*[-*+]\s+/gm, '')
+    .replace(/^\s*\d+\.\s+/gm, '')
+    .replace(/^>\s+/gm, '')
+    .replace(/\n{2,}/g, '. ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function stopSpeaking() {
+  if (window.speechSynthesis) { try { window.speechSynthesis.cancel(); } catch {} }
+  if (_currentSpeakBtn) { _currentSpeakBtn.classList.remove('speaking'); _currentSpeakBtn = null; }
+}
+
+function speakMessage(text, btn) {
+  if (!window.speechSynthesis || !window.SpeechSynthesisUtterance) {
+    toast('Voice output is not supported on this browser', 'error');
+    return;
+  }
+  if (_currentSpeakBtn === btn && window.speechSynthesis.speaking) { stopSpeaking(); return; }
+  stopSpeaking();
+  const clean = stripMarkdownForSpeech(text);
+  if (!clean) { toast('Nothing to read', 'info'); return; }
+  const utter = new SpeechSynthesisUtterance(clean);
+  utter.lang = navigator.language || 'en-US';
+  utter.rate = 1.0;
+  utter.pitch = 1.0;
+  utter.onend = () => {
+    if (_currentSpeakBtn === btn) _currentSpeakBtn = null;
+    btn.classList.remove('speaking');
+  };
+  utter.onerror = () => {
+    if (_currentSpeakBtn === btn) _currentSpeakBtn = null;
+    btn.classList.remove('speaking');
+  };
+  _currentSpeakBtn = btn;
+  btn.classList.add('speaking');
+  window.speechSynthesis.speak(utter);
+}
+
+window.addEventListener('beforeunload', () => stopSpeaking());
+
+// ============ SERVICE WORKER (PWA) ============
+function registerServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+  if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') return;
+  navigator.serviceWorker.register('/sw.js').catch((e) => {
+    console.warn('[sw] registration failed:', e.message);
+  });
+}
+
 // ============ INIT ============
 async function init() {
   setupVisualViewport();
+  setupVoiceInput();
+  registerServiceWorker();
   renderUser(); renderChatList(); renderWelcome(); updateSendButton();
   inputEl.focus();
   if (state.token) {
@@ -431,18 +545,14 @@ function updateChatsMultiBar() {
   chatsDeleteCountLabel.textContent = n > 0 ? `Delete (${n})` : 'Delete';
   chatsDeleteSelectedBtn.disabled = n === 0;
   chatsPinSelectedBtn.disabled = n === 0;
-
   const selectedIds = Array.from(state._selectedChats);
   const allSelectedArePinned = selectedIds.length > 0 && selectedIds.every(id => {
     const c = state.chats.find(x => x.id === id);
     return c && c.pinned;
   });
-  chatsPinSelectedBtn.innerHTML = allSelectedArePinned
-    ? '<i data-lucide="pin-off"></i>'
-    : '<i data-lucide="pin"></i>';
+  chatsPinSelectedBtn.innerHTML = allSelectedArePinned ? '<i data-lucide="pin-off"></i>' : '<i data-lucide="pin"></i>';
   chatsPinSelectedBtn.title = allSelectedArePinned ? 'Unpin selected' : 'Pin selected';
   chatsPinSelectedBtn.setAttribute('aria-label', allSelectedArePinned ? 'Unpin selected' : 'Pin selected');
-
   const allSelected = state.chats.length > 0 && state.chats.every(c => state._selectedChats.has(c.id));
   chatsSelectAllBtn.innerHTML = allSelected
     ? '<i data-lucide="check-square"></i><span>Deselect all</span>'
@@ -515,12 +625,8 @@ chatsCancelSelectBtn.addEventListener('click', () => {
 chatsPinSelectedBtn.addEventListener('click', async () => {
   const ids = Array.from(state._selectedChats);
   if (!ids.length) return;
-  const allPinned = ids.every(id => {
-    const c = state.chats.find(x => x.id === id);
-    return c && c.pinned;
-  });
+  const allPinned = ids.every(id => { const c = state.chats.find(x => x.id === id); return c && c.pinned; });
   const targetPinned = !allPinned;
-
   for (const id of ids) {
     const c = state.chats.find(x => x.id === id);
     if (!c) continue;
@@ -659,20 +765,17 @@ sidebarContent.addEventListener('click', (e) => {
     openFileMenu(parseInt(fileMenuBtn.dataset.fileMenu), fileMenuBtn.getBoundingClientRect());
     return;
   }
-
   const fileBtn = e.target.closest('[data-file-view]');
   if (fileBtn && !e.target.closest('.file-checkbox')) {
     try { const d = JSON.parse(fileBtn.dataset.fileView); showFileView(d.url, d.name, d.type); } catch {}
     return;
   }
-
   const chatMenuBtn = e.target.closest('.chat-item-menu');
   if (chatMenuBtn) {
     e.stopPropagation();
     openChatMenu(chatMenuBtn.dataset.menu, chatMenuBtn.getBoundingClientRect());
     return;
   }
-
   const chatItem = e.target.closest('.chat-item');
   if (chatItem) {
     if (state._chatMultiSelectMode) {
@@ -1188,6 +1291,7 @@ function buildAssistantMessage(m, i) {
         <button class="msg-action" data-action="like" title="Like" aria-label="Like"><i data-lucide="thumbs-up"></i></button>
         <button class="msg-action" data-action="dislike" title="Dislike" aria-label="Dislike"><i data-lucide="thumbs-down"></i></button>
         <button class="msg-action" data-action="share" title="Share" aria-label="Share"><i data-lucide="share-2"></i></button>
+        <button class="msg-action" data-action="speak" title="Read aloud" aria-label="Read aloud"><i data-lucide="volume-2"></i></button>
       </div>
     </div>`;
   return wrap;
@@ -1226,6 +1330,9 @@ chatEl.addEventListener('click', async (e) => {
     setTimeout(() => { const ta = document.getElementById('editTextarea'); if (ta) { ta.focus(); ta.style.height = ta.scrollHeight + 'px'; } }, 0);
   } else if (act === 'share') {
     await shareSingleMessage(idx);
+  } else if (act === 'speak') {
+    const m = state.messages[idx];
+    if (m && m.content) speakMessage(m.content, action);
   }
 });
 chatEl.addEventListener('input', (e) => {
@@ -1307,6 +1414,7 @@ formEl.addEventListener('submit', async (e) => {
   const text = inputEl.value.trim();
   if (!text && !state.attachments.length) return;
 
+  stopVoiceInput();
   state.isGenerating = true;
   inputEl.disabled = true;
   updateSendButton();
@@ -1577,6 +1685,7 @@ async function loadConversations() {
 async function selectChat(id) {
   if (state.isGenerating) return;
   const chat = state.chats.find(c => c.id === id); if (!chat) return;
+  stopSpeaking();
   state.activeChatId = id; state.editingMessageId = null; state.editingValue = '';
   state.attachments = []; renderFilePreviews();
   if (state.user && !isLocalId(id)) {
@@ -1778,11 +1887,7 @@ function renderForgotStep1() {
 }
 
 function renderForgotStep2() {
-  saveAuthModalState({
-    form: 'forgot-step2',
-    email: state.authModal.forgot.email,
-    pendingToken: state.authModal.forgot.pendingToken
-  });
+  saveAuthModalState({ form: 'forgot-step2', email: state.authModal.forgot.email, pendingToken: state.authModal.forgot.pendingToken });
   authModalBody.innerHTML = `
     <h3>Enter verification code</h3>
     <p class="modal-sub">We sent a 6-digit code to ${escapeHtml(state.authModal.forgot.email)}</p>
@@ -1798,11 +1903,7 @@ function renderForgotStep2() {
       const data = await res.json();
       if (!res.ok) { toast(data.error || 'Failed', 'error'); return; }
       state.authModal.forgot.pendingToken = data.pendingToken;
-      saveAuthModalState({
-        form: 'forgot-step2',
-        email: state.authModal.forgot.email,
-        pendingToken: state.authModal.forgot.pendingToken
-      });
+      saveAuthModalState({ form: 'forgot-step2', email: state.authModal.forgot.email, pendingToken: state.authModal.forgot.pendingToken });
       attachCountdown(resendBtn, 60); toast('Code resent', 'success');
     } catch { toast('Network error', 'error'); }
   };
@@ -1821,10 +1922,7 @@ function renderForgotStep2() {
 }
 
 function renderForgotStep3() {
-  saveAuthModalState({
-    form: 'forgot-step3',
-    grantedToken: state.authModal.forgot.grantedToken
-  });
+  saveAuthModalState({ form: 'forgot-step3', grantedToken: state.authModal.forgot.grantedToken });
   authModalBody.innerHTML = `
     <h3>Set new password</h3>
     <p class="modal-sub">Choose a new password different from your current one.</p>
@@ -1853,47 +1951,21 @@ function restoreAuthModalState() {
   const saved = loadAuthModalState();
   if (!saved || !saved.form) return;
   try {
-    if (saved.form === 'login') {
-      authModal.classList.remove('hidden');
-      authModal.dataset.mode = 'login';
-      renderLoginForm();
-    } else if (saved.form === 'signup') {
-      authModal.classList.remove('hidden');
-      authModal.dataset.mode = 'signup';
-      renderSignupForm();
-    } else if (saved.form === 'verify') {
-      state.authModal.pendingToken = saved.pendingToken;
-      authModal.classList.remove('hidden');
-      authModal.dataset.mode = saved.type;
-      renderVerifyCodeForm(saved.type);
-    } else if (saved.form === '2fa') {
-      authModal.classList.remove('hidden');
-      render2FALoginForm(saved.twofaToken);
-    } else if (saved.form === 'forgot-step1') {
-      authModal.classList.remove('hidden');
-      renderForgotStep1();
-    } else if (saved.form === 'forgot-step2') {
-      state.authModal.forgot.email = saved.email;
-      state.authModal.forgot.pendingToken = saved.pendingToken;
-      authModal.classList.remove('hidden');
-      renderForgotStep2();
-    } else if (saved.form === 'forgot-step3') {
-      state.authModal.forgot.grantedToken = saved.grantedToken;
-      authModal.classList.remove('hidden');
-      renderForgotStep3();
-    } else if (saved.form === 'action-verify') {
+    if (saved.form === 'login') { authModal.classList.remove('hidden'); authModal.dataset.mode = 'login'; renderLoginForm(); }
+    else if (saved.form === 'signup') { authModal.classList.remove('hidden'); authModal.dataset.mode = 'signup'; renderSignupForm(); }
+    else if (saved.form === 'verify') { state.authModal.pendingToken = saved.pendingToken; authModal.classList.remove('hidden'); authModal.dataset.mode = saved.type; renderVerifyCodeForm(saved.type); }
+    else if (saved.form === '2fa') { authModal.classList.remove('hidden'); render2FALoginForm(saved.twofaToken); }
+    else if (saved.form === 'forgot-step1') { authModal.classList.remove('hidden'); renderForgotStep1(); }
+    else if (saved.form === 'forgot-step2') { state.authModal.forgot.email = saved.email; state.authModal.forgot.pendingToken = saved.pendingToken; authModal.classList.remove('hidden'); renderForgotStep2(); }
+    else if (saved.form === 'forgot-step3') { state.authModal.forgot.grantedToken = saved.grantedToken; authModal.classList.remove('hidden'); renderForgotStep3(); }
+    else if (saved.form === 'action-verify') {
       if (!state.user) { clearAuthModalState(); return; }
       state._pendingAction = saved.pendingAction;
       settingsModal.classList.remove('hidden');
       settingsSidebar.querySelectorAll('.settings-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === 'account'));
       renderActionVerify(saved.action, saved.targetEmail);
-    } else {
-      clearAuthModalState();
-    }
-  } catch (e) {
-    console.warn('restoreAuthModalState failed:', e);
-    clearAuthModalState();
-  }
+    } else clearAuthModalState();
+  } catch (e) { console.warn('restoreAuthModalState failed:', e); clearAuthModalState(); }
 }
 
 // ============ PROFILE MODAL ============
@@ -1929,16 +2001,8 @@ function openSettingsModal(tab = 'account') {
   settingsSidebar.querySelectorAll('.settings-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
   renderSettingsTab(tab);
 }
-settingsModalClose.addEventListener('click', () => {
-  settingsModal.classList.add('hidden');
-  clearAuthModalState();
-});
-settingsModal.addEventListener('click', (e) => {
-  if (e.target === settingsModal) {
-    settingsModal.classList.add('hidden');
-    clearAuthModalState();
-  }
-});
+settingsModalClose.addEventListener('click', () => { settingsModal.classList.add('hidden'); clearAuthModalState(); });
+settingsModal.addEventListener('click', (e) => { if (e.target === settingsModal) { settingsModal.classList.add('hidden'); clearAuthModalState(); } });
 settingsSidebar.addEventListener('click', (e) => {
   const tab = e.target.closest('.settings-tab'); if (!tab) return;
   settingsSidebar.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
@@ -1993,18 +2057,11 @@ function renderAccountTab() {
     const newEmail = $('newEmailInput')?.value.trim();
     const btn = $('sendEmailCodeBtn');
     if (!newEmail) { toast('Enter new email', 'error'); return; }
-
     setBtnLoading(btn, 'Verifying email…');
     await new Promise(r => setTimeout(r, 250));
-
     const EMAIL_RE = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/;
-    if (!EMAIL_RE.test(newEmail)) {
-      resetBtn(btn); toast('Invalid email format', 'error'); return;
-    }
-    if (newEmail.toLowerCase() === (state.user.email || '').toLowerCase()) {
-      resetBtn(btn); toast('New email must be different from your current one', 'error'); return;
-    }
-
+    if (!EMAIL_RE.test(newEmail)) { resetBtn(btn); toast('Invalid email format', 'error'); return; }
+    if (newEmail.toLowerCase() === (state.user.email || '').toLowerCase()) { resetBtn(btn); toast('New email must be different from your current one', 'error'); return; }
     setBtnLoading(btn, 'Sending code…');
     sendActionCode('change-email', { newEmail });
   };
@@ -2014,24 +2071,17 @@ function renderAccountTab() {
   $('sendPwCodeBtn').onclick = async () => {
     const current = $('currentPw').value, newPw = $('newPw').value, confirm = $('confirmPw').value;
     const btn = $('sendPwCodeBtn');
-
     setBtnLoading(btn, 'Checking fields…');
     await new Promise(r => setTimeout(r, 200));
-
     if (!current || !newPw || !confirm) { resetBtn(btn); toast('Fill all password fields', 'error'); return; }
     if (newPw.length < 8) { resetBtn(btn); toast('Password must be at least 8 characters', 'error'); return; }
     if (newPw !== confirm) { resetBtn(btn); toast('Passwords do not match', 'error'); return; }
     if (current === newPw) { resetBtn(btn); toast('New password must be different', 'error'); return; }
-
     setBtnLoading(btn, 'Verifying current password…');
     try {
-      const res = await fetch('/api/auth/verify-current-password', {
-        method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: current })
-      });
+      const res = await fetch('/api/auth/verify-current-password', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ password: current }) });
       if (!res.ok) { resetBtn(btn); toast('Current password is incorrect', 'error'); return; }
       state._pendingPw = { current, newPw };
-
       setBtnLoading(btn, 'Sending code…');
       sendActionCode('change-password');
     } catch { resetBtn(btn); toast('Network error', 'error'); }
@@ -2060,12 +2110,7 @@ async function sendActionCode(action, extra = {}) {
 }
 
 function renderActionVerify(action, targetEmail) {
-  saveAuthModalState({
-    form: 'action-verify',
-    action,
-    targetEmail,
-    pendingAction: state._pendingAction
-  });
+  saveAuthModalState({ form: 'action-verify', action, targetEmail, pendingAction: state._pendingAction });
   const headline = action === 'change-email' ? 'Verify new email' : action === 'change-password' ? 'Verify password change' : 'Verify account deletion';
   const verifyLabel = action === 'change-email' ? 'Verify & change email' : action === 'change-password' ? 'Verify & change password' : 'Verify & delete';
   const workingLabel = action === 'change-email' ? 'Changing email…' : action === 'change-password' ? 'Changing password…' : 'Deleting account…';
@@ -2087,12 +2132,7 @@ function renderActionVerify(action, targetEmail) {
       const data = await res.json();
       if (!res.ok) { toast(data.error || 'Failed', 'error'); return; }
       state._pendingAction.token = data.pendingToken;
-      saveAuthModalState({
-        form: 'action-verify',
-        action,
-        targetEmail,
-        pendingAction: state._pendingAction
-      });
+      saveAuthModalState({ form: 'action-verify', action, targetEmail, pendingAction: state._pendingAction });
       attachCountdown(resendBtn, 60); toast('Code resent', 'success');
     } catch { toast('Network error', 'error'); }
   };
@@ -2103,15 +2143,12 @@ function renderActionVerify(action, targetEmail) {
     const code = $('actCode').value.trim();
     if (code.length !== 6) { toast('Enter 6-digit code', 'error'); return; }
     const btn = $('actVerify');
-
     setBtnLoading(btn, 'Verifying code…');
     try {
       const vres = await fetch('/api/auth/verify-action-code', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ pendingToken: state._pendingAction.token, code, action }) });
       const vdata = await vres.json();
       if (!vres.ok) { resetBtn(btn); toast(vdata.error || 'Invalid code', 'error'); return; }
-
       setBtnLoading(btn, workingLabel);
-
       if (action === 'change-email') {
         const r = await fetch('/api/auth/change-email', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ grantedToken: vdata.grantedToken }) });
         const d = await r.json();
@@ -2181,10 +2218,8 @@ async function setup2FA() {
       const code = $('faSetupCode').value.trim();
       if (code.length !== 6) { toast('Enter the 6-digit code', 'error'); return; }
       const btn = $('confirm2faBtn');
-
       setBtnLoading(btn, 'Verifying code…');
       await new Promise(r => setTimeout(r, 200));
-
       setBtnLoading(btn, 'Enabling 2FA…');
       try {
         const r = await fetch('/api/auth/2fa/enable', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) });
@@ -2211,10 +2246,8 @@ async function disable2FA() {
     const code = $('faDisableCode').value.trim();
     if (code.length !== 6) { toast('Enter the 6-digit code', 'error'); return; }
     const btn = $('confirmDisableBtn');
-
     setBtnLoading(btn, 'Verifying code…');
     await new Promise(r => setTimeout(r, 200));
-
     setBtnLoading(btn, 'Disabling 2FA…');
     try {
       const r = await fetch('/api/auth/2fa/disable', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) });
