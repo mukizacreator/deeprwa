@@ -1,4 +1,4 @@
-// DeepRWA — Complete backend (rev.3.0.1)
+// DeepRWA — Complete backend (rev.3.1.0)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -17,7 +17,6 @@ app.use(cors());
 app.use(express.json({ limit: '40mb' }));
 app.use(express.urlencoded({ extended: true, limit: '40mb' }));
 
-// ============ SUPABASE ============
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
 const supabaseAnon = process.env.SUPABASE_ANON_KEY;
@@ -27,7 +26,6 @@ const supabase = (supabaseUrl && supabaseKey)
   : null;
 const supabaseConfigured = !!supabase;
 
-// ============ BREVO ============
 let brevoClient = null;
 try {
   if (process.env.BREVO_API_KEY) {
@@ -60,22 +58,7 @@ const ACTION_INTROS = {
 function buildVerificationEmailHtml(action, code) {
   const subject = ACTION_SUBJECTS[action] || 'DeepRWA verification code';
   const intro = ACTION_INTROS[action] || 'Use this code to continue:';
-  return `<!DOCTYPE html>
-<html><head><meta charset="UTF-8" /><title>${subject}</title></head>
-<body style="margin:0;padding:24px;background:#f4f6fa;font-family:Arial,Helvetica,sans-serif;color:#1e232a;">
-  <table role="presentation" cellpadding="0" cellspacing="0" style="max-width:520px;margin:0 auto;background:#ffffff;border-radius:12px;padding:32px 28px;">
-    <tr><td style="text-align:center;padding-bottom:20px;">
-      <img src="${LOGO_URL}" alt="DeepRWA" width="56" height="56" style="border-radius:12px;display:inline-block;" />
-    </td></tr>
-    <tr><td style="font-size:20px;font-weight:600;padding-bottom:12px;color:#1e232a;">${subject}</td></tr>
-    <tr><td style="font-size:15px;line-height:1.6;color:#3a424b;padding-bottom:20px;">${intro}</td></tr>
-    <tr><td style="text-align:center;padding:20px 0;">
-      <div style="display:inline-block;padding:16px 28px;background:#f0f4f8;color:#1e232a;font-size:32px;font-weight:700;letter-spacing:8px;border-radius:10px;font-family:Consolas,Menlo,monospace;">${code}</div>
-    </td></tr>
-    <tr><td style="font-size:14px;line-height:1.6;color:#3a424b;padding-bottom:8px;">This code expires in 10 minutes. If you did not request this, ignore this email.</td></tr>
-    <tr><td style="font-size:12px;color:#8a939c;text-align:center;padding-top:20px;border-top:1px solid #e5e9ee;">© ${new Date().getFullYear()} DeepRWA · The Star🌟</td></tr>
-  </table>
-</body></html>`;
+  return `<!DOCTYPE html><html><head><meta charset="UTF-8" /><title>${subject}</title></head><body style="margin:0;padding:24px;background:#f4f6fa;font-family:Arial,Helvetica,sans-serif;color:#1e232a;"><table role="presentation" cellpadding="0" cellspacing="0" style="max-width:520px;margin:0 auto;background:#ffffff;border-radius:12px;padding:32px 28px;"><tr><td style="text-align:center;padding-bottom:20px;"><img src="${LOGO_URL}" alt="DeepRWA" width="56" height="56" style="border-radius:12px;display:inline-block;" /></td></tr><tr><td style="font-size:20px;font-weight:600;padding-bottom:12px;color:#1e232a;">${subject}</td></tr><tr><td style="font-size:15px;line-height:1.6;color:#3a424b;padding-bottom:20px;">${intro}</td></tr><tr><td style="text-align:center;padding:20px 0;"><div style="display:inline-block;padding:16px 28px;background:#f0f4f8;color:#1e232a;font-size:32px;font-weight:700;letter-spacing:8px;border-radius:10px;font-family:Consolas,Menlo,monospace;">${code}</div></td></tr><tr><td style="font-size:14px;line-height:1.6;color:#3a424b;padding-bottom:8px;">This code expires in 10 minutes. If you did not request this, ignore this email.</td></tr><tr><td style="font-size:12px;color:#8a939c;text-align:center;padding-top:20px;border-top:1px solid #e5e9ee;">© ${new Date().getFullYear()} DeepRWA · The Star🌟</td></tr></table></body></html>`;
 }
 
 async function sendEmailRaw(to, subject, html) {
@@ -108,7 +91,6 @@ async function sendEmailCode(toEmail, code, purpose = 'verification') {
   }
 }
 
-// ============ RATE LIMIT ============
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, max: 300,
   standardHeaders: true, legacyHeaders: false,
@@ -116,19 +98,16 @@ const apiLimiter = rateLimit({
 });
 app.use('/api/', apiLimiter);
 
-// ============ JWT ============
 const JWT_SECRET = process.env.JWT_SECRET;
 function signPending(p, ttl = 900) { return jwt.sign(p, JWT_SECRET, { expiresIn: ttl }); }
 function verifyPending(t) { try { return jwt.verify(t, JWT_SECRET); } catch { return null; } }
 function stripJwtClaims(p) { if (!p || typeof p !== 'object') return {}; const { exp, iat, nbf, aud, iss, sub, jti, ...rest } = p; return rest; }
 
-// ============ VALIDATION ============
 const EMAIL_RE = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/;
 function isValidEmail(e) { if (!e || typeof e !== 'string') return false; const t = e.trim(); if (t.length < 5 || t.length > 254) return false; if (t.includes('..')) return false; return EMAIL_RE.test(t); }
 function pwIsStrong(p) { return typeof p === 'string' && p.length >= 8 && /[a-zA-Z]/.test(p) && /\d/.test(p); }
 function genCode() { return Math.floor(100000 + Math.random() * 900000).toString(); }
 
-// ============ USER LOOKUP ============
 async function findUserByEmail(email) {
   if (!supabase) return null;
   const target = String(email || '').toLowerCase().trim();
@@ -146,7 +125,6 @@ async function findUserByEmail(email) {
 }
 async function isEmailTakenByOther(email, uid) { const u = await findUserByEmail(email); return u ? u.id !== uid : false; }
 
-// ============ AUTH HELPERS ============
 function getUserId(req) { const a = req.headers.authorization; if (!a?.startsWith('Bearer ')) return null; try { return jwt.verify(a.slice(7), JWT_SECRET).sub; } catch { return null; } }
 async function requireAuth(req, res, next) { const u = getUserId(req); if (!u) return res.status(401).json({ error: 'Auth required' }); req.userId = u; next(); }
 async function verifyPassword(email, password) {
@@ -161,7 +139,6 @@ async function verifyPassword(email, password) {
   } catch { return null; }
 }
 
-// ============ SESSIONS ============
 async function trackSession(userId, req) {
   if (!supabase) return;
   const clientId = (req.headers['x-client-id'] || '').toString().trim().slice(0, 80) || null;
@@ -181,60 +158,52 @@ async function trackSession(userId, req) {
   } catch (e) { console.warn('session track failed', e.message); }
 }
 
-// ============ av.png ============
 app.get('/av.png', (req, res) => res.sendFile(path.join(__dirname, 'av.png')));
 
-// ============ HEALTH CHECK (kept awake by UptimeRobot) ============
 app.get('/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    service: 'DeepRWA',
-    version: '3.0.1',
-    time: new Date().toISOString()
-  });
+  res.json({ status: 'ok', service: 'DeepRWA', version: '3.1.0', time: new Date().toISOString() });
 });
 
-// ============ SYSTEM PROMPT ============
 const SYSTEM_PROMPT = `You are **DeepRWA** — a professional, world-class AI assistant specialised exclusively in information about Rwanda.
 
 ## IDENTITY (never violate)
 - Your name is DeepRWA.
 - You were created by **Emmanuel Mukiza**, a Rwandan national, under his developing company **The Star🌟**.
-- The Star🌟 was launched on **August 8, 2023**, and is a two-person team: **Mr. Emmanuel Mukiza** and **Ms. Ornella Mutuyimana**.
+- The Star🌟 was launched on **August 8, 2023**.
 - Emmanuel graduated from **Karenge Adventist Secondary School (KASS)** with an Advanced Level certificate in **Computer System and Architecture (CSA)**.
-- Ornella graduated from **Lycée Saint Marcel de Rukara (LSM)** with an Advanced Level certificate in **Mathematics, Computer Science and Economics (MCE)**.
 - DeepRWA exists to make information about Rwanda easily accessible to everyone.
 - If a user asks specifically "who are you", "who created you", "who made you", "what is your name", or similar *simple* identity questions, reply exactly: "I am DeepRWA, created by Emmanuel Mukiza under The Star🌟, specialised in information about Rwanda." — and nothing more.
-- If the user asks a longer, compound, or meta question (e.g. "Are you able to read files?", "Can you help me with X?", "What can you do?"), answer it like a normal professional assistant — do NOT paste the identity line.
+- If the user asks a longer, compound, or meta question, answer it like a normal professional assistant — do NOT paste the identity line.
 
 ## SCOPE
 You answer **only** questions about Rwanda. Everything about Rwanda is in scope: geography, provinces/districts/sectors/cells/villages, products and their prices, notable people, history, culture, tourism, travel, events, news, official services, education, agriculture, business, and general daily life.
 
 If the user asks about **any other country** or a topic unrelated to Rwanda, reply exactly: "I am specialised only in topics about Rwanda. I cannot answer questions about other countries or topics."
 
-## FILE SCOPE (STRICT — this is the most-violated rule)
-Before analysing ANY attached file, you must silently determine whether the file's content is about Rwanda.
+## IMAGE GENERATION
+You can create images, but only about Rwanda. If a user asks you to create an image about Rwanda, the system will handle generation automatically. If the user asks about your capabilities, you can confirm: you can create images related to Rwanda (landscapes, cultural scenes, wildlife, cities, and similar), and you can analyse images, PDFs, and text files related to Rwanda.
 
-- If the file **is about Rwanda** (Rwandan people, places, culture, history, geography, food, language, products, prices, news, companies, institutions, etc.): analyse it fully and answer the user's question about it.
-- If the file is **clearly NOT about Rwanda** (e.g. a foreign country's business directory, a European or American scholarship, foreign exam notes, foreign tax documents, foreign university material, a generic software manual, a foreign company's data, a non-Rwandan news article, etc.): you MUST politely decline using EXACTLY this template:
-  "The file you uploaded appears to be about [short topic], which is outside my scope. I'm specialised only in Rwanda. Please upload something Rwanda-related, or ask me a question about Rwanda."
-- NEVER describe, summarise, extract, quote, or analyse the content of an out-of-scope file — not even partially, not even if the user insists or rephrases. The refusal must be complete.
-- If the file's topic is ambiguous, ask first: "Is this file related to Rwanda? If yes, I'll analyse it in detail."
+## FILE SCOPE (STRICT)
+Before analysing ANY attached file, determine whether the file's content is about Rwanda.
+- If the file **is about Rwanda**: analyse it fully and answer the user's question about it.
+- If the file is **clearly NOT about Rwanda**: politely decline using EXACTLY this template: "The file you uploaded appears to be about [short topic], which is outside my scope. I'm specialised only in Rwanda. Please upload something Rwanda-related, or ask me a question about Rwanda."
+- NEVER describe, summarise, extract, quote, or analyse the content of an out-of-scope file.
+- If ambiguous, ask first: "Is this file related to Rwanda? If yes, I'll analyse it in detail."
 
 ## GREETINGS AND SMALL TALK
-Greetings ("hi", "muraho", "bonjour", "jambo", "hello"), thanks, goodbyes, and "how are you" are NOT out of scope. Respond warmly and briefly, then invite a Rwanda-related question. Recognise greetings in any language and reply in the same language.
+Greetings, thanks, goodbyes, and "how are you" are NOT out of scope. Respond warmly and briefly, then invite a Rwanda-related question. Recognise greetings in any language and reply in the same language.
 
 ## META QUESTIONS ABOUT YOU
-Questions about your own capabilities (e.g. "Are you able to read files?", "What can you help with?", "Can you analyse documents?") are IN SCOPE — answer them truthfully and concisely as DeepRWA: you can read and analyse images, PDFs, and text files; you answer questions about Rwanda; you can perform web searches; you support many languages; etc.
+Questions about your own capabilities are IN SCOPE — answer them truthfully and concisely as DeepRWA: you can read and analyse images, PDFs, and text files; you can create images related to Rwanda; you answer questions about Rwanda; you support many languages.
 
 ## GENERAL KNOWLEDGE
-You may use general world knowledge to contextualise your Rwanda answers (e.g. comparing Rwandan coffee to Ethiopian coffee, explaining Kinyarwanda's Bantu roots, describing Rwanda's place in East Africa). But you must not answer standalone questions about other countries or unrelated topics.
+You may use general world knowledge to contextualise your Rwanda answers. But you must not answer standalone questions about other countries or unrelated topics.
 
 ## LANGUAGE RULE
 Always reply in the **exact language the user wrote in**. Kinyarwanda → Kinyarwanda. French → French. Arabic → Arabic. Chinese → Chinese. Never switch to English unless the user does.
 
 ## FORMATTING (critical)
-- NEVER use horizontal rules / horizontal lines (---, ___, <hr>). They look unprofessional.
+- NEVER use horizontal rules / horizontal lines (---, ___, <hr>).
 - Use headings (##, ###) and bullet lists instead.
 - Use **bold** for emphasis.
 - Markdown only. No raw HTML.
@@ -248,7 +217,6 @@ Always reply in the **exact language the user wrote in**. Kinyarwanda → Kinyar
 ## STYLE
 Warm, professional, concise, respectful.`;
 
-// ============ GREETINGS & IDENTITY (strict) ============
 const GREETING_EXACT = new Set([
   'hi','hello','hey','yo','hiya','howdy','sup','whats up',"what's up",
   'good morning','good afternoon','good evening','good night',
@@ -262,18 +230,12 @@ const GREETING_EXACT = new Set([
   'hola','olá','ciao','hallo','hei','hej'
 ]);
 const IDENTITY_EXACT_PATTERNS = [
-  /^who\s+(are|r)\s+you$/,
-  /^what\s+(are|r)\s+you$/,
-  /^who\s+made\s+you$/,
-  /^who\s+created\s+you$/,
-  /^who\s+built\s+you$/,
-  /^who\s+designed\s+you$/,
-  /^who\s+developed\s+you$/,
+  /^who\s+(are|r)\s+you$/, /^what\s+(are|r)\s+you$/,
+  /^who\s+made\s+you$/, /^who\s+created\s+you$/, /^who\s+built\s+you$/,
+  /^who\s+designed\s+you$/, /^who\s+developed\s+you$/,
   /^who\s+is\s+your\s+(creator|maker|owner|developer)$/,
-  /^what\s+is\s+your\s+name$/,
-  /^your\s+name$/,
-  /^tell\s+me\s+about\s+(yourself|you)$/,
-  /^introduce\s+yourself$/,
+  /^what\s+is\s+your\s+name$/, /^your\s+name$/,
+  /^tell\s+me\s+about\s+(yourself|you)$/, /^introduce\s+yourself$/,
   /^who\s+am\s+i\s+talking\s+to$/
 ];
 function normalise(t) { return String(t || '').toLowerCase().replace(/[’‘`]/g, "'").replace(/[^\p{L}\p{N}\s']/gu, ' ').replace(/\s+/g, ' ').trim(); }
@@ -305,14 +267,131 @@ function buildGreetingReply(text) {
 }
 const IDENTITY_REPLY = "I am DeepRWA, created by Emmanuel Mukiza under The Star🌟, specialised in information about Rwanda.";
 
+// ============ IMAGE GENERATION (Rwanda-scoped, Pollinations, no API key) ============
+
+const RWANDA_IMAGE_KEYWORDS = [
+  'rwanda','rwandan','rwandese','kigali','kinyarwanda','umuganda','imigongo','agaseke','inkomane',
+  'kivu','nyungwe','akagera','virunga','karisimbi','bisoke','muhabura','sabyinyo','gahinga',
+  'nyamirambo','kimironko','kacyiru','gasabo','kicukiro','remera','nyarutarama','kagugu',
+  'musanze','ruhengeri','gisenyi','rubavu','rusizi','cyangugu','karongi','kibuye',
+  'nyanza','nyamagabe','huye','butare','rwamagana','kayonza','nyagatare','kirehe','ngoma','bugesera','gicumbi','ruhango','kamonyi','rutsiro','nyabihu','nyamasheke',
+  'gorilla','gorillas','intore','inkotanyi','amahoro','umurava','igihango',
+  'thousand hills','land of a thousand hills','imisozi igihumbi',
+  'kagame','rudahigwa','kigeli','mutara','habyarimana','bizimungu','sebarenzi',
+  'kinyarwanda dance','intore dance','rwandan coffee','rwandan tea','rwandan food','rwandan culture',
+  'kigali convention centre','kigali arena','amahoro stadium','nyabarongo','akanyaru','rukari','mukungwa',
+  'lake kivu','lake muhazi','lake burera','lake ruhondo','twin lakes','lake ihema','lake shakani',
+  'imbabazi','igishanga','umuvumu','igiti','akarima'
+];
+
+function isImageGenerationRequest(msg) {
+  const n = String(msg || '').toLowerCase();
+  if (/\b(image|photo|picture|illustration|drawing|artwork|painting)\s+of\b/.test(n)) return true;
+  if (/\b(draw|paint|sketch|illustrate)\s+(me\s+)?(a|an|the)\b/.test(n)) return true;
+  return /\b(create|generate|make|draw|produce|design|paint|sketch|illustrate|give|show|provide|send)\b[\s\S]{0,60}\b(image|photo|picture|illustration|drawing|artwork|painting)\b/.test(n);
+}
+
+function keywordRwandaImageCheck(subject) {
+  const n = String(subject || '').toLowerCase();
+  return RWANDA_IMAGE_KEYWORDS.some(k => n.includes(k));
+}
+
+function buildPollinationsUrl(prompt) {
+  const enhanced = `${prompt}, Rwanda, East Africa, photorealistic, professional photography, natural lighting, high detail`;
+  const encoded = encodeURIComponent(enhanced);
+  return `https://image.pollinations.ai/prompt/${encoded}?width=1024&height=1024&nologo=true&model=flux&enhance=true&safe=true&seed=${Math.floor(Math.random() * 1e9)}`;
+}
+
+async function callClassifierModel(userText) {
+  const prompt = `You handle image requests for DeepRWA, an AI specialised ONLY in Rwanda.
+
+Read the user's message. Decide if they are asking to CREATE an image.
+
+- If they want an image AND it clearly relates to Rwanda (Rwandan people, places, culture, wildlife, geography, food, art, or scenes), reply with EXACTLY this on one line:
+IMAGE::<a detailed English image prompt, maximum 40 words, ready for an image generator>
+
+- If they want an image but it is NOT about Rwanda, reply with EXACTLY:
+OFF_TOPIC
+
+- If they are not asking to create an image (they are asking a question, chatting, or asking about your capabilities), reply with EXACTLY:
+NOT_IMAGE
+
+User message: ${userText}`;
+
+  if (process.env.GROQ_API_KEY) {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 8000);
+      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
+        body: JSON.stringify({
+          model: 'openai/gpt-oss-20b',
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.3,
+          max_tokens: 120,
+          stream: false
+        }),
+        signal: ctrl.signal
+      });
+      clearTimeout(timer);
+      if (res.ok) {
+        const data = await res.json();
+        return data.choices?.[0]?.message?.content || '';
+      }
+    } catch (e) {
+      console.warn('[image] Groq classifier failed:', e.message);
+    }
+  }
+
+  if (process.env.GEMINI_API_KEY) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.3, maxOutputTokens: 100 }
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      }
+    } catch (e) {
+      console.warn('[image] Gemini classifier failed:', e.message);
+    }
+  }
+
+  return '';
+}
+
+async function classifyImageIntent(userText) {
+  const raw = await callClassifierModel(userText);
+  const trimmed = String(raw || '').trim();
+  const imMatch = trimmed.match(/IMAGE::\s*([^\n]+)/i);
+  if (imMatch) {
+    let p = imMatch[1].trim().replace(/^["'`]+|["'`]+$/g, '').trim();
+    if (p.length > 2) return { action: 'generate', prompt: p.slice(0, 300) };
+  }
+  if (/^\s*OFF_TOPIC\s*$/im.test(trimmed) || /^off[_\s-]?topic\b/i.test(trimmed)) {
+    return { action: 'off_topic' };
+  }
+  // Fallback: keyword check on the raw message
+  const n = normalise(userText);
+  if (keywordRwandaImageCheck(n)) {
+    return { action: 'generate', prompt: n.slice(0, 200) };
+  }
+  return { action: 'off_topic' };
+}
+
 // ============ PROVIDERS ============
 const cooldown = new Map();
 function isCooling(k) { const u = cooldown.get(k); if (!u) return false; if (Date.now() > u) { cooldown.delete(k); return false; } return true; }
 function setCooldown(k, ms) { cooldown.set(k, Date.now() + ms); }
 
-function sanitizeForProvider(messages) {
-  return messages.map(m => ({ role: m.role, content: m.content }));
-}
+function sanitizeForProvider(messages) { return messages.map(m => ({ role: m.role, content: m.content })); }
 
 async function* sseOpenAI(url, headers, body, timeoutMs = 30000) {
   const ctrl = new AbortController();
@@ -401,7 +480,6 @@ async function* streamGemini(msgs) {
   } catch (e) { setCooldown(k, e.status === 429 ? 120000 : 300000); throw e; }
 }
 
-// ============ VISION ============
 async function* streamGeminiVision(messages, attachments) {
   const sanitized = sanitizeForProvider(messages);
   const sys = sanitized.filter(m => m.role === 'system').map(m => m.content).join('\n');
@@ -476,43 +554,27 @@ const PROVIDERS = [
   { name: 'Pollinations', fn: streamPollinations }
 ];
 
-// ============================================================
-// TITLE GENERATION
-// ============================================================
-
+// ============ TITLE GENERATION ============
 function isGreetingOnly(msg) {
   const n = normalise(msg);
   if (!n) return false;
   if (n.length > 80) return false;
   if (GREETING_EXACT.has(n)) return true;
-
   const words = n.split(' ');
-
   const startsWithGreeting = /^(hi|hey|hello|yo|hiya|howdy|sup|muraho|mwaramutse|mwiriwe|wiriwe|bonjour|salut|bonsoir|coucou|jambo|habari|hujambo|hola|ciao|hallo|hei|hej)\b/.test(n);
   if (startsWithGreeting && words.length <= 8) {
     const hasTopic = /\b(rwanda|kigali|rwandan|province|district|sector|cell|village|history|culture|tourism|tourist|price|cost|story|news|people|person|place|city|school|university|hospital|food|recipe|market|company|business|explain|tell me about|how to|how do i|what is|what are|where is|where are|when is|when was|why is|why are|who is|who are|who was|show me|give me)\b/.test(n);
     if (!hasTopic) return true;
   }
-
   if (/^(how are you|how're you|how is it going|how's it going|how have you been|how are things|what's up|whats up|nice to meet you|long time no see|good (morning|afternoon|evening|night)|comment ca va|comment ça va|comment vas tu|comment allez vous)\b/.test(n)) return true;
-
   return false;
 }
-
 function isCreatorQuestion(msg) {
   const n = normalise(msg);
   if (!n) return false;
   if (n.length > 60) return false;
   return IDENTITY_EXACT_PATTERNS.some(r => r.test(n));
 }
-
-function isImageRequest(msg) {
-  const n = String(msg || '').toLowerCase();
-  return /\b(create|generate|make|draw|produce|provide|give|show|find|get|send)\b[\s\S]{0,40}\b(image|photo|picture|illustration|drawing)\b/.test(n)
-      || /\b(image|photo|picture|illustration|drawing)\s+of\b/.test(n)
-      || /\bdraw\s+(me\s+)?(a|an|the)\b/.test(n);
-}
-
 function greetingLabel(msg) {
   const t = String(msg || '').toLowerCase();
   if (/muraho|mwaramutse|mwiriwe|wiriwe|amakuru|bite/.test(t)) return 'Greeting';
@@ -522,7 +584,6 @@ function greetingLabel(msg) {
   if (/bye|goodbye|kwaheri|au revoir/.test(t)) return 'Goodbye';
   return 'Greeting';
 }
-
 function extractImagePrompt(msg) {
   const n = String(msg || '')
     .replace(/\b(create|generate|make|draw|produce|provide|give|show|find|get|send|me|please|a|an|the|image|photo|picture|illustration|drawing|of|for)\b/gi, ' ')
@@ -531,16 +592,13 @@ function extractImagePrompt(msg) {
     .trim();
   return n;
 }
-
 function isEchoOfMessage(title, originalMsg) {
   const tNorm = String(title || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
   const mNorm = String(originalMsg || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
   if (!tNorm || !mNorm) return false;
-
   if (tNorm === mNorm) return true;
   if (tNorm.length >= 4 && mNorm.includes(tNorm)) return true;
   if (tNorm.length >= 4 && mNorm.startsWith(tNorm)) return true;
-
   const tWords = tNorm.split(' ').filter(w => w.length >= 3);
   if (tWords.length < 2) return false;
   const mWords = mNorm.split(' ');
@@ -554,16 +612,12 @@ function isEchoOfMessage(title, originalMsg) {
   }
   return matches === tWords.length;
 }
-
 function cleanTitle(raw, originalMsg) {
   let t = String(raw || '').trim();
   if (!t) return null;
-
   t = t.replace(/^["'`“”‘’]+|["'`“”‘’]+$/g, '');
   t = t.replace(/[.:;,!]+$/, '').trim();
-  if (/^(title|chat title|chat)\s*[:\-]\s*/i.test(t)) {
-    t = t.replace(/^(title|chat title|chat)\s*[:\-]\s*/i, '').trim();
-  }
+  if (/^(title|chat title|chat)\s*[:\-]\s*/i.test(t)) t = t.replace(/^(title|chat title|chat)\s*[:\-]\s*/i, '').trim();
   const lines = t.split('\n').map(l => l.trim()).filter(Boolean);
   if (lines.length > 1) {
     const short = lines.find(l => l.length <= 60 && !/^(sure|here|the title|of course|okay)/i.test(l)) || lines[0];
@@ -572,14 +626,10 @@ function cleanTitle(raw, originalMsg) {
   t = t.replace(/^["'`“”‘’]+|["'`“”‘’]+$/g, '').trim();
   t = t.replace(/\.+$/, '').trim();
   if (!t) return null;
-
   if (t.length > 80) t = t.substring(0, 80).trim();
-
   if (isEchoOfMessage(t, originalMsg)) return null;
-
   return t;
 }
-
 function buildTitlePrompt(msg) {
   const truncated = String(msg).substring(0, 800);
   return `You are an expert at naming chat conversations in the style of ChatGPT's sidebar.
@@ -593,34 +643,18 @@ Strict rules:
 - Do NOT copy phrases from the message. Use your own words.
 - No quotation marks. No trailing period. No prefix like "Title:".
 
-Special cases (reply with EXACTLY the given text):
-- If the message is a greeting, thanks, or goodbye → Greeting
-- If the message asks who you are / who made you → About This Assistant
-- If the message asks what you can do / your capabilities → Assistant Capabilities
-
-Topic patterns (use these shapes):
-- Asking the meaning of X → Meaning of X
-- Asking how to do X → How to X
-- Describing a problem → X Problem  (e.g. "My maize leaves are yellow…" → Maize Leaf Problem)
-- Asking for an image/photo/picture of X → X Photo  (e.g. "generate a photo of maize" → Maize Photo)
-- Describing a share / export / tech feature → <Subject> Sharing  (e.g. "I want the user message and AI reply only, no switcher, no other versions" → Single Message Sharing)
-- Asking about a person → About <Name>
-- Asking about a place → <Place Name>
-- Asking about a topic → <Topic Name>
+Special cases:
+- Greeting, thanks, or goodbye → Greeting
+- Asks who you are / who made you → About This Assistant
+- Asks what you can do → Assistant Capabilities
+- Asks for an image → X Photo
 
 Examples:
 USER: "Hi, how are you?" → Greeting
-USER: "Hello" → Greeting
-USER: "Thanks a lot!" → Greeting
 USER: "Who created you?" → About This Assistant
-USER: "What can you do?" → Assistant Capabilities
 USER: "What is the agriculture mean?" → Meaning of Agriculture
 USER: "How do I treat tomato blight?" → Tomato Blight Treatment
-USER: "My maize leaves are yellow with brown spots, what should I do?" → Maize Leaf Problem
 USER: "create a photo of maize" → Maize Photo
-USER: "generate an image of cows in a field" → Cows in Field Photo
-USER: "Just two bubbles: the user message and its AI reply. No switcher, no other versions." → Single Message Sharing
-USER: "I want to export only one version of a chat with its files" → Single Version Export
 USER: "Tell me about the history of Rwanda" → Rwandan History
 USER: "Who was King Rudahigwa?" → About King Rudahigwa
 USER: "What are the top tourist attractions in Rwanda?" → Rwanda Tourist Attractions
@@ -630,7 +664,6 @@ ${truncated}
 
 Title:`;
 }
-
 async function callTitleModel({ url, headers, model, prompt, timeoutMs = 20000 }) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -638,151 +671,88 @@ async function callTitleModel({ url, headers, model, prompt, timeoutMs = 20000 }
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...headers },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.4,
-        max_tokens: 400,
-        stream: false
-      }),
+      body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], temperature: 0.4, max_tokens: 400, stream: false }),
       signal: ctrl.signal
     });
-    if (!res.ok) {
-      const t = await res.text().catch(() => '');
-      const e = new Error(`HTTP ${res.status}: ${t.slice(0, 100)}`);
-      e.status = res.status;
-      throw e;
-    }
+    if (!res.ok) { const t = await res.text().catch(() => ''); const e = new Error(`HTTP ${res.status}: ${t.slice(0, 100)}`); e.status = res.status; throw e; }
     const data = await res.json();
     return data.choices?.[0]?.message?.content || '';
   } finally { clearTimeout(timer); }
 }
-
 async function generateTitleViaProviders(msg) {
   const prompt = buildTitlePrompt(msg);
-
   if (process.env.GROQ_API_KEY) {
     for (const model of ['openai/gpt-oss-120b', 'openai/gpt-oss-20b']) {
       try {
-        const raw = await callTitleModel({
-          url: 'https://api.groq.com/openai/v1/chat/completions',
-          headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
-          model,
-          prompt
-        });
+        const raw = await callTitleModel({ url: 'https://api.groq.com/openai/v1/chat/completions', headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` }, model, prompt });
         const cleaned = cleanTitle(raw, msg);
         if (cleaned) { console.log(`[title] Groq ${model}: "${cleaned}"`); return cleaned; }
-        else console.warn(`[title] Groq ${model} produced an echo — rejected: "${String(raw).slice(0,60)}"`);
-      } catch (e) {
-        console.warn(`[title] Groq ${model} failed:`, e.message);
-      }
+      } catch (e) { console.warn(`[title] Groq ${model} failed:`, e.message); }
     }
   }
-
   if (process.env.OPENROUTER_API_KEY) {
     try {
       const raw = await callTitleModel({
         url: 'https://openrouter.ai/api/v1/chat/completions',
-        headers: {
-          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-          'HTTP-Referer': 'https://deeprwa.agentdomains.co',
-          'X-Title': 'DeepRWA'
-        },
-        model: 'openrouter/free',
-        prompt
+        headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`, 'HTTP-Referer': 'https://deeprwa.agentdomains.co', 'X-Title': 'DeepRWA' },
+        model: 'openrouter/free', prompt
       });
       const cleaned = cleanTitle(raw, msg);
       if (cleaned) { console.log(`[title] OpenRouter: "${cleaned}"`); return cleaned; }
-      else console.warn(`[title] OpenRouter produced an echo — rejected`);
-    } catch (e) {
-      console.warn('[title] OpenRouter failed:', e.message);
-    }
+    } catch (e) { console.warn('[title] OpenRouter failed:', e.message); }
   }
-
   if (process.env.GEMINI_API_KEY) {
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
       const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ role: 'user', parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.4, maxOutputTokens: 30 }
-        })
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }] }], generationConfig: { temperature: 0.4, maxOutputTokens: 30 } })
       });
       if (res.ok) {
         const data = await res.json();
         const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
         const cleaned = cleanTitle(raw, msg);
         if (cleaned) { console.log(`[title] Gemini: "${cleaned}"`); return cleaned; }
-        else console.warn(`[title] Gemini produced an echo — rejected`);
       }
-    } catch (e) {
-      console.warn('[title] Gemini failed:', e.message);
-    }
+    } catch (e) { console.warn('[title] Gemini failed:', e.message); }
   }
-
   return null;
 }
-
-const TITLE_STOPWORDS = new Set([
-  'a','an','and','or','but','if','then','else','when','where','while','of','to','in','on','at','by',
-  'for','with','about','against','between','into','through','during','before','after','above','below',
-  'from','up','down','out','off','over','under','again','further','once','here','there','all','any',
-  'both','each','few','more','most','other','some','such','no','nor','not','only','own','same','so',
-  'than','too','very','can','will','just','dont','don','should','now','is','are','was','were','be',
-  'been','being','have','has','had','do','does','did','would','could','should','may','might','must',
-  'shall','i','you','he','she','it','we','they','me','him','her','us','them','my','your','his',
-  'their','our','this','that','these','those','what','which','who','whom','whose','how','why','when',
-  'where','please','hi','hello','hey','thanks','thank','ok','okay','yes','no','like','want','need',
-  'get','got','give','make','made','let','lets','put','see','say','said','go','going','come','came',
-  'also','too','really','much','many','lot','lots','thing','things','stuff','way','ways'
-]);
-
+const TITLE_STOPWORDS = new Set(['a','an','and','or','but','if','then','else','when','where','while','of','to','in','on','at','by','for','with','about','against','between','into','through','during','before','after','above','below','from','up','down','out','off','over','under','again','further','once','here','there','all','any','both','each','few','more','most','other','some','such','no','nor','not','only','own','same','so','than','too','very','can','will','just','dont','don','should','now','is','are','was','were','be','been','being','have','has','had','do','does','did','would','could','should','may','might','must','shall','i','you','he','she','it','we','they','me','him','her','us','them','my','your','his','their','our','this','that','these','those','what','which','who','whom','whose','how','why','when','where','please','hi','hello','hey','thanks','thank','ok','okay','yes','no','like','want','need','get','got','give','make','made','let','lets','put','see','say','said','go','going','come','came','also','too','really','much','many','lot','lots','thing','things','stuff','way','ways']);
 function extractObjectAfter(msg, match) {
   const after = msg.slice(match.index + match[0].length).trim();
   const words = after.split(/\s+/).map(w => w.replace(/[^\p{L}\p{N}]/gu, '')).filter(w => w.length > 2 && !TITLE_STOPWORDS.has(w.toLowerCase()));
   return words.slice(0, 3).join(' ').substring(0, 50) || null;
 }
-
 function localFallbackTitle(msg, isImg) {
   if (isImg) {
     const p = extractImagePrompt(msg).split(/\s+/).slice(0, 4).join(' ').trim();
     return p ? `${p} Photo` : 'Image Request';
   }
-
   const qPatterns = [
     { re: /\b(what is|what are|whats|what's)\b/i, prefix: 'Meaning of' },
     { re: /\b(define|definition of|meaning of)\b/i, prefix: 'Meaning of' },
     { re: /\b(how to|how do i|how can i|how does one)\b/i, prefix: 'How to' },
     { re: /\b(who is|who are|who was)\b/i, prefix: 'About' },
-    { re: /\b(where is|where are|wheres|where's)\b/i, prefix: 'Location of' },
+    { re: /\b(where is|where are|wheres|where's)\b/i, prefix: 'Location of' }
   ];
   for (const { re, prefix } of qPatterns) {
     const m = msg.match(re);
-    if (m) {
-      const obj = extractObjectAfter(msg, m);
-      return obj ? `${prefix} ${obj}`.substring(0, 60) : prefix;
-    }
+    if (m) { const obj = extractObjectAfter(msg, m); return obj ? `${prefix} ${obj}`.substring(0, 60) : prefix; }
   }
-
   if (/\b(create|generate|draw|make|produce)\b/i.test(msg)) {
     const m = msg.match(/\b(create|generate|draw|make|produce)\b/i);
     const obj = extractObjectAfter(msg, m);
     return obj ? obj.substring(0, 60) : 'Request';
   }
-
   if (/\b(rwanda|kigali)\b/i.test(msg)) return 'About Rwanda';
-
   if (msg.length > 200) return 'Long Message';
   if (msg.length <= 20) return 'Short Message';
   return 'New chat';
 }
-
 async function generateChatTitle(firstMessage) {
   const msg = String(firstMessage || '').trim();
   if (!msg) return 'New chat';
-
   if (isGreetingOnly(msg)) {
     const label = greetingLabel(msg);
     console.log(`[title] greeting shortcut: "${label}"`);
@@ -792,23 +762,19 @@ async function generateChatTitle(firstMessage) {
     console.log(`[title] creator shortcut: "About This Assistant"`);
     return 'About This Assistant';
   }
-
-  const isImg = isImageRequest(msg);
-
+  const isImg = isImageGenerationRequest(msg);
   const fromLLM = await generateTitleViaProviders(msg);
   if (fromLLM) return fromLLM;
-
   const fallback = localFallbackTitle(msg, isImg);
   console.log(`[title] local fallback: "${fallback}"`);
   return fallback;
 }
 
 // ============ ROUTES ============
-app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '3.0.1', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
+app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '3.1.0', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
 app.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nSitemap: https://deeprwa.agentdomains.co/sitemap.xml\n`));
 app.get('/sitemap.xml', (req, res) => res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>https://deeprwa.agentdomains.co/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>\n</urlset>`));
 
-// AUTH: Signup
 app.post('/api/auth/signup', async (req, res) => {
   if (!supabaseConfigured) return res.status(503).json({ error: 'Auth not configured' });
   const { email, password, fullName } = req.body || {};
@@ -847,7 +813,6 @@ app.post('/api/auth/resend-verification', async (req, res) => {
   res.json({ pendingToken: newToken });
 });
 
-// AUTH: Login
 app.post('/api/auth/login', async (req, res) => {
   const { email, password } = req.body || {};
   if (!isValidEmail(email)) return res.status(400).json({ error: 'Invalid email' });
@@ -895,33 +860,18 @@ app.post('/api/auth/verify-2fa', async (req, res) => {
   res.json({ accessToken, user: { id: p.userId, email: p.email } });
 });
 
-// ============================================================
-// GET /api/auth/me — MODIFIED: also verifies the session is not revoked.
-// This makes refreshing a revoked device sign it out immediately.
-// ============================================================
 app.get('/api/auth/me', requireAuth, async (req, res) => {
   const clientId = (req.headers['x-client-id'] || '').toString().trim().slice(0, 80) || null;
   if (clientId && supabase) {
     try {
-      const { data: sess } = await supabase
-        .from('sessions')
-        .select('revoked')
-        .eq('user_id', req.userId)
-        .eq('client_id', clientId)
-        .maybeSingle();
-      if (sess && sess.revoked === true) {
-        return res.status(401).json({ error: 'Session has been revoked', code: 'SESSION_REVOKED' });
-      }
-    } catch (e) {
-      console.warn('[auth/me] session check failed (non-fatal):', e.message);
-    }
+      const { data: sess } = await supabase.from('sessions').select('revoked').eq('user_id', req.userId).eq('client_id', clientId).maybeSingle();
+      if (sess && sess.revoked === true) return res.status(401).json({ error: 'Session has been revoked', code: 'SESSION_REVOKED' });
+    } catch (e) { console.warn('[auth/me] session check failed (non-fatal):', e.message); }
   }
-
   const { data } = await supabase.from('profiles').select('*').eq('id', req.userId).maybeSingle();
   res.json({ user: { id: req.userId, email: data?.email, display_name: data?.display_name, totp_enabled: data?.totp_enabled || false, created_at: data?.created_at } });
 });
 
-// FORGOT PASSWORD
 app.post('/api/auth/forgot-password-request', async (req, res) => {
   const { email } = req.body || {};
   if (!isValidEmail(email)) return res.status(400).json({ error: 'Invalid email' });
@@ -965,7 +915,6 @@ app.post('/api/auth/reset-password', async (req, res) => {
   res.json({ success: true });
 });
 
-// ACCOUNT ACTIONS
 app.post('/api/auth/send-action-code', requireAuth, async (req, res) => {
   const { action, newEmail } = req.body || {};
   if (!['change-email', 'change-password', 'delete-account'].includes(action)) return res.status(400).json({ error: 'Invalid action' });
@@ -1048,7 +997,6 @@ app.delete('/api/auth/account', requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
-// 2FA
 app.post('/api/auth/2fa/setup', requireAuth, async (req, res) => {
   const { data: profile } = await supabase.from('profiles').select('email, totp_enabled').eq('id', req.userId).maybeSingle();
   if (profile?.totp_enabled) return res.status(400).json({ error: '2FA already enabled' });
@@ -1075,7 +1023,6 @@ app.post('/api/auth/2fa/disable', requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
-// SESSIONS
 app.get('/api/auth/sessions', requireAuth, async (req, res) => {
   const clientId = req.headers['x-client-id'] || '';
   const { data } = await supabase.from('sessions').select('*').eq('user_id', req.userId).eq('revoked', false).order('last_active', { ascending: false });
@@ -1117,7 +1064,6 @@ app.delete('/api/auth/sessions-current', requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
-// FILE UPLOAD
 app.post('/api/upload', requireAuth, async (req, res) => {
   const { name, type, data } = req.body || {};
   if (!name || !type || !data) return res.status(400).json({ error: 'Missing file data' });
@@ -1133,7 +1079,6 @@ app.post('/api/upload', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// FILES LIST (basic)
 app.get('/api/files', requireAuth, async (req, res) => {
   try {
     const { data: convs } = await supabase.from('conversations').select('id').eq('user_id', req.userId);
@@ -1148,7 +1093,6 @@ app.get('/api/files', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message, files: [] }); }
 });
 
-// FILES LIST with IDs
 app.get('/api/files-with-ids', requireAuth, async (req, res) => {
   try {
     const { data: convs } = await supabase.from('conversations').select('id').eq('user_id', req.userId);
@@ -1183,21 +1127,18 @@ app.delete('/api/files/:messageId/:fileIndex', requireAuth, async (req, res) => 
   res.json({ success: true });
 });
 
-// TITLE
 app.post('/api/chat/title', async (req, res) => {
   const { message } = req.body || {};
   if (!message) return res.status(400).json({ error: 'message required' });
   res.json({ title: await generateChatTitle(message) });
 });
 
-// CHAT: guest
 app.post('/api/chat/guest', async (req, res) => {
   const { messages, attachments } = req.body || {};
   if (!Array.isArray(messages) || !messages.length) return res.status(400).json({ error: 'messages required' });
   await streamChatResponse(messages, res, null, attachments || []);
 });
 
-// CHAT: authenticated
 app.post('/api/chat', requireAuth, async (req, res) => {
   const { messages, conversationId, attachments } = req.body || {};
   if (!Array.isArray(messages) || !messages.length) return res.status(400).json({ error: 'messages required' });
@@ -1213,16 +1154,9 @@ app.post('/api/chat', requireAuth, async (req, res) => {
   const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
   if (lastUserMsg) {
     const filesArray = Array.isArray(lastUserMsg.files) ? lastUserMsg.files : [];
-    const { error: insErr } = await supabase.from('messages').insert({
-      conversation_id: convId,
-      role: 'user',
-      content: lastUserMsg.content,
-      files: filesArray
-    });
+    const { error: insErr } = await supabase.from('messages').insert({ conversation_id: convId, role: 'user', content: lastUserMsg.content, files: filesArray });
     if (insErr) console.warn(`[chat] failed to save user msg:`, insErr.message);
     else console.log(`[chat] user msg saved (${filesArray.length} files)`);
-  } else {
-    console.warn(`[chat] no user message found in payload`);
   }
   res.setHeader('X-Conversation-Id', convId);
   await streamChatResponse(messages, res, convId, attachments || []);
@@ -1250,6 +1184,46 @@ async function streamChatResponse(messages, res, conversationId, attachments) {
       console.log(`[greeting-fast] matched: "${userText.slice(0, 80)}"`);
       send({ text: buildGreetingReply(userText) });
       return done();
+    }
+
+    // ── IMAGE GENERATION (Rwanda-only) ──
+    if (isImageGenerationRequest(userText)) {
+      try {
+        const intent = await classifyImageIntent(userText);
+        if (intent.action === 'generate' && intent.prompt) {
+          const imageUrl = buildPollinationsUrl(intent.prompt);
+          const shortSubject = intent.prompt.split(',')[0].trim().slice(0, 80);
+          const intro = `Here is an image of ${shortSubject}.`;
+          console.log(`[image-gen] "${intent.prompt}"`);
+          send({ text: intro });
+          send({ image: imageUrl, prompt: intent.prompt });
+          if (conversationId && supabase) {
+            try {
+              await supabase.from('messages').insert({
+                conversation_id: conversationId,
+                role: 'assistant',
+                content: intro,
+                files: [{ url: imageUrl, type: 'image/jpeg', name: `${shortSubject.replace(/\s+/g, '_').slice(0, 40)}.jpg`, generated: true }]
+              });
+            } catch (e) { console.warn('save image msg failed:', e.message); }
+          }
+          return done();
+        }
+        if (intent.action === 'off_topic') {
+          const refusal = "I can only create images about Rwanda. Please ask for something Rwanda-related — for example, a Rwandan landscape, city, cultural scene, wildlife, or a notable place.";
+          console.log(`[image-refuse] off-topic image request`);
+          send({ text: refusal });
+          if (conversationId && supabase) {
+            try {
+              await supabase.from('messages').insert({ conversation_id: conversationId, role: 'assistant', content: refusal });
+            } catch (e) {}
+          }
+          return done();
+        }
+        // 'not_image' → fall through to normal text flow
+      } catch (e) {
+        console.warn('[image] flow error (falling through):', e.message);
+      }
     }
   }
 
@@ -1295,7 +1269,6 @@ async function streamChatResponse(messages, res, conversationId, attachments) {
   return done();
 }
 
-// CONVERSATIONS
 app.get('/api/conversations', requireAuth, async (req, res) => {
   const { data } = await supabase.from('conversations').select('*').eq('user_id', req.userId).order('updated_at', { ascending: false });
   res.json({ conversations: data || [] });
@@ -1332,7 +1305,6 @@ app.post('/api/chat/messages/:id/sync-versions', requireAuth, async (req, res) =
   res.json({ assistantMessageId: newMsg?.id });
 });
 
-// SHARE
 app.post('/api/share/guest', async (req, res) => {
   const { messages } = req.body || {};
   if (!Array.isArray(messages)) return res.status(400).json({ error: 'messages required' });
@@ -1354,7 +1326,6 @@ app.get('/api/share/:token', async (req, res) => {
 });
 app.get('/share/:token', (req, res) => res.sendFile(path.join(__dirname, 'public', 'share.html')));
 
-// STATIC
 const PUBLIC_DIR = path.join(__dirname, 'public');
 app.use(express.static(PUBLIC_DIR));
 app.get(/^\/(?!api|health|robots|sitemap|av\.png|share).*/, (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
