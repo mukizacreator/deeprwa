@@ -1,4 +1,4 @@
-// DeepRWA — Complete backend (rev.3.1.0)
+// DeepRWA — Complete backend (rev.3.2.0)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -186,7 +186,7 @@ app.get('/av.png', (req, res) => res.sendFile(path.join(__dirname, 'av.png')));
 
 // ============ HEALTH CHECK ============
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', service: 'DeepRWA', version: '3.1.0', time: new Date().toISOString() });
+  res.json({ status: 'ok', service: 'DeepRWA', version: '3.2.0', time: new Date().toISOString() });
 });
 
 // ============ SYSTEM PROMPT ============
@@ -294,7 +294,7 @@ function buildGreetingReply(text) {
 }
 const IDENTITY_REPLY = "I am DeepRWA, created by Emmanuel Mukiza under The Star🌟, specialised in information about Rwanda.";
 
-// ============ IMAGE GENERATION (Rwanda-scoped, Pollinations) ============
+// ============ IMAGE GENERATION (Cloudflare FLUX.1-schnell only — no watermark) ============
 const RWANDA_IMAGE_KEYWORDS = [
   'rwanda','rwandan','rwandese','kigali','kinyarwanda','umuganda','imigongo','agaseke','inkomane',
   'kivu','nyungwe','akagera','virunga','karisimbi','bisoke','muhabura','sabyinyo','gahinga',
@@ -307,11 +307,16 @@ const RWANDA_IMAGE_KEYWORDS = [
   'kinyarwanda dance','intore dance','rwandan coffee','rwandan tea','rwandan food','rwandan culture',
   'kigali convention centre','kigali arena','amahoro stadium','nyabarongo','akanyaru','rukari','mukungwa',
   'lake kivu','lake muhazi','lake burera','lake ruhondo','twin lakes','lake ihema','lake shakani',
-  'imbabazi','igishanga','umuvumu','igiti','akarima'
+  'imbabazi','igishanga','umuvumu','igiti','akarima',
+  'coffee farm','tea plantation','maize field','banana plantation','dairy cow','rwandan cow','ankole','inyambo',
+  'volcanoes national park','nyungwe forest','akagera national park','mountains','hills',
+  'umuganda day','umuganda work','rwandan village','rwandan school','rwandan market',
+  'kigali city','nyamirambo','kigali skyline','amahoro','kigali hills'
 ];
 
 function isImageGenerationRequest(msg) {
   const n = String(msg || '').toLowerCase();
+  if (/\b(video|movie|clip|animation|audio|sound)\b/.test(n) && !/\b(image|photo|picture|illustration|drawing|artwork|painting)\b/.test(n)) return false;
   if (/\b(image|photo|picture|illustration|drawing|artwork|painting)\s+of\b/.test(n)) return true;
   if (/\b(draw|paint|sketch|illustrate)\s+(me\s+)?(a|an|the)\b/.test(n)) return true;
   return /\b(create|generate|make|draw|produce|design|paint|sketch|illustrate|give|show|provide|send)\b[\s\S]{0,60}\b(image|photo|picture|illustration|drawing|artwork|painting)\b/.test(n);
@@ -322,92 +327,76 @@ function keywordRwandaImageCheck(subject) {
   return RWANDA_IMAGE_KEYWORDS.some(k => n.includes(k));
 }
 
-function buildPollinationsUrl(prompt) {
-  const enhanced = `${prompt}, Rwanda, East Africa, photorealistic, professional photography, natural lighting, high detail`;
-  const encoded = encodeURIComponent(enhanced);
-  return `https://image.pollinations.ai/prompt/${encoded}?width=1024&height=1024&nologo=true&model=flux&enhance=true&safe=true&seed=${Math.floor(Math.random() * 1e9)}`;
+function extractImagePrompt(msg) {
+  let s = String(msg || '').trim();
+  s = s.replace(/^\s*(please\s+)?(can you\s+)?(could you\s+)?(would you\s+)?/i, '');
+  s = s.replace(/\b(create|generate|make|produce|design|paint|sketch|illustrate|draw|show|give|send|provide|find|get)\b/gi, ' ');
+  s = s.replace(/\b(me|a|an|the|of|for|some|image|photo|picture|illustration|drawing|artwork|painting)\b/gi, ' ');
+  s = s.replace(/\s+and\s+(also\s+)?(tell|explain|describe|show)\b[\s\S]*$/i, '');
+  s = s.replace(/[^\p{L}\p{N}\s'-]/gu, ' ');
+  s = s.replace(/\s+/g, ' ').trim();
+  return s || msg;
 }
 
-async function callClassifierModel(userText) {
-  const prompt = `You handle image requests for DeepRWA, an AI specialised ONLY in Rwanda.
+async function uploadGeneratedImage(buffer, mimeType = 'image/jpeg') {
+  if (!supabase) throw new Error('Storage not configured');
+  const bucket = process.env.SUPABASE_STORAGE_BUCKET || 'uploads';
+  const fileName = `gen-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.jpg`;
+  const filePath = `generated/${fileName}`;
+  const { error: upErr } = await supabase.storage.from(bucket).upload(filePath, buffer, { contentType: mimeType, upsert: false });
+  if (upErr) throw new Error('Upload failed: ' + upErr.message);
+  const { data } = supabase.storage.from(bucket).getPublicUrl(filePath);
+  return data.publicUrl;
+}
 
-Read the user's message. Decide if they are asking to CREATE an image.
-
-- If they want an image AND it clearly relates to Rwanda (Rwandan people, places, culture, wildlife, geography, food, art, or scenes), reply with EXACTLY this on one line:
-IMAGE::<a detailed English image prompt, maximum 40 words, ready for an image generator>
-
-- If they want an image but it is NOT about Rwanda, reply with EXACTLY:
-OFF_TOPIC
-
-- If they are not asking to create an image (they are asking a question, chatting, or asking about your capabilities), reply with EXACTLY:
-NOT_IMAGE
-
-User message: ${userText}`;
-
-  if (process.env.GROQ_API_KEY) {
-    try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 8000);
-      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
-        body: JSON.stringify({
-          model: 'openai/gpt-oss-20b',
-          messages: [{ role: 'user', content: prompt }],
-          temperature: 0.3,
-          max_tokens: 120,
-          stream: false
-        }),
-        signal: ctrl.signal
-      });
-      clearTimeout(timer);
-      if (res.ok) {
-        const data = await res.json();
-        return data.choices?.[0]?.message?.content || '';
-      }
-    } catch (e) {
-      console.warn('[image] Groq classifier failed:', e.message);
+async function generateImageWithCloudflare(prompt) {
+  const accountId = process.env.CF_ACCOUNT_ID || process.env.CLOUDFLARE_ACCOUNT_ID;
+  const apiToken = process.env.CF_API_TOKEN || process.env.CLOUDFLARE_API_TOKEN;
+  if (!accountId || !apiToken) throw new Error('Cloudflare credentials missing');
+  const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/black-forest-labs/flux-1-schnell`;
+  const enhanced = `${prompt}, Rwanda, East Africa, photorealistic, professional photography, natural lighting, high detail, no text, no watermark`;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 60000);
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: enhanced, steps: 4 }),
+      signal: ctrl.signal
+    });
+    if (!res.ok) {
+      const t = await res.text().catch(() => '');
+      throw new Error(`CF HTTP ${res.status}: ${t.slice(0, 120)}`);
     }
-  }
-
-  if (process.env.GEMINI_API_KEY) {
-    try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ role: 'user', parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.3, maxOutputTokens: 100 }
-        })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-      }
-    } catch (e) {
-      console.warn('[image] Gemini classifier failed:', e.message);
+    const contentType = res.headers.get('content-type') || '';
+    let buffer;
+    if (contentType.includes('application/json')) {
+      const data = await res.json();
+      if (data.success === false) throw new Error('CF: ' + (data.errors?.[0]?.message || 'failed'));
+      const b64 = data.result?.image || data.image;
+      if (!b64) throw new Error('CF: no image in response');
+      buffer = Buffer.from(b64, 'base64');
+    } else {
+      const arrayBuf = await res.arrayBuffer();
+      buffer = Buffer.from(arrayBuf);
     }
-  }
+    if (!buffer || buffer.length < 1000) throw new Error('CF: response too small');
+    const publicUrl = await uploadGeneratedImage(buffer, 'image/jpeg');
+    return { url: publicUrl, provider: 'cloudflare' };
+  } finally { clearTimeout(timer); }
+}
 
-  return '';
+async function generateImage(prompt) {
+  const errors = [];
+  try { return await generateImageWithCloudflare(prompt); }
+  catch (e) { errors.push('cloudflare: ' + e.message); console.warn('[img] CF failed:', e.message); }
+  throw new Error('Image generation unavailable: ' + errors.join(' | '));
 }
 
 async function classifyImageIntent(userText) {
-  const raw = await callClassifierModel(userText);
-  const trimmed = String(raw || '').trim();
-  const imMatch = trimmed.match(/IMAGE::\s*([^\n]+)/i);
-  if (imMatch) {
-    let p = imMatch[1].trim().replace(/^["'`]+|["'`]+$/g, '').trim();
-    if (p.length > 2) return { action: 'generate', prompt: p.slice(0, 300) };
-  }
-  if (/^\s*OFF_TOPIC\s*$/im.test(trimmed) || /^off[_\s-]?topic\b/i.test(trimmed)) {
-    return { action: 'off_topic' };
-  }
-  // Fallback: keyword check
   const n = normalise(userText);
   if (keywordRwandaImageCheck(n)) {
-    return { action: 'generate', prompt: n.slice(0, 200) };
+    return { action: 'generate', prompt: extractImagePrompt(userText) };
   }
   return { action: 'off_topic' };
 }
@@ -613,7 +602,7 @@ function greetingLabel(msg) {
   if (/bye|goodbye|kwaheri|au revoir/.test(t)) return 'Goodbye';
   return 'Greeting';
 }
-function extractImagePrompt(msg) {
+function extractImagePromptForTitle(msg) {
   const n = String(msg || '')
     .replace(/\b(create|generate|make|draw|produce|provide|give|show|find|get|send|me|please|a|an|the|image|photo|picture|illustration|drawing|of|for)\b/gi, ' ')
     .replace(/[^\p{L}\p{N}\s]/gu, ' ')
@@ -754,7 +743,7 @@ function extractObjectAfter(msg, match) {
 }
 function localFallbackTitle(msg, isImg) {
   if (isImg) {
-    const p = extractImagePrompt(msg).split(/\s+/).slice(0, 4).join(' ').trim();
+    const p = extractImagePromptForTitle(msg).split(/\s+/).slice(0, 4).join(' ').trim();
     return p ? `${p} Photo` : 'Image Request';
   }
   const qPatterns = [
@@ -799,9 +788,25 @@ async function generateChatTitle(firstMessage) {
 }
 
 // ============ ROUTES ============
-app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '3.1.0', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
+app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '3.2.0', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
 app.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nSitemap: https://deeprwa.agentdomains.co/sitemap.xml\n`));
 app.get('/sitemap.xml', (req, res) => res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>https://deeprwa.agentdomains.co/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>\n</urlset>`));
+
+// ============ IMAGE PROVIDER DIAGNOSTICS ============
+app.get('/api/debug/image-providers', (req, res) => {
+  const cf = !!(process.env.CF_ACCOUNT_ID || process.env.CLOUDFLARE_ACCOUNT_ID) && !!(process.env.CF_API_TOKEN || process.env.CLOUDFLARE_API_TOKEN);
+  const providers = [];
+  if (cf) providers.push({ id: 'cloudflare', name: 'Cloudflare Workers AI (FLUX.1-schnell)', enabled: true, watermark: false });
+  res.json({
+    providers,
+    active_providers: providers.map(p => p.id),
+    storage_configured: !!supabase,
+    storage_bucket: process.env.SUPABASE_STORAGE_BUCKET || 'uploads',
+    mode: 'in-conversation',
+    topic_guard: 'Rwanda-only images',
+    note: 'Pollinations removed — free tier always adds a watermark'
+  });
+});
 
 // AUTH: Signup
 app.post('/api/auth/signup', async (req, res) => {
@@ -1230,37 +1235,46 @@ async function streamChatResponse(messages, res, conversationId, attachments) {
       return done();
     }
 
-    // ── IMAGE GENERATION (Rwanda-only) ──
+    // ── IMAGE GENERATION (Rwanda-only, Cloudflare FLUX — no watermark) ──
     if (isImageGenerationRequest(userText)) {
       try {
         const intent = await classifyImageIntent(userText);
         if (intent.action === 'generate' && intent.prompt) {
-          const imageUrl = buildPollinationsUrl(intent.prompt);
-          const shortSubject = intent.prompt.split(',')[0].trim().slice(0, 80);
-          const intro = `Here is an image of ${shortSubject}.`;
           console.log(`[image-gen] "${intent.prompt}"`);
+          let result;
+          try { result = await generateImage(intent.prompt); }
+          catch (e) {
+            const errText = "I couldn't create that image right now. Please try again in a moment.";
+            console.warn('[image] generation failed:', e.message);
+            send({ text: errText });
+            if (conversationId && supabase) {
+              try { await supabase.from('messages').insert({ conversation_id: conversationId, role: 'assistant', content: errText }); } catch {}
+            }
+            return done();
+          }
+          const intro = "Here's the image you asked for:";
           send({ text: intro });
-          send({ image: imageUrl, prompt: intent.prompt });
+          send({ image: result.url, prompt: intent.prompt });
           if (conversationId && supabase) {
             try {
+              const filename = `generated-${Date.now()}.jpg`;
               await supabase.from('messages').insert({
                 conversation_id: conversationId,
                 role: 'assistant',
                 content: intro,
-                files: [{ url: imageUrl, type: 'image/jpeg', name: `${shortSubject.replace(/\s+/g, '_').slice(0, 40)}.jpg`, generated: true }]
+                files: [{ url: result.url, public_url: result.url, type: 'image/jpeg', name: filename, generated: true }]
               });
             } catch (e) { console.warn('save image msg failed:', e.message); }
           }
+          console.log(`[image-gen] ✅ done via ${result.provider}`);
           return done();
         }
         if (intent.action === 'off_topic') {
-          const refusal = "I can only create images about Rwanda. Please ask for something Rwanda-related — for example, a Rwandan landscape, city, cultural scene, wildlife, or a notable place.";
+          const refusal = "I'm DeepRWA, specialised in Rwanda. I can create images related to Rwanda — landscapes, cities, cultural scenes, wildlife, notable places, and similar — but not unrelated subjects. If you'd like a Rwanda-related image, just describe what you need — for example, \"a maize field in Rwanda at sunrise\" or \"a mountain gorilla in Volcanoes National Park\".";
           console.log(`[image-refuse] off-topic image request`);
           send({ text: refusal });
           if (conversationId && supabase) {
-            try {
-              await supabase.from('messages').insert({ conversation_id: conversationId, role: 'assistant', content: refusal });
-            } catch (e) {}
+            try { await supabase.from('messages').insert({ conversation_id: conversationId, role: 'assistant', content: refusal }); } catch {}
           }
           return done();
         }
