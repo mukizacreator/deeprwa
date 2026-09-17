@@ -6,6 +6,7 @@
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="DeepRWA" />
 <meta name="format-detection" content="telephone=no" />
 <title>DeepRWA — Your AI Guide to Rwanda</title>
 <meta name="description" content="DeepRWA is an AI assistant specialised in everything about Rwanda." />
@@ -17,10 +18,11 @@
 <meta name="google-site-verification" content="8a-0N0anTCOQ8HMxXMIDzlHWXTWovfcCjmYbaIKLR5c" />
 <link rel="icon" href="/av.png" type="image/png" />
 <link rel="apple-touch-icon" href="/av.png" />
+<link rel="manifest" href="/manifest.json" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="/style.css?v=3.5.0" />
+<link rel="stylesheet" href="/style.css?v=3.6.0" />
 <script src="https://cdn.jsdelivr.net/npm/marked@13.0.3/marked.min.js"></script>
 <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
 <script type="application/ld+json">
@@ -50,7 +52,6 @@
       <button class="nav-item" data-view="files"><i data-lucide="folder"></i><span>Files</span></button>
     </nav>
 
-    <!-- Chats multi-select bar: shown when "Multi-select" is active on a chat -->
     <div class="chats-multiselect-bar hidden" id="chatsMultiBar">
       <button class="files-ms-btn" id="chatsSelectAllBtn" aria-label="Select all">
         <i data-lucide="square"></i><span>Select all</span>
@@ -68,7 +69,6 @@
       </div>
     </div>
 
-    <!-- Files multi-select bar: shown when a file's "Multi-select" is active -->
     <div class="files-multiselect-bar hidden" id="filesMultiBar">
       <button class="files-ms-btn" id="filesSelectAllBtn" aria-label="Select all">
         <i data-lucide="square"></i><span>Select all</span>
@@ -110,6 +110,7 @@
         <button type="button" class="attach-btn" id="attachBtn" aria-label="Attach"><i data-lucide="paperclip"></i></button>
         <input type="file" id="fileInput" multiple hidden accept="image/*,application/pdf,text/*,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.md,.csv,.json" />
         <textarea id="input" rows="1" placeholder="Ask anything about Rwanda…" autocomplete="off" autocorrect="off" autocapitalize="sentences" spellcheck="false" enterkeyhint="send"></textarea>
+        <button type="button" class="mic-btn" id="micBtn" aria-label="Voice input" title="Speak"><i data-lucide="mic"></i></button>
         <button type="button" class="send-btn" id="sendBtn" disabled aria-label="Send">
           <i data-lucide="arrow-up" class="icon-send"></i>
           <i data-lucide="square" class="icon-stop hidden"></i>
@@ -120,7 +121,6 @@
   </main>
 </div>
 
-<!-- AUTH MODAL -->
 <div class="modal-backdrop hidden" id="authModal">
   <div class="modal">
     <button class="modal-close" id="authModalClose"><i data-lucide="x"></i></button>
@@ -128,7 +128,6 @@
   </div>
 </div>
 
-<!-- PROFILE MODAL -->
 <div class="modal-backdrop hidden" id="profileModal">
   <div class="modal">
     <button class="modal-close" id="profileModalClose"><i data-lucide="x"></i></button>
@@ -136,7 +135,6 @@
   </div>
 </div>
 
-<!-- SETTINGS MODAL -->
 <div class="modal-backdrop hidden" id="settingsModal">
   <div class="modal modal-settings">
     <button class="modal-close" id="settingsModalClose"><i data-lucide="x"></i></button>
@@ -151,7 +149,6 @@
   </div>
 </div>
 
-<!-- ACCOUNT DROPDOWN -->
 <div class="dropdown hidden" id="accountDropdown">
   <button data-action="profile"><i data-lucide="user"></i><span>Profile</span></button>
   <button data-action="settings"><i data-lucide="settings"></i><span>Settings</span></button>
@@ -159,7 +156,6 @@
   <button data-action="logout" class="danger"><i data-lucide="log-out"></i><span>Log out</span></button>
 </div>
 
-<!-- SHARE MODAL -->
 <div class="modal-backdrop hidden" id="shareModal">
   <div class="modal">
     <button class="modal-close" id="shareModalClose"><i data-lucide="x"></i></button>
@@ -174,7 +170,6 @@
   </div>
 </div>
 
-<!-- RENAME MODAL -->
 <div class="modal-backdrop hidden" id="renameModal">
   <div class="modal">
     <button class="modal-close" id="renameModalClose"><i data-lucide="x"></i></button>
@@ -186,7 +181,6 @@
   </div>
 </div>
 
-<!-- CONFIRM MODAL -->
 <div class="modal-backdrop hidden" id="confirmModal">
   <div class="modal">
     <div class="modal-body">
@@ -200,7 +194,6 @@
   </div>
 </div>
 
-<!-- FILE VIEW MODAL -->
 <div class="modal-backdrop hidden" id="fileViewModal">
   <div class="modal modal-file-view">
     <button class="modal-close" id="fileViewModalClose"><i data-lucide="x"></i></button>
@@ -210,6 +203,6 @@
 
 <div class="toast-container" id="toastContainer"></div>
 
-<script src="/main.js?v=3.5.0"></script>
+<script src="/main.js?v=3.6.0"></script>
 </body>
 </html>
