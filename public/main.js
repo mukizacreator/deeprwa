@@ -1,4 +1,4 @@
-// DeepRWA — Complete frontend logic (rev.3.3.4)
+// DeepRWA — Complete frontend logic (rev.3.3.5)
 
 // ============ CLIENT ID ============
 function getOrCreateClientId() {
@@ -33,11 +33,7 @@ function clearAuthModalState() {
   try { sessionStorage.removeItem(AUTH_MODAL_KEY); } catch {}
 }
 
-// ============ VISUAL VIEWPORT (keyboard-aware layout) ============
-// On mobile, when the soft keyboard appears, the visual viewport shrinks
-// but 100dvh does not follow on iOS. We set --vvh to the visual viewport
-// height so .app shrinks with the keyboard — composer stays visible above
-// the keyboard and the chat area remains scrollable.
+// ============ VISUAL VIEWPORT ============
 function setupVisualViewport() {
   if (!window.visualViewport) return;
   const apply = () => {
@@ -144,14 +140,12 @@ function escapeHtmlOutsideCode(text) {
   return lines.map(line => {
     if (/^\s*```/.test(line)) { inCode = !inCode; return line; }
     if (inCode) return line;
-
     let cleaned = line
       .replace(/<br\s*\/?>/gi, '\n')
       .replace(/<hr\s*\/?>/gi, '\n')
       .replace(/<a\s+[^>]*?href\s*=\s*["']([^"']*)["'][^>]*?>(.*?)<\/a>/gi, '[$2]($1)')
       .replace(/<\/?(p|div|span|strong|em|b|i|u|ul|ol|li|blockquote|table|thead|tbody|tr|td|th|h[1-6]|section|article|header|footer|nav|aside|main|pre|code|sup|sub|small|mark|del|ins|figure|figcaption|picture|source|video|audio|canvas|iframe|form|input|button|select|textarea|label|fieldset|legend|details|summary|body|html|head|title|meta|link|script|style)[^>]*>/gi, '')
       .replace(/<!--[\s\S]*?-->/g, '');
-
     return cleaned.replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }).join('\n');
 }
@@ -159,14 +153,9 @@ function escapeHtmlOutsideCode(text) {
 function renderMarkdown(text) {
   const safe = escapeHtmlOutsideCode(text || '');
   let html;
-  try {
-    html = window.marked.parse(safe, { breaks: true, gfm: true });
-  } catch {
-    return safe.replace(/\n/g, '<br>');
-  }
-
+  try { html = window.marked.parse(safe, { breaks: true, gfm: true }); }
+  catch { return safe.replace(/\n/g, '<br>'); }
   html = html.replace(/<hr\s*\/?>/gi, '');
-
   html = html.replace(/<a\s+([^>]*?)>/gi, (_match, attrs) => {
     const cleanedAttrs = attrs
       .replace(/\btarget\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
@@ -174,7 +163,6 @@ function renderMarkdown(text) {
       .trim();
     return `<a ${cleanedAttrs ? cleanedAttrs + ' ' : ''}target="_blank" rel="noopener noreferrer">`;
   });
-
   return html;
 }
 
@@ -312,10 +300,7 @@ async function init() {
         await loadConversations();
       } else {
         let revoked = false;
-        try {
-          const d = await res.json();
-          if (d && d.code === 'SESSION_REVOKED') revoked = true;
-        } catch {}
+        try { const d = await res.json(); if (d && d.code === 'SESSION_REVOKED') revoked = true; } catch {}
         state.token = null;
         localStorage.removeItem('deeprwa_token');
         renderUser();
@@ -330,7 +315,6 @@ async function init() {
 // ============ SESSION CHECK ============
 function startSessionCheck() {
   if (state.sessionCheckInterval) clearInterval(state.sessionCheckInterval);
-
   const doCheck = () => {
     if (!state.token) return;
     const now = Date.now();
@@ -339,22 +323,16 @@ function startSessionCheck() {
     fetch('/api/auth/session-check', { headers: authHeaders() })
       .then(async (r) => {
         if (r.ok) {
-          try {
-            const d = await r.json();
-            if (d && d.valid === false) forceSignOut('Signed out from another device');
-          } catch {}
+          try { const d = await r.json(); if (d && d.valid === false) forceSignOut('Signed out from another device'); } catch {}
         } else if (r.status === 401) {
           forceSignOut('Signed out from another device');
         }
       })
       .catch(() => {});
   };
-
   setTimeout(doCheck, 5000);
   state.sessionCheckInterval = setInterval(doCheck, 30000);
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) doCheck();
-  });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) doCheck(); });
 }
 
 async function forceSignOut(reason) {
@@ -594,7 +572,7 @@ async function renderFilesList() {
     try {
       const res = await fetch('/api/files-with-ids', { headers: authHeaders() });
       const d = await res.json();
-      state._filesCache = d.files || [];
+      state._filesCache = (d.files || []).filter(f => !f.generated);
       renderFilesArray(state._filesCache, false);
     } catch {
       sidebarContent.innerHTML = `<div class="sidebar-empty"><p>Could not load files</p></div>`;
@@ -608,7 +586,7 @@ async function renderFilesList() {
     for (const m of chat.messages || []) {
       if (Array.isArray(m.files)) {
         m.files.forEach((f, i) => {
-          if (f && (f.dataUrl || f.url)) files.push({ ...f, _guestRef: { chatId: chat.id, msgId: m.id, index: i }, created_at: m._createdAt || nowISO() });
+          if (f && !f.generated && (f.dataUrl || f.url)) files.push({ ...f, _guestRef: { chatId: chat.id, msgId: m.id, index: i }, created_at: m._createdAt || nowISO() });
         });
       }
     }
@@ -1129,15 +1107,31 @@ function renderMessages() {
 
 function renderFilesInline(files) {
   if (!files || !files.length) return '';
-  return `<div class="msg-files">${files.map(f => {
-    const isImg = (f.type || '').startsWith('image/');
-    const url = f.url || f.dataUrl || f.public_url || '';
-    if (!url) return '';
-    const inner = isImg
-      ? `<img src="${url}" class="msg-file-thumb" loading="lazy" alt="attachment" />`
-      : `<div class="msg-file-doc"><i data-lucide="file-text"></i></div>`;
-    return `<button class="msg-file-btn" data-msg-file='${escapeHtml(JSON.stringify({url, name: f.name, type: f.type}))}'>${inner}</button>`;
-  }).join('')}</div>`;
+  const normal = files.filter(f => !f.generated);
+  const generated = files.filter(f => f.generated);
+  let html = '';
+  if (normal.length) {
+    html += `<div class="msg-files">${normal.map(f => {
+      const isImg = (f.type || '').startsWith('image/');
+      const url = f.url || f.dataUrl || f.public_url || '';
+      if (!url) return '';
+      const inner = isImg
+        ? `<img src="${url}" class="msg-file-thumb" loading="lazy" alt="attachment" />`
+        : `<div class="msg-file-doc"><i data-lucide="file-text"></i></div>`;
+      return `<button class="msg-file-btn" data-msg-file='${escapeHtml(JSON.stringify({url, name: f.name, type: f.type}))}'>${inner}</button>`;
+    }).join('')}</div>`;
+  }
+  if (generated.length) {
+    html += generated.map(f => {
+      const caption = (f.name || '').replace(/\.jpg$/i, '').replace(/_/g, ' ');
+      return `<div class="generated-image-wrap" style="margin-top:0.75rem;max-width:min(100%,560px);">
+        <img src="${f.url}" loading="lazy" alt="${escapeHtml(caption || 'Generated image')}"
+          style="width:100%;height:auto;border-radius:12px;border:1px solid var(--border);background:var(--surface-2);display:block;" />
+        <div style="text-align:center;font-size:0.78rem;color:var(--text-dim);padding:8px 0;line-height:1.4;">${escapeHtml(caption)}</div>
+      </div>`;
+    }).join('');
+  }
+  return html;
 }
 
 function buildUserMessage(m, i) {
@@ -1306,7 +1300,7 @@ async function requestTitle(text) {
   } catch { return null; }
 }
 
-// ============ SEND MESSAGE (optimistic render) ============
+// ============ SEND MESSAGE ============
 formEl.addEventListener('submit', async (e) => {
   e.preventDefault();
   if (state.isGenerating) return;
@@ -1399,12 +1393,29 @@ formEl.addEventListener('submit', async (e) => {
             if (el) el.innerHTML = renderMarkdown(fullText);
             scrollBottom();
           }
+          if (j.image) {
+            if (!assistantMsg.files) assistantMsg.files = [];
+            assistantMsg.files.push({ url: j.image, type: 'image/jpeg', name: (j.prompt || 'image') + '.jpg', generated: true });
+            const body = chatEl.querySelector(`.msg-assistant[data-id="${assistantMsg.id}"] .assistant-body`);
+            if (body && !body.querySelector('.generated-image-wrap')) {
+              const wrap = document.createElement('div');
+              wrap.className = 'generated-image-wrap';
+              wrap.style.cssText = 'margin-top:0.75rem;max-width:min(100%,560px);';
+              wrap.innerHTML = `<img src="${j.image}" loading="lazy" alt="${escapeHtml(j.prompt || 'Generated image')}" style="width:100%;height:auto;border-radius:12px;border:1px solid var(--border);background:var(--surface-2);min-height:220px;display:block;" /><div class="gen-cap" style="text-align:center;font-size:0.78rem;color:var(--text-dim);padding:8px 0;line-height:1.4;">Generating image…</div>`;
+              const img = wrap.querySelector('img');
+              const cap = wrap.querySelector('.gen-cap');
+              img.onload = () => { cap.textContent = j.prompt || ''; scrollBottom(); };
+              img.onerror = () => { cap.textContent = 'Image could not be generated. Please try again.'; };
+              body.appendChild(wrap);
+              scrollBottom();
+            }
+          }
         } catch {}
       }
     }
 
-    if (fullText) {
-      assistantMsg.content = fullText;
+    if (fullText || (assistantMsg.files && assistantMsg.files.length)) {
+      if (fullText) assistantMsg.content = fullText;
       const actEl = chatEl.querySelector(`.msg-assistant[data-id="${assistantMsg.id}"] .msg-actions-assistant`);
       if (actEl) actEl.classList.remove('hidden');
       if (state.user) await loadConversations();
@@ -1497,17 +1508,34 @@ async function saveEditAndSend(newText) {
             if (el) el.innerHTML = renderMarkdown(fullText);
             scrollBottom();
           }
+          if (j.image) {
+            if (!assistantMsg.files) assistantMsg.files = [];
+            assistantMsg.files.push({ url: j.image, type: 'image/jpeg', name: (j.prompt || 'image') + '.jpg', generated: true });
+            const body = chatEl.querySelector(`.msg-assistant[data-id="${assistantMsg.id}"] .assistant-body`);
+            if (body && !body.querySelector('.generated-image-wrap')) {
+              const wrap = document.createElement('div');
+              wrap.className = 'generated-image-wrap';
+              wrap.style.cssText = 'margin-top:0.75rem;max-width:min(100%,560px);';
+              wrap.innerHTML = `<img src="${j.image}" loading="lazy" alt="${escapeHtml(j.prompt || 'Generated image')}" style="width:100%;height:auto;border-radius:12px;border:1px solid var(--border);background:var(--surface-2);min-height:220px;display:block;" /><div class="gen-cap" style="text-align:center;font-size:0.78rem;color:var(--text-dim);padding:8px 0;line-height:1.4;">Generating image…</div>`;
+              const img = wrap.querySelector('img');
+              const cap = wrap.querySelector('.gen-cap');
+              img.onload = () => { cap.textContent = j.prompt || ''; scrollBottom(); };
+              img.onerror = () => { cap.textContent = 'Image could not be generated. Please try again.'; };
+              body.appendChild(wrap);
+              scrollBottom();
+            }
+          }
         } catch {}
       }
     }
     v.aiReplies[v.currentIndex] = fullText;
-    v.aiFiles[v.currentIndex] = [];
+    v.aiFiles[v.currentIndex] = assistantMsg.files || [];
     renderMessages();
     if (state.user && chat && !isLocalId(chat.id) && userMsg.id && !userMsg.id.startsWith('user_')) {
       try {
         await fetch(`/api/chat/messages/${userMsg.id}/sync-versions`, {
           method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userMessageContent: userMsg.content, userMessageFiles: userMsg.files || [], versions: v.versions, versionFiles: v.files, aiReplies: v.aiReplies, aiFiles: v.aiFiles, currentVersionIndex: v.currentIndex, assistantContent: fullText, assistantFiles: [] })
+          body: JSON.stringify({ userMessageContent: userMsg.content, userMessageFiles: userMsg.files || [], versions: v.versions, versionFiles: v.files, aiReplies: v.aiReplies, aiFiles: v.aiFiles, currentVersionIndex: v.currentIndex, assistantContent: fullText, assistantFiles: assistantMsg.files || [] })
         });
       } catch (e) { console.warn('sync versions failed', e); }
     }
@@ -1820,7 +1848,7 @@ function renderForgotStep3() {
   };
 }
 
-// ============ RESTORE AUTH MODAL STATE (after a tab reload) ============
+// ============ RESTORE AUTH MODAL STATE ============
 function restoreAuthModalState() {
   const saved = loadAuthModalState();
   if (!saved || !saved.form) return;
