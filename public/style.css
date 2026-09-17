@@ -1866,3 +1866,103 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   .mic-btn:hover { background: transparent; color: var(--text-muted); }
   .mic-btn.listening:hover { background: var(--danger-soft); color: var(--danger); }
 }
+
+/* ============================================================
+   GENERATED IMAGES — wrapper, download button
+   ============================================================ */
+.generated-image-wrap {
+  position: relative;
+  margin-top: 0.75rem;
+  max-width: min(100%, 560px);
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  line-height: 0;
+}
+.generated-image {
+  width: 100%;
+  height: auto;
+  display: block;
+  cursor: zoom-in;
+  transition: opacity 0.15s;
+}
+.generated-image:hover { opacity: 0.96; }
+.gen-download-btn {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  background: rgba(0,0,0,0.6);
+  color: #fff;
+  border: 1px solid rgba(255,255,255,0.25);
+  border-radius: 8px;
+  padding: 0.4rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  min-width: 36px;
+  min-height: 36px;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  transition: background 0.15s, transform 0.06s;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+.gen-download-btn:hover { background: rgba(0,0,0,0.85); }
+.gen-download-btn:active { transform: scale(0.95); }
+.gen-download-btn svg { width: 16px; height: 16px; pointer-events: none; }
+
+@media (hover: none) {
+  .gen-download-btn:hover { background: rgba(0,0,0,0.6); }
+}
+
+/* ============================================================
+   LIGHTBOX
+   ============================================================ */
+.lightbox {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.92);
+  z-index: 9000;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  cursor: zoom-out;
+}
+.lightbox.open {
+  display: flex;
+  opacity: 1;
+}
+.lightbox img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 8px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+  cursor: default;
+}
+.lightbox-close {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.1);
+  color: #fff;
+  border: none;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background 0.15s;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+.lightbox-close:hover { background: rgba(255,255,255,0.2); }
+.lightbox-close svg { width: 20px; height: 20px; pointer-events: none; }
