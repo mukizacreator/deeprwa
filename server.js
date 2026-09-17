@@ -17,6 +17,7 @@ app.use(cors());
 app.use(express.json({ limit: '40mb' }));
 app.use(express.urlencoded({ extended: true, limit: '40mb' }));
 
+// ============ SUPABASE ============
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
 const supabaseAnon = process.env.SUPABASE_ANON_KEY;
@@ -26,6 +27,7 @@ const supabase = (supabaseUrl && supabaseKey)
   : null;
 const supabaseConfigured = !!supabase;
 
+// ============ BREVO ============
 let brevoClient = null;
 try {
   if (process.env.BREVO_API_KEY) {
@@ -58,7 +60,22 @@ const ACTION_INTROS = {
 function buildVerificationEmailHtml(action, code) {
   const subject = ACTION_SUBJECTS[action] || 'DeepRWA verification code';
   const intro = ACTION_INTROS[action] || 'Use this code to continue:';
-  return `<!DOCTYPE html><html><head><meta charset="UTF-8" /><title>${subject}</title></head><body style="margin:0;padding:24px;background:#f4f6fa;font-family:Arial,Helvetica,sans-serif;color:#1e232a;"><table role="presentation" cellpadding="0" cellspacing="0" style="max-width:520px;margin:0 auto;background:#ffffff;border-radius:12px;padding:32px 28px;"><tr><td style="text-align:center;padding-bottom:20px;"><img src="${LOGO_URL}" alt="DeepRWA" width="56" height="56" style="border-radius:12px;display:inline-block;" /></td></tr><tr><td style="font-size:20px;font-weight:600;padding-bottom:12px;color:#1e232a;">${subject}</td></tr><tr><td style="font-size:15px;line-height:1.6;color:#3a424b;padding-bottom:20px;">${intro}</td></tr><tr><td style="text-align:center;padding:20px 0;"><div style="display:inline-block;padding:16px 28px;background:#f0f4f8;color:#1e232a;font-size:32px;font-weight:700;letter-spacing:8px;border-radius:10px;font-family:Consolas,Menlo,monospace;">${code}</div></td></tr><tr><td style="font-size:14px;line-height:1.6;color:#3a424b;padding-bottom:8px;">This code expires in 10 minutes. If you did not request this, ignore this email.</td></tr><tr><td style="font-size:12px;color:#8a939c;text-align:center;padding-top:20px;border-top:1px solid #e5e9ee;">© ${new Date().getFullYear()} DeepRWA · The Star🌟</td></tr></table></body></html>`;
+  return `<!DOCTYPE html>
+<html><head><meta charset="UTF-8" /><title>${subject}</title></head>
+<body style="margin:0;padding:24px;background:#f4f6fa;font-family:Arial,Helvetica,sans-serif;color:#1e232a;">
+  <table role="presentation" cellpadding="0" cellspacing="0" style="max-width:520px;margin:0 auto;background:#ffffff;border-radius:12px;padding:32px 28px;">
+    <tr><td style="text-align:center;padding-bottom:20px;">
+      <img src="${LOGO_URL}" alt="DeepRWA" width="56" height="56" style="border-radius:12px;display:inline-block;" />
+    </td></tr>
+    <tr><td style="font-size:20px;font-weight:600;padding-bottom:12px;color:#1e232a;">${subject}</td></tr>
+    <tr><td style="font-size:15px;line-height:1.6;color:#3a424b;padding-bottom:20px;">${intro}</td></tr>
+    <tr><td style="text-align:center;padding:20px 0;">
+      <div style="display:inline-block;padding:16px 28px;background:#f0f4f8;color:#1e232a;font-size:32px;font-weight:700;letter-spacing:8px;border-radius:10px;font-family:Consolas,Menlo,monospace;">${code}</div>
+    </td></tr>
+    <tr><td style="font-size:14px;line-height:1.6;color:#3a424b;padding-bottom:8px;">This code expires in 10 minutes. If you did not request this, ignore this email.</td></tr>
+    <tr><td style="font-size:12px;color:#8a939c;text-align:center;padding-top:20px;border-top:1px solid #e5e9ee;">© ${new Date().getFullYear()} DeepRWA · The Star🌟</td></tr>
+  </table>
+</body></html>`;
 }
 
 async function sendEmailRaw(to, subject, html) {
@@ -91,6 +108,7 @@ async function sendEmailCode(toEmail, code, purpose = 'verification') {
   }
 }
 
+// ============ RATE LIMIT ============
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, max: 300,
   standardHeaders: true, legacyHeaders: false,
@@ -98,16 +116,19 @@ const apiLimiter = rateLimit({
 });
 app.use('/api/', apiLimiter);
 
+// ============ JWT ============
 const JWT_SECRET = process.env.JWT_SECRET;
 function signPending(p, ttl = 900) { return jwt.sign(p, JWT_SECRET, { expiresIn: ttl }); }
 function verifyPending(t) { try { return jwt.verify(t, JWT_SECRET); } catch { return null; } }
 function stripJwtClaims(p) { if (!p || typeof p !== 'object') return {}; const { exp, iat, nbf, aud, iss, sub, jti, ...rest } = p; return rest; }
 
+// ============ VALIDATION ============
 const EMAIL_RE = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/;
 function isValidEmail(e) { if (!e || typeof e !== 'string') return false; const t = e.trim(); if (t.length < 5 || t.length > 254) return false; if (t.includes('..')) return false; return EMAIL_RE.test(t); }
 function pwIsStrong(p) { return typeof p === 'string' && p.length >= 8 && /[a-zA-Z]/.test(p) && /\d/.test(p); }
 function genCode() { return Math.floor(100000 + Math.random() * 900000).toString(); }
 
+// ============ USER LOOKUP ============
 async function findUserByEmail(email) {
   if (!supabase) return null;
   const target = String(email || '').toLowerCase().trim();
@@ -125,6 +146,7 @@ async function findUserByEmail(email) {
 }
 async function isEmailTakenByOther(email, uid) { const u = await findUserByEmail(email); return u ? u.id !== uid : false; }
 
+// ============ AUTH HELPERS ============
 function getUserId(req) { const a = req.headers.authorization; if (!a?.startsWith('Bearer ')) return null; try { return jwt.verify(a.slice(7), JWT_SECRET).sub; } catch { return null; } }
 async function requireAuth(req, res, next) { const u = getUserId(req); if (!u) return res.status(401).json({ error: 'Auth required' }); req.userId = u; next(); }
 async function verifyPassword(email, password) {
@@ -139,6 +161,7 @@ async function verifyPassword(email, password) {
   } catch { return null; }
 }
 
+// ============ SESSIONS ============
 async function trackSession(userId, req) {
   if (!supabase) return;
   const clientId = (req.headers['x-client-id'] || '').toString().trim().slice(0, 80) || null;
@@ -158,12 +181,15 @@ async function trackSession(userId, req) {
   } catch (e) { console.warn('session track failed', e.message); }
 }
 
+// ============ av.png ============
 app.get('/av.png', (req, res) => res.sendFile(path.join(__dirname, 'av.png')));
 
+// ============ HEALTH CHECK ============
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'DeepRWA', version: '3.1.0', time: new Date().toISOString() });
 });
 
+// ============ SYSTEM PROMPT ============
 const SYSTEM_PROMPT = `You are **DeepRWA** — a professional, world-class AI assistant specialised exclusively in information about Rwanda.
 
 ## IDENTITY (never violate)
@@ -181,7 +207,7 @@ You answer **only** questions about Rwanda. Everything about Rwanda is in scope:
 If the user asks about **any other country** or a topic unrelated to Rwanda, reply exactly: "I am specialised only in topics about Rwanda. I cannot answer questions about other countries or topics."
 
 ## IMAGE GENERATION
-You can create images, but only about Rwanda. If a user asks you to create an image about Rwanda, the system will handle generation automatically. If the user asks about your capabilities, you can confirm: you can create images related to Rwanda (landscapes, cultural scenes, wildlife, cities, and similar), and you can analyse images, PDFs, and text files related to Rwanda.
+You can create images, but only about Rwanda. The system handles Rwanda-scoped image generation automatically. If a user asks what you can do, you can confirm: you can create images related to Rwanda (landscapes, cultural scenes, wildlife, cities, and similar), and you can analyse images, PDFs, and text files related to Rwanda.
 
 ## FILE SCOPE (STRICT)
 Before analysing ANY attached file, determine whether the file's content is about Rwanda.
@@ -217,6 +243,7 @@ Always reply in the **exact language the user wrote in**. Kinyarwanda → Kinyar
 ## STYLE
 Warm, professional, concise, respectful.`;
 
+// ============ GREETINGS & IDENTITY ============
 const GREETING_EXACT = new Set([
   'hi','hello','hey','yo','hiya','howdy','sup','whats up',"what's up",
   'good morning','good afternoon','good evening','good night',
@@ -267,8 +294,7 @@ function buildGreetingReply(text) {
 }
 const IDENTITY_REPLY = "I am DeepRWA, created by Emmanuel Mukiza under The Star🌟, specialised in information about Rwanda.";
 
-// ============ IMAGE GENERATION (Rwanda-scoped, Pollinations, no API key) ============
-
+// ============ IMAGE GENERATION (Rwanda-scoped, Pollinations) ============
 const RWANDA_IMAGE_KEYWORDS = [
   'rwanda','rwandan','rwandese','kigali','kinyarwanda','umuganda','imigongo','agaseke','inkomane',
   'kivu','nyungwe','akagera','virunga','karisimbi','bisoke','muhabura','sabyinyo','gahinga',
@@ -378,7 +404,7 @@ async function classifyImageIntent(userText) {
   if (/^\s*OFF_TOPIC\s*$/im.test(trimmed) || /^off[_\s-]?topic\b/i.test(trimmed)) {
     return { action: 'off_topic' };
   }
-  // Fallback: keyword check on the raw message
+  // Fallback: keyword check
   const n = normalise(userText);
   if (keywordRwandaImageCheck(n)) {
     return { action: 'generate', prompt: n.slice(0, 200) };
@@ -391,7 +417,9 @@ const cooldown = new Map();
 function isCooling(k) { const u = cooldown.get(k); if (!u) return false; if (Date.now() > u) { cooldown.delete(k); return false; } return true; }
 function setCooldown(k, ms) { cooldown.set(k, Date.now() + ms); }
 
-function sanitizeForProvider(messages) { return messages.map(m => ({ role: m.role, content: m.content })); }
+function sanitizeForProvider(messages) {
+  return messages.map(m => ({ role: m.role, content: m.content }));
+}
 
 async function* sseOpenAI(url, headers, body, timeoutMs = 30000) {
   const ctrl = new AbortController();
@@ -480,6 +508,7 @@ async function* streamGemini(msgs) {
   } catch (e) { setCooldown(k, e.status === 429 ? 120000 : 300000); throw e; }
 }
 
+// ============ VISION ============
 async function* streamGeminiVision(messages, attachments) {
   const sanitized = sanitizeForProvider(messages);
   const sys = sanitized.filter(m => m.role === 'system').map(m => m.content).join('\n');
@@ -657,7 +686,6 @@ USER: "How do I treat tomato blight?" → Tomato Blight Treatment
 USER: "create a photo of maize" → Maize Photo
 USER: "Tell me about the history of Rwanda" → Rwandan History
 USER: "Who was King Rudahigwa?" → About King Rudahigwa
-USER: "What are the top tourist attractions in Rwanda?" → Rwanda Tourist Attractions
 
 USER MESSAGE:
 ${truncated}
@@ -775,6 +803,7 @@ app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '3.1.0
 app.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nSitemap: https://deeprwa.agentdomains.co/sitemap.xml\n`));
 app.get('/sitemap.xml', (req, res) => res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>https://deeprwa.agentdomains.co/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>\n</urlset>`));
 
+// AUTH: Signup
 app.post('/api/auth/signup', async (req, res) => {
   if (!supabaseConfigured) return res.status(503).json({ error: 'Auth not configured' });
   const { email, password, fullName } = req.body || {};
@@ -997,6 +1026,7 @@ app.delete('/api/auth/account', requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
+// 2FA
 app.post('/api/auth/2fa/setup', requireAuth, async (req, res) => {
   const { data: profile } = await supabase.from('profiles').select('email, totp_enabled').eq('id', req.userId).maybeSingle();
   if (profile?.totp_enabled) return res.status(400).json({ error: '2FA already enabled' });
@@ -1023,6 +1053,7 @@ app.post('/api/auth/2fa/disable', requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
+// SESSIONS
 app.get('/api/auth/sessions', requireAuth, async (req, res) => {
   const clientId = req.headers['x-client-id'] || '';
   const { data } = await supabase.from('sessions').select('*').eq('user_id', req.userId).eq('revoked', false).order('last_active', { ascending: false });
@@ -1064,6 +1095,7 @@ app.delete('/api/auth/sessions-current', requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
+// FILE UPLOAD
 app.post('/api/upload', requireAuth, async (req, res) => {
   const { name, type, data } = req.body || {};
   if (!name || !type || !data) return res.status(400).json({ error: 'Missing file data' });
@@ -1079,6 +1111,7 @@ app.post('/api/upload', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// FILES LIST (basic)
 app.get('/api/files', requireAuth, async (req, res) => {
   try {
     const { data: convs } = await supabase.from('conversations').select('id').eq('user_id', req.userId);
@@ -1093,6 +1126,7 @@ app.get('/api/files', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message, files: [] }); }
 });
 
+// FILES LIST with IDs
 app.get('/api/files-with-ids', requireAuth, async (req, res) => {
   try {
     const { data: convs } = await supabase.from('conversations').select('id').eq('user_id', req.userId);
@@ -1127,18 +1161,21 @@ app.delete('/api/files/:messageId/:fileIndex', requireAuth, async (req, res) => 
   res.json({ success: true });
 });
 
+// TITLE
 app.post('/api/chat/title', async (req, res) => {
   const { message } = req.body || {};
   if (!message) return res.status(400).json({ error: 'message required' });
   res.json({ title: await generateChatTitle(message) });
 });
 
+// CHAT: guest
 app.post('/api/chat/guest', async (req, res) => {
   const { messages, attachments } = req.body || {};
   if (!Array.isArray(messages) || !messages.length) return res.status(400).json({ error: 'messages required' });
   await streamChatResponse(messages, res, null, attachments || []);
 });
 
+// CHAT: authenticated
 app.post('/api/chat', requireAuth, async (req, res) => {
   const { messages, conversationId, attachments } = req.body || {};
   if (!Array.isArray(messages) || !messages.length) return res.status(400).json({ error: 'messages required' });
@@ -1154,9 +1191,16 @@ app.post('/api/chat', requireAuth, async (req, res) => {
   const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
   if (lastUserMsg) {
     const filesArray = Array.isArray(lastUserMsg.files) ? lastUserMsg.files : [];
-    const { error: insErr } = await supabase.from('messages').insert({ conversation_id: convId, role: 'user', content: lastUserMsg.content, files: filesArray });
+    const { error: insErr } = await supabase.from('messages').insert({
+      conversation_id: convId,
+      role: 'user',
+      content: lastUserMsg.content,
+      files: filesArray
+    });
     if (insErr) console.warn(`[chat] failed to save user msg:`, insErr.message);
     else console.log(`[chat] user msg saved (${filesArray.length} files)`);
+  } else {
+    console.warn(`[chat] no user message found in payload`);
   }
   res.setHeader('X-Conversation-Id', convId);
   await streamChatResponse(messages, res, convId, attachments || []);
@@ -1220,7 +1264,6 @@ async function streamChatResponse(messages, res, conversationId, attachments) {
           }
           return done();
         }
-        // 'not_image' → fall through to normal text flow
       } catch (e) {
         console.warn('[image] flow error (falling through):', e.message);
       }
@@ -1269,6 +1312,7 @@ async function streamChatResponse(messages, res, conversationId, attachments) {
   return done();
 }
 
+// CONVERSATIONS
 app.get('/api/conversations', requireAuth, async (req, res) => {
   const { data } = await supabase.from('conversations').select('*').eq('user_id', req.userId).order('updated_at', { ascending: false });
   res.json({ conversations: data || [] });
@@ -1305,6 +1349,7 @@ app.post('/api/chat/messages/:id/sync-versions', requireAuth, async (req, res) =
   res.json({ assistantMessageId: newMsg?.id });
 });
 
+// SHARE
 app.post('/api/share/guest', async (req, res) => {
   const { messages } = req.body || {};
   if (!Array.isArray(messages)) return res.status(400).json({ error: 'messages required' });
@@ -1326,6 +1371,7 @@ app.get('/api/share/:token', async (req, res) => {
 });
 app.get('/share/:token', (req, res) => res.sendFile(path.join(__dirname, 'public', 'share.html')));
 
+// STATIC
 const PUBLIC_DIR = path.join(__dirname, 'public');
 app.use(express.static(PUBLIC_DIR));
 app.get(/^\/(?!api|health|robots|sitemap|av\.png|share).*/, (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
