@@ -2148,3 +2148,41 @@ body[data-voice-phase="transcribing"] .voice-dot { background: var(--text-muted)
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ============================================================
+   Voice entry icon — universal rendering fallback (rev.4.3.0)
+   ============================================================ */
+
+/* Explicit size attributes on the SVG element are ignored by some
+   in-app browsers. Force size via CSS with !important so no other
+   rule can override. */
+.send-btn > svg.icon-voice {
+  display: block !important;
+  width: 20px !important;
+  height: 20px !important;
+  min-width: 20px;
+  min-height: 20px;
+  stroke: currentColor;
+  fill: none;
+  flex-shrink: 0;
+}
+.send-btn > svg.icon-voice.hidden {
+  display: none !important;
+}
+
+/* Make the voice-entry button's color obvious so it's not confused
+   with the disabled send button. */
+.send-btn.voice-entry {
+  background: var(--surface-2) !important;
+  color: var(--text) !important;
+  border: 1px solid var(--border-strong) !important;
+}
+
+@media (max-width: 380px) {
+  .send-btn > svg.icon-voice {
+    width: 18px !important;
+    height: 18px !important;
+    min-width: 18px;
+    min-height: 18px;
+  }
+}
