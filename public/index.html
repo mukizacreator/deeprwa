@@ -22,7 +22,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="/style.css?v=3.6.0" />
+<link rel="stylesheet" href="/style.css?v=3.7.0" />
 <script src="https://cdn.jsdelivr.net/npm/marked@13.0.3/marked.min.js"></script>
 <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
 <script type="application/ld+json">
@@ -107,18 +107,21 @@
     <div class="composer" id="composerWrap">
       <div class="file-previews" id="filePreviews" hidden></div>
       <form class="composer-inner" id="composer">
-  <button type="button" class="attach-btn" id="attachBtn" aria-label="Attach"><i data-lucide="paperclip"></i></button>
-  <input type="file" id="fileInput" multiple hidden accept="image/*,application/pdf,text/*,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.md,.csv,.json" />
-  <textarea id="input" rows="1" placeholder="Ask anything about Rwanda…" autocomplete="off" autocorrect="off" autocapitalize="sentences" spellcheck="false" enterkeyhint="send"></textarea>
-  <button type="button" class="voice-lang-btn" id="voiceLangBtn" aria-label="Voice language" title="Voice language">
-    <span id="voiceLangLabel">EN</span>
-  </button>
-  <button type="button" class="mic-btn" id="micBtn" aria-label="Voice input" title="Speak"><i data-lucide="mic"></i></button>
-  <button type="button" class="send-btn" id="sendBtn" disabled aria-label="Send">
-    <i data-lucide="arrow-up" class="icon-send"></i>
-    <i data-lucide="square" class="icon-stop hidden"></i>
-  </button>
-</form>
+        <button type="button" class="attach-btn" id="attachBtn" aria-label="Attach"><i data-lucide="paperclip"></i></button>
+        <input type="file" id="fileInput" multiple hidden accept="image/*,application/pdf,text/*,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.md,.csv,.json" />
+        <textarea id="input" rows="1" placeholder="Ask anything about Rwanda…" autocomplete="off" autocorrect="off" autocapitalize="sentences" spellcheck="false" enterkeyhint="send"></textarea>
+        <div class="voice-status hidden" id="voiceStatus" aria-live="polite">
+          <span class="voice-indicator"><span class="voice-dot"></span><span class="voice-dot"></span><span class="voice-dot"></span></span>
+          <span class="voice-label" id="voiceLabel">Listening…</span>
+        </div>
+        <button type="button" class="mic-btn" id="micBtn" aria-label="Dictate" title="Dictate"><i data-lucide="mic"></i></button>
+        <button type="button" class="send-btn" id="sendBtn" aria-label="Send">
+          <i data-lucide="arrow-up" class="icon-send"></i>
+          <i data-lucide="square" class="icon-stop hidden"></i>
+          <i data-lucide="audio-lines" class="icon-voice hidden"></i>
+          <i data-lucide="x" class="icon-exit hidden"></i>
+        </button>
+      </form>
       <p class="composer-disclaimer">DeepRWA — Check important information.</p>
     </div>
   </main>
@@ -206,6 +209,6 @@
 
 <div class="toast-container" id="toastContainer"></div>
 
-<script src="/main.js?v=3.6.0"></script>
+<script src="/main.js?v=3.7.0"></script>
 </body>
 </html>
