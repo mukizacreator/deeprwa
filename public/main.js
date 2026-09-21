@@ -557,21 +557,17 @@ window.addEventListener('beforeunload', () => { stopSpeaking(); StreamingTTS.sto
 const VoiceSession = {
   active: false,
   phase: 'idle',
-  _recognition: null,
   _analyser: null,
   _audioCtx: null,
   _micStream: null,
   _bargeInTimer: null,
-  _turnBuffer: '',
-  _interimBuffer: '',
-  _noSpeechCount: 0,
-  _thinkingTimer: null,
-  _hardCapTimer: null,
-  _lastSpeechTime: 0,
   _warnedNoTts: false,
   _busy: false,
   _bargeInHits: 0,
   _bargeInThreshold: 0.03,
+  _useWhisper: false,
+  _currentRecognition: null,
+  recorder: null,
 
   async enter() {
     if (this.active) return;
@@ -583,10 +579,8 @@ const VoiceSession = {
     getAudioContext();
 
     this.active = true;
-    this._noSpeechCount = 0;
     this._busy = false;
-    this._turnBuffer = '';
-    this._interimBuffer = '';
+    this._useWhisper = false;
     this._bargeInHits = 0;
     document.body.classList.add('voice-mode');
     voiceStatus.classList.remove('hidden');
@@ -603,8 +597,7 @@ const VoiceSession = {
     }
 
     this._startBargeInMonitor();
-    this.setPhase('listening', 'Listening…');
-    this._startRecognition();
+    this._loop();
   },
 
   exit(reason) {
@@ -615,9 +608,13 @@ const VoiceSession = {
     document.body.removeAttribute('data-voice-phase');
     voiceStatus.classList.add('hidden');
     inputEl.disabled = false;
-    this._stopRecognition();
-    if (this._thinkingTimer) { clearTimeout(this._thinkingTimer); this._thinkingTimer = null; }
-    if (this._hardCapTimer) { clearTimeout(this._hardCapTimer); this._hardCapTimer = null; }
+    if (this._currentRecognition) {
+      const rec = this._currentRecognition;
+      this._currentRecognition = null;
+      try { rec.onend = null; rec.onresult = null; rec.onerror = null; } catch {}
+      try { rec.abort(); } catch {}
+    }
+    if (this.recorder) { try { this.recorder.abort('exit'); } catch {} this.recorder = null; }
     if (this._bargeInTimer) { clearInterval(this._bargeInTimer); this._bargeInTimer = null; }
     if (this._micStream) { try { this._micStream.getTracks().forEach(t => t.stop()); } catch {} this._micStream = null; }
     StreamingTTS.stop();
@@ -639,8 +636,6 @@ const VoiceSession = {
     StreamingTTS.stop();
     stopSpeaking();
     if (state.abortController) { try { state.abortController.abort(); } catch {} }
-    // The send's finally will fire _onStreamDone, and _onTurnEnd will
-    // transition to listening + restart recognition.
   },
 
   _startBargeInMonitor() {
@@ -684,138 +679,167 @@ const VoiceSession = {
     }
   },
 
-  // ---------- Recognition lifecycle ----------
-  _stopRecognition() {
-    if (!this._recognition) return;
-    const rec = this._recognition;
-    this._recognition = null;
-    // Null handlers BEFORE abort so onend cannot silently restart.
-    try { rec.onend = null; rec.onresult = null; rec.onerror = null; } catch {}
-    try { rec.abort(); } catch {}
-  },
-
-  _startRecognition() {
+  async _loop() {
     if (!this.active) return;
-    this._stopRecognition();
 
-    const SR = getSpeechRecognition();
-    if (!SR) {
-      toast('Speech recognition is not available on this browser', 'error');
-      this.exit();
-      return;
+    if (state.isGenerating) {
+      await new Promise(r => setTimeout(r, 200));
+      return this._loop();
     }
 
-    const rec = new SR();
-    rec.continuous = true;
-    rec.interimResults = true;
-    rec.lang = pickRecognitionLang();
-    rec.maxAlternatives = 1;
-    this._recognition = rec;
-
-    rec.onresult = (e) => {
-      if (!this.active) return;
-      if (this._recognition !== rec) return; // stale
-      if (this.phase === 'speaking' || this.phase === 'thinking' || this._busy) return;
-
-      let finalText = '', interimText = '';
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const t = e.results[i][0].transcript;
-        if (e.results[i].isFinal) finalText += t;
-        else interimText += t;
-      }
-      if (finalText) this._turnBuffer += finalText;
-      this._interimBuffer = interimText;
-      const combined = (this._turnBuffer + ' ' + this._interimBuffer).trim();
-      this._lastSpeechTime = Date.now();
-      if (combined) this.setPhase('listening', combined.slice(-70));
-      this._scheduleTurnEnd(combined);
-    };
-
-    rec.onerror = (e) => {
-      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-        toast('Microphone access denied', 'error');
-        this.exit();
-        return;
-      }
-      if (e.error === 'no-speech') {
-        this._noSpeechCount++;
-        return;
-      }
-      if (e.error === 'aborted') return;
-      console.warn('[voice] rec error:', e.error);
-    };
-
-    rec.onend = () => {
-      if (this._recognition !== rec) return; // replaced
-      if (!this.active) return;
-      // Natural end (Chrome sometimes stops continuous recognition). Replace.
-      this._recognition = null;
-      setTimeout(() => { if (this.active) this._startRecognition(); }, 150);
-    };
-
-    try { rec.start(); }
-    catch (e) {
-      console.warn('[voice] rec start failed:', e);
-      this._recognition = null;
-      if (this.active) setTimeout(() => this._startRecognition(), 300);
-    }
-  },
-
-  _scheduleTurnEnd(interim) {
-    if (this._thinkingTimer) { clearTimeout(this._thinkingTimer); this._thinkingTimer = null; }
-    if (this._hardCapTimer) { clearTimeout(this._hardCapTimer); this._hardCapTimer = null; }
-
-    if (!interim || !interim.trim()) {
-      this._thinkingTimer = setTimeout(() => this._onTurnEnd('silent'), 15000);
-      return;
-    }
-
-    const dynamicMs = computeDynamicSilenceMs(interim);
-    console.log(`[voice] endpoint window: ${dynamicMs}ms for "${interim.slice(-50)}"`);
-
-    this._thinkingTimer = setTimeout(() => this._onTurnEnd('silence'), dynamicMs);
-
-    this._hardCapTimer = setTimeout(() => {
-      const sinceSpeech = Date.now() - (this._lastSpeechTime || Date.now());
-      if (sinceSpeech >= 7000) this._onTurnEnd('hard-cap');
-    }, 8000);
-  },
-
-  async _onTurnEnd(reason) {
-    if (!this.active || this._busy) return;
-    if (this.phase === 'speaking' || this.phase === 'thinking') return;
-
-    const text = (this._turnBuffer + ' ' + this._interimBuffer).trim();
-    this._turnBuffer = '';
-    this._interimBuffer = '';
-    if (this._thinkingTimer) { clearTimeout(this._thinkingTimer); this._thinkingTimer = null; }
-    if (this._hardCapTimer) { clearTimeout(this._hardCapTimer); this._hardCapTimer = null; }
-
-    if (!text) {
-      this.setPhase('listening', 'Listening…');
-      return;
-    }
-    if (looksLikePhantom(text)) {
-      console.log(`[voice] rejected phantom: "${text}"`);
-      this.setPhase('listening', 'Listening…');
-      return;
-    }
-
-    this._busy = true;
-    this.setPhase('thinking', 'Thinking…');
-    this._stopRecognition();
+    await new Promise(r => setTimeout(r, 400));
+    if (!this.active) return;
 
     try {
+      this.setPhase('listening', 'Listening…');
+      const text = await this._listenForTurn();
+      if (!this.active) return;
+      if (!text || looksLikePhantom(text)) return this._loop();
+
+      this._busy = true;
+      this.setPhase('thinking', 'Thinking…');
       await this._sendAndWait(text);
+      this._busy = false;
+      if (!this.active) return;
+      this._loop();
     } catch (e) {
-      console.warn('[voice] send failed:', e);
+      console.warn('[voice] loop error:', e);
+      this._busy = false;
+      if (this.active) setTimeout(() => this._loop(), 500);
     }
+  },
 
-    this._busy = false;
-    if (!this.active) return;
+  async _listenForTurn() {
+    const SR = getSpeechRecognition();
+    if (SR && !this._useWhisper) {
+      return this._listenWebSpeech();
+    }
+    return this._listenWhisper();
+  },
 
-    this.setPhase('listening', 'Listening…');
-    this._startRecognition();
+  async _listenWebSpeech() {
+    return new Promise((resolve) => {
+      const SR = getSpeechRecognition();
+      if (!SR) { resolve(''); return; }
+
+      let finalText = '';
+      let interimText = '';
+      let lastSpeechTime = 0;
+      let silenceTimer = null;
+      let hardCapTimer = null;
+      let resolved = false;
+      let noSpeechCount = 0;
+      let hasSaid = false;
+
+      const finish = (text) => {
+        if (resolved) return;
+        resolved = true;
+        if (silenceTimer) clearTimeout(silenceTimer);
+        if (hardCapTimer) clearTimeout(hardCapTimer);
+        if (this._currentRecognition === rec) this._currentRecognition = null;
+        try { rec.onend = null; rec.onresult = null; rec.onerror = null; } catch {}
+        try { rec.abort(); } catch {}
+        resolve((text || '').trim());
+      };
+
+      const scheduleEnd = () => {
+        if (silenceTimer) clearTimeout(silenceTimer);
+        if (hardCapTimer) clearTimeout(hardCapTimer);
+        const combined = (finalText + ' ' + interimText).trim();
+        if (!combined) {
+          silenceTimer = setTimeout(() => finish(''), 15000);
+          return;
+        }
+        const dynamicMs = computeDynamicSilenceMs(combined);
+        console.log(`[voice] endpoint window: ${dynamicMs}ms for "${combined.slice(-50)}"`);
+        silenceTimer = setTimeout(() => finish(combined), dynamicMs);
+        hardCapTimer = setTimeout(() => {
+          const sinceSpeech = Date.now() - (lastSpeechTime || Date.now());
+          if (sinceSpeech >= 5000) finish(combined);
+        }, 6000);
+      };
+
+      const rec = new SR();
+      rec.continuous = true;
+      rec.interimResults = true;
+      rec.lang = pickRecognitionLang();
+      rec.maxAlternatives = 1;
+      this._currentRecognition = rec;
+
+      rec.onresult = (e) => {
+        if (!this.active || resolved) return;
+        let f = '', i = '';
+        for (let k = e.resultIndex; k < e.results.length; k++) {
+          const t = e.results[k][0].transcript;
+          if (e.results[k].isFinal) f += t; else i += t;
+        }
+        if (f) { finalText = (finalText ? finalText.replace(/\s+$/, '') + ' ' : '') + f.replace(/^\s+/, ''); hasSaid = true; }
+        interimText = i;
+        lastSpeechTime = Date.now();
+        const combined = (finalText + ' ' + interimText).trim();
+        if (combined) this.setPhase('listening', combined.slice(-70));
+        scheduleEnd();
+      };
+
+      rec.onerror = (e) => {
+        if (e.error === 'no-speech') {
+          noSpeechCount++;
+          if (hasSaid || noSpeechCount >= 3) { finish((finalText + ' ' + interimText).trim()); return; }
+          return;
+        }
+        if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+          toast('Microphone access denied', 'error');
+          this.exit();
+          finish('');
+          return;
+        }
+        if (e.error === 'language-not-supported' || e.error === 'bad-grammar') {
+          console.log('[voice] lang unsupported → Whisper');
+          this._useWhisper = true;
+          finish('');
+          return;
+        }
+        if (e.error === 'aborted') return;
+        console.warn('[voice] rec error:', e.error);
+      };
+
+      rec.onend = () => {
+        if (resolved) return;
+        const combined = (finalText + ' ' + interimText).trim();
+        if (combined) { finish(combined); return; }
+        try { rec.start(); } catch (e) { finish(''); }
+      };
+
+      try { rec.start(); }
+      catch (e) {
+        console.warn('[voice] rec start failed:', e);
+        this._currentRecognition = null;
+        finish('');
+      }
+    });
+  },
+
+  async _listenWhisper() {
+    try {
+      const rec = createRecorder({ maxMs: 20000, silenceMs: 1500, minSpeechMs: 400, minPeakRms: 0.015, vadThreshold: 0.010, vadMultiplier: 2.0, autoStopOnSilence: true });
+      this.recorder = rec;
+      const blob = await rec.promise;
+      this.recorder = null;
+      if (!this.active) return '';
+      if (!blob || blob.size < 1400) return '';
+      const base64 = arrayBufferToBase64(await blob.arrayBuffer());
+      const res = await fetch('/api/stt', {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ audio: base64, mime: blob.type || 'audio/webm', hint: pickRecognitionLang() })
+      });
+      if (!res.ok) return '';
+      const data = await res.json();
+      return (data.text || '').trim();
+    } catch (e) {
+      if (e.message !== 'aborted' && e.message !== 'exit') console.warn('[voice-whisper]', e);
+      return '';
+    }
   },
 
   async _sendAndWait(text) {
@@ -851,10 +875,14 @@ function looksLikePhantom(text) {
 }
 
 // ============ INLINE DICTATION (mic button) ============
+// ============ INLINE DICTATION (mic button) ============
 let _inlineRecognition = null;
 let _inlineDictationActive = false;
-let _inlineBaseText = '';
+let _inlineBaseText = '';       // never changes after the click
+let _inlineFinalText = '';      // accumulates finalized text
+let _inlineInterimText = '';    // current interim (replaces)
 let _inlineNoSpeechCount = 0;
+let _inlineUseWhisper = false;
 
 function startInlineDictation() {
   if (_inlineDictationActive) { stopInlineDictation(); return; }
@@ -863,19 +891,35 @@ function startInlineDictation() {
     return;
   }
   getAudioContext();
-  const SR = getSpeechRecognition();
-  if (!SR) { toast('Speech recognition is not available on this browser', 'error'); return; }
 
   _inlineDictationActive = true;
   _inlineBaseText = inputEl.value || '';
+  _inlineFinalText = '';
+  _inlineInterimText = '';
   _inlineNoSpeechCount = 0;
   micBtn.classList.add('listening');
-  _startInlineRecognition();
+
+  const SR = getSpeechRecognition();
+  if (SR && !_inlineUseWhisper) {
+    _startInlineWebSpeech();
+  } else {
+    _startInlineWhisper();
+  }
 }
 
-function _startInlineRecognition() {
+function _renderInlineInput() {
+  const parts = [];
+  if (_inlineBaseText) parts.push(_inlineBaseText.replace(/\s+$/, ''));
+  if (_inlineFinalText) parts.push(_inlineFinalText.replace(/\s+$/, ''));
+  if (_inlineInterimText) parts.push(_inlineInterimText.replace(/^\s+/, ''));
+  inputEl.value = parts.join(' ').replace(/\s+/g, ' ').trim();
+  autoGrow();
+  updateSendButton();
+}
+
+function _startInlineWebSpeech() {
   if (!_inlineDictationActive) return;
-  // Cleanup previous
+
   if (_inlineRecognition) {
     const old = _inlineRecognition;
     _inlineRecognition = null;
@@ -884,7 +928,7 @@ function _startInlineRecognition() {
   }
 
   const SR = getSpeechRecognition();
-  if (!SR) { stopInlineDictation(); return; }
+  if (!SR) { _startInlineWhisper(); return; }
 
   const rec = new SR();
   rec.continuous = true;
@@ -895,25 +939,28 @@ function _startInlineRecognition() {
 
   rec.onresult = (e) => {
     if (!_inlineDictationActive || _inlineRecognition !== rec) return;
-    let final = '', interim = '';
+    let finalNow = '', interim = '';
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const t = e.results[i][0].transcript;
-      if (e.results[i].isFinal) final += t;
+      if (e.results[i].isFinal) finalNow += t;
       else interim += t;
     }
-    const parts = [];
-    if (_inlineBaseText) parts.push(_inlineBaseText.replace(/\s+$/, ''));
-    if (final) parts.push(final.replace(/\s+$/, ''));
-    if (interim) parts.push(interim.replace(/^\s+/, ''));
-    inputEl.value = parts.join(' ').replace(/\s+/g, ' ');
-    autoGrow();
-    updateSendButton();
+    if (finalNow) {
+      _inlineFinalText = (_inlineFinalText ? _inlineFinalText.replace(/\s+$/, '') + ' ' : '') + finalNow.replace(/^\s+/, '');
+    }
+    _inlineInterimText = interim;
+    _renderInlineInput();
   };
 
   rec.onerror = (e) => {
     if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
       toast('Microphone access denied', 'error');
       stopInlineDictation();
+    } else if (e.error === 'language-not-supported' || e.error === 'bad-grammar') {
+      console.log('[inline] lang unsupported → Whisper');
+      _inlineUseWhisper = true;
+      stopInlineDictation();
+      startInlineDictation();
     } else if (e.error === 'no-speech') {
       _inlineNoSpeechCount++;
       if (_inlineNoSpeechCount > 8) stopInlineDictation();
@@ -923,17 +970,66 @@ function _startInlineRecognition() {
   rec.onend = () => {
     if (_inlineRecognition !== rec) return;
     if (!_inlineDictationActive) return;
-    // Commit accumulated final text into base so the next session doesn't duplicate.
-    _inlineBaseText = inputEl.value;
+    // Promote any pending interim into final so nothing is lost between restarts.
+    if (_inlineInterimText) {
+      const t = _inlineInterimText.replace(/^\s+/, '');
+      _inlineFinalText = (_inlineFinalText ? _inlineFinalText.replace(/\s+$/, '') + ' ' : '') + t;
+      _inlineInterimText = '';
+      _renderInlineInput();
+    }
     _inlineRecognition = null;
-    setTimeout(() => { if (_inlineDictationActive) _startInlineRecognition(); }, 150);
+    setTimeout(() => { if (_inlineDictationActive) _startInlineWebSpeech(); }, 120);
   };
 
   try { rec.start(); }
   catch (e) {
     console.warn('[inline] start failed:', e);
     _inlineRecognition = null;
-    if (_inlineDictationActive) setTimeout(() => _startInlineRecognition(), 300);
+    if (_inlineDictationActive) setTimeout(() => _startInlineWebSpeech(), 300);
+  }
+}
+
+async function _startInlineWhisper() {
+  try {
+    const rec = createRecorder({
+      maxMs: 60000,
+      silenceMs: 1500,
+      minSpeechMs: 400,
+      minPeakRms: 0.015,
+      vadThreshold: 0.010,
+      vadMultiplier: 2.0,
+      autoStopOnSilence: true
+    });
+    state._inlineRecorder = rec;
+    const blob = await rec.promise;
+    state._inlineRecorder = null;
+    if (!_inlineDictationActive) return;
+    stopInlineDictation();
+    if (!blob) { toast('No speech detected', 'info', 2000); return; }
+    if (blob.size < 1400) { toast('Recording too short', 'info', 1800); return; }
+    const base64 = arrayBufferToBase64(await blob.arrayBuffer());
+    const res = await fetch('/api/stt', {
+      method: 'POST',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ audio: base64, mime: blob.type || 'audio/webm', hint: pickRecognitionLang() })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      toast(err.error || 'Transcription failed', 'error');
+      return;
+    }
+    const data = await res.json();
+    const text = (data.text || '').trim();
+    if (!text) { toast('No speech detected', 'info'); return; }
+    const existing = inputEl.value.trim();
+    inputEl.value = existing ? (existing + ' ' + text) : text;
+    autoGrow();
+    updateSendButton();
+    inputEl.focus();
+  } catch (e) {
+    state._inlineRecorder = null;
+    if (e.message !== 'aborted' && e.message !== 'exit') console.warn('[dictate]', e);
+    stopInlineDictation();
   }
 }
 
@@ -944,6 +1040,10 @@ function stopInlineDictation() {
     _inlineRecognition = null;
     try { old.onend = null; old.onresult = null; old.onerror = null; } catch {}
     try { old.abort(); } catch {}
+  }
+  if (state._inlineRecorder) {
+    try { state._inlineRecorder.stop(); } catch {}
+    state._inlineRecorder = null;
   }
   micBtn.classList.remove('listening');
 }
