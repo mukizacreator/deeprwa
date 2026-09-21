@@ -2108,3 +2108,43 @@ body[data-voice-phase="transcribing"] .voice-dot { background: var(--text-muted)
   .voice-status { padding: 4px 8px; gap: 8px; }
   .voice-dot { width: 5px; height: 5px; }
 }
+
+/* ============================================================
+   Universal device support — rev.4.2.0
+   ============================================================ */
+
+/* Inline SVG voice-entry icon must match Lucide sizing */
+.send-btn > svg.icon-voice {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+.send-btn > svg.icon-voice.hidden { display: none !important; }
+
+/* On very small phones, keep the voice entry visible and generous */
+@media (max-width: 380px) {
+  .send-btn > svg.icon-voice { width: 17px; height: 17px; }
+}
+
+/* Android and other touch devices: prevent hover styles from
+   sticking on the send button after a tap */
+@media (hover: none) {
+  .send-btn.voice-entry:hover {
+    background: var(--surface-2);
+    color: var(--text-muted);
+    border-color: var(--border);
+  }
+  .send-btn.voice-exit:hover { background: var(--danger-soft); }
+}
+
+/* Ensure voice-status pill never overflows the composer */
+.voice-status {
+  min-width: 0;
+  overflow: hidden;
+}
+.voice-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
