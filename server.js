@@ -1,4 +1,4 @@
-// DeepRWA — Complete backend (rev.4.2.0)
+// DeepRWA — Complete backend (rev.4.3.0)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -190,7 +190,7 @@ app.get('/av.png', (req, res) => res.sendFile(path.join(__dirname, 'av.png')));
 
 // ============ HEALTH CHECK ============
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', service: 'DeepRWA', version: '4.2.0', time: new Date().toISOString() });
+  res.json({ status: 'ok', service: 'DeepRWA', version: '4.3.0', time: new Date().toISOString() });
 });
 
 // ============ SYSTEM PROMPT ============
@@ -450,19 +450,63 @@ function saharaSupports(lang) {
   return lang && SAHARA_LANGS.has(lang);
 }
 
-// ---------- Intron Sahara (free tier, supports Kinyarwanda) ----------
-async function transcribeWithIntronSahara(buffer, mime, lang) {
-  const key = process.env.INTRON_API_KEY;
-  if (!key) throw new Error('Intron Sahara not configured');
+// Languages Lelapa Vulavula supports (verified from docs)
+const VULAVULA_LANGS = new Set(['afr','zul','sot','eng','fra']);
+
+function vulavulaSupports(lang) {
+  if (!lang) return false;
+  return VULAVULA_LANGS.has(lang) || VULAVULA_LANGS.has(lang.slice(0, 3));
+}
+
+// ---------- Lelapa AI Vulavula (verified endpoint) ----------
+async function transcribeWithVulavula(buffer, mime, lang) {
+  const token = process.env.VULAVULA_API_KEY;
+  if (!token) throw new Error('Vulavula not configured');
   const type = (mime || 'audio/webm').split(';')[0].trim();
   const blob = new Blob([buffer], { type });
   const fd = new FormData();
-  fd.append('file', blob, 'voice.webm');
-  if (lang) fd.append('language', lang);
+  fd.append('file', blob, 'voice.wav');
+  const url = 'https://vulavula-services.lelapa.ai/api/v2alpha/transcribe/sync/file';
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 45000);
   try {
-    const r = await fetch('https://api.intron.io/v1/asr/transcribe', {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'X-CLIENT-TOKEN': token
+      },
+      body: fd,
+      signal: ctrl.signal
+    });
+    if (!r.ok) {
+      const t = await r.text().catch(() => '');
+      const e = new Error(`Vulavula ${r.status}: ${t.slice(0, 200)}`);
+      e.status = r.status;
+      throw e;
+    }
+    const data = await r.json();
+    const text = data.transcription_text || data.text || '';
+    return { text, language: data.language_code || lang || '' };
+  } finally { clearTimeout(timer); }
+}
+
+// ---------- Intron Sahara (contact support@intron.io for REST base URL) ----------
+async function transcribeWithIntronSahara(buffer, mime, lang) {
+  const key = process.env.INTRON_API_KEY;
+  if (!key) throw new Error('Intron not configured');
+  const type = (mime || 'audio/webm').split(';')[0].trim();
+  const blob = new Blob([buffer], { type });
+  const fd = new FormData();
+  fd.append('file', blob, 'voice.wav');
+  if (lang) fd.append('language', lang);
+  // NOTE: Intron does not publish a public REST base URL.
+  // Contact support@intron.io to obtain the endpoint for Sahara v2.5.
+  // We try the most likely pattern; if it fails, we fall through.
+  const url = process.env.INTRON_API_URL || 'https://api.intron.io/v1/asr/transcribe';
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 45000);
+  try {
+    const r = await fetch(url, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${key}` },
       body: fd,
@@ -619,30 +663,28 @@ app.post('/api/stt', sttLimiter, async (req, res) => {
   const langHint = normalizeHint(hint);
   console.log(`[stt] request: ${buffer.length} bytes, hint="${langHint || 'none'}"`);
 
-  // Route: African languages → Intron Sahara; Kinyarwanda fallback → HF; everything else → Groq/Cloudflare
-  const needsSahara = saharaSupports(langHint);
-  const needsHF = (langHint === 'rw' || langHint === 'kin');
-
+  // Build provider chain based on language
   let providers;
-  if (needsSahara) {
+  if (saharaSupports(langHint)) {
     providers = [
       { name: 'IntronSahara', fn: () => transcribeWithIntronSahara(buffer, mime, langHint) },
+      { name: 'Vulavula',     fn: () => transcribeWithVulavula(buffer, mime, langHint) },
       { name: 'HuggingFace',  fn: () => transcribeWithHuggingFace(buffer, mime, langHint) },
       { name: 'Groq',         fn: () => transcribeWithGroq(buffer, mime, '') },
       { name: 'Cloudflare',   fn: () => transcribeWithCloudflare(buffer, '') }
     ];
-  } else if (needsHF) {
+  } else if (vulavulaSupports(langHint)) {
     providers = [
-      { name: 'HuggingFace',  fn: () => transcribeWithHuggingFace(buffer, mime, langHint) },
-      { name: 'IntronSahara', fn: () => transcribeWithIntronSahara(buffer, mime, langHint) },
-      { name: 'Groq',         fn: () => transcribeWithGroq(buffer, mime, '') },
-      { name: 'Cloudflare',   fn: () => transcribeWithCloudflare(buffer, '') }
+      { name: 'Vulavula',     fn: () => transcribeWithVulavula(buffer, mime, langHint) },
+      { name: 'Groq',         fn: () => transcribeWithGroq(buffer, mime, langHint) },
+      { name: 'Cloudflare',   fn: () => transcribeWithCloudflare(buffer, langHint) },
+      { name: 'HuggingFace',  fn: () => transcribeWithHuggingFace(buffer, mime, langHint) }
     ];
   } else {
     providers = [
       { name: 'Groq',         fn: () => transcribeWithGroq(buffer, mime, langHint) },
       { name: 'Cloudflare',   fn: () => transcribeWithCloudflare(buffer, langHint) },
-      { name: 'IntronSahara', fn: () => transcribeWithIntronSahara(buffer, mime, langHint) },
+      { name: 'Vulavula',     fn: () => transcribeWithVulavula(buffer, mime, langHint) },
       { name: 'HuggingFace',  fn: () => transcribeWithHuggingFace(buffer, mime, langHint) }
     ];
   }
@@ -1080,7 +1122,7 @@ async function generateChatTitle(firstMessage) {
 }
 
 // ============ ROUTES ============
-app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '4.2.0', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
+app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '4.3.0', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
 app.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nSitemap: https://deeprwa.agentdomains.co/sitemap.xml\n`));
 app.get('/sitemap.xml', (req, res) => res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>https://deeprwa.agentdomains.co/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>\n</urlset>`));
 
@@ -1105,9 +1147,10 @@ app.get('/api/debug/stt-providers', (req, res) => {
   const providers = [];
   if (process.env.GROQ_API_KEY) providers.push({ id: 'groq', enabled: true, languages: '99 (Whisper-large-v3)', supports_kinyarwanda: false, context_prompt: true });
   if ((process.env.CF_ACCOUNT_ID || process.env.CLOUDFLARE_ACCOUNT_ID) && (process.env.CF_API_TOKEN || process.env.CLOUDFLARE_API_TOKEN)) providers.push({ id: 'cloudflare', enabled: true, languages: '99 (Whisper-large-v3)', supports_kinyarwanda: false });
-  if (process.env.INTRON_API_KEY) providers.push({ id: 'intron-sahara', enabled: true, languages: '63 (African languages)', supports_kinyarwanda: true, code_switching: 'Kinyarwanda-English-French' });
+  if (process.env.INTRON_API_KEY) providers.push({ id: 'intron-sahara', enabled: true, languages: '63 (African languages)', supports_kinyarwanda: true, code_switching: 'Kinyarwanda-English-French', rest_endpoint_verified: false, note: 'Contact support@intron.io for REST base URL' });
+  if (process.env.VULAVULA_API_KEY) providers.push({ id: 'vulavula', enabled: true, languages: '5 documented (afr, zul, sot, eng, fra)', supports_kinyarwanda: false, endpoint: 'https://vulavula-services.lelapa.ai/api/v2alpha/transcribe/sync/file' });
   if (process.env.HF_TOKEN) providers.push({ id: 'huggingface', enabled: true, models: ['mbazaNLP/Whisper-Small-Kinyarwanda', 'openai/whisper-large-v3', 'facebook/mms-1b-all'], languages: '1,162 via MMS', supports_kinyarwanda: true });
-  res.json({ providers, hf_token_present: !!process.env.HF_TOKEN, intron_key_present: !!process.env.INTRON_API_KEY, whisper_lang_count: WHISPER_LANGS.size, sahara_lang_count: SAHARA_LANGS.size });
+  res.json({ providers, hf_token_present: !!process.env.HF_TOKEN, intron_key_present: !!process.env.INTRON_API_KEY, vulavula_key_present: !!process.env.VULAVULA_API_KEY, whisper_lang_count: WHISPER_LANGS.size, sahara_lang_count: SAHARA_LANGS.size, vulavula_lang_count: VULAVULA_LANGS.size });
 });
 
 // AUTH: Signup
