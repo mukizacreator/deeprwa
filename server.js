@@ -1,4 +1,4 @@
-// DeepRWA — Complete backend (rev.3.5.0)
+// DeepRWA — Complete backend (rev.4.2.0)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -190,7 +190,7 @@ app.get('/av.png', (req, res) => res.sendFile(path.join(__dirname, 'av.png')));
 
 // ============ HEALTH CHECK ============
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', service: 'DeepRWA', version: '3.5.0', time: new Date().toISOString() });
+  res.json({ status: 'ok', service: 'DeepRWA', version: '4.2.0', time: new Date().toISOString() });
 });
 
 // ============ SYSTEM PROMPT ============
@@ -228,7 +228,7 @@ Do NOT decline:
 - Requests about tone, accent, language, style, or length.
 - Greetings or chit-chat.
 - Meta questions about yourself.
-- Questions that only MENTION another country while being primarily about Rwanda (e.g. "How does Rwanda compare to Uganda?" → answer the Rwanda side).
+- Questions that only MENTION another country while being primarily about Rwanda.
 - Follow-up questions in an ongoing conversation.
 
 ## LANGUAGE RULE
@@ -245,7 +245,7 @@ Before analysing ANY attached file, determine whether the file's content is abou
 - If ambiguous, ask first: "Is this file related to Rwanda? If yes, I'll analyse it in detail."
 
 ## META QUESTIONS ABOUT YOU
-Questions about your own capabilities are IN SCOPE — answer truthfully: you can read images, PDFs, and text files; create images related to Rwanda; answer questions about Rwanda; support many languages.
+Questions about your own capabilities are IN SCOPE — answer truthfully.
 
 ## GENERAL KNOWLEDGE
 You may use general world knowledge to contextualise Rwanda answers. Do not answer standalone questions about other countries or unrelated topics.
@@ -254,19 +254,6 @@ You may use general world knowledge to contextualise Rwanda answers. Do not answ
 - NEVER use horizontal rules (---, ___, <hr>).
 - Use headings (##, ###), bullet lists, and **bold** for emphasis.
 - Markdown only. No raw HTML.
-
-## EXAMPLES
-User: "Let's use American accent and American English, are you ready?"
-You: "Absolutely — I'll reply in American English. What would you like to know about Rwanda?"
-
-User: "Are you capable of creating images?"
-You: "Yes — I can create images related to Rwanda (landscapes, cities, cultural scenes, wildlife, and similar). Just describe what you'd like."
-
-User: "Hi, how are you?"
-You: "Hello! I'm doing well, thanks. What can I tell you about Rwanda today?"
-
-User: "What is the capital of Uganda?"
-You: "I'm specialised in topics about Rwanda. I can't answer questions about other countries or unrelated topics. Feel free to ask me anything about Rwanda."
 
 ## RULES
 1. Accuracy first. If you don't know, say so. Never invent facts.
@@ -327,7 +314,7 @@ function buildGreetingReply(text) {
 }
 const IDENTITY_REPLY = "I am DeepRWA, created by Emmanuel Mukiza under The Star🌟, specialised in information about Rwanda.";
 
-// ============ IMAGE GENERATION (Cloudflare FLUX.1-schnell) ============
+// ============ IMAGE GENERATION ============
 const RWANDA_IMAGE_KEYWORDS = [
   'rwanda','rwandan','rwandese','kigali','kinyarwanda','umuganda','imigongo','agaseke','inkomane',
   'kivu','nyungwe','akagera','virunga','karisimbi','bisoke','muhabura','sabyinyo','gahinga',
@@ -435,8 +422,6 @@ async function classifyImageIntent(userText) {
 }
 
 // ============ SPEECH-TO-TEXT ============
-
-// Whisper-supported languages
 const WHISPER_LANGS = new Set([
   'af','am','ar','as','az','ba','be','bg','bn','bo','br','bs','ca','cs','cy','da','de','el','en',
   'es','et','eu','fa','fi','fo','fr','gl','gu','ha','haw','he','hi','hr','ht','hu','hy','id','is',
@@ -458,105 +443,44 @@ function normalizeHint(hint) {
   return hint.split(/[-_]/)[0].toLowerCase().trim();
 }
 
-// ---- Whisper hallucination filter ----
-// Whisper was trained on subtitled YouTube videos and reliably hallucinates
-// these exact phrases on silence / near-silence. Reject them categorically.
-const WHISPER_HALLUCINATIONS = new Set([
-  'thank you for watching',
-  'thanks for watching',
-  'thank you for watching.',
-  'thanks for watching.',
-  'please subscribe',
-  'subscribe',
-  'the end',
-  'a film by',
-  'film by',
-  'subtitles by',
-  'amara org',
-  'amara.org',
-  'you',
-  'the',
-  'a',
-  'an',
-  'ok',
-  'okay',
-  'yeah',
-  'yes',
-  'no',
-  'bye',
-  'hi',
-  'hello',
-  'hmm',
-  'mm hmm',
-  'uh',
-  'um',
-  'oh',
-  'ah',
-  'eh',
-  'wow',
-  'right',
-  'really',
-  'so',
-  'and',
-  'but',
-  'or',
-  'or.',
-  'blank audio',
-  'music',
-  'silence',
-  'applause',
-  'laughter',
-  '♪',
-  '♪♪',
-  'ご視聴ありがとうございました',
-  'おやすみなさい',
-  'チャンネル登録お願いします',
-  '字幕由amara.org社区提供',
-  '字幕志愿者 李宗盛',
-  '请不吝点赞 订阅 转发 打赏支持明镜与点点栏目',
-  'untertitel von stephanie geiges',
-]);
+// Languages Intron Sahara supports (African languages Whisper cannot handle)
+const SAHARA_LANGS = new Set(['rw','kin','sw','lg','ny','sn','zu','xh','st','tn','yo','ig','ha','am','so','om','wo','ff','tw','ak','ln']);
 
-function looksLikeHallucination(text) {
-  if (!text) return true;
-  const t = String(text).trim();
-  if (t.length < 2) return true;
-  // Strip trailing punctuation and lowercase for comparison
-  const lower = t.toLowerCase().replace(/[.,!?;:。、！？…♪"'"'`~]+/g, ' ').replace(/\s+/g, ' ').trim();
-  if (!lower) return true;
-  if (WHISPER_HALLUCINATIONS.has(lower)) return true;
-  // Single very short word
-  const words = lower.split(/\s+/);
-  if (words.length === 1 && lower.length <= 3) return true;
-  // Bracketed markers like [Music] [BLANK_AUDIO] (silence)
-  if (/^[\[\(][^\]\)]{0,40}[\]\)]$/.test(t)) return true;
-  // Pure punctuation/symbols
-  if (!/[\p{L}\p{N}]/u.test(t)) return true;
-  return false;
+function saharaSupports(lang) {
+  return lang && SAHARA_LANGS.has(lang);
 }
 
-// Reject transcripts that suggest wrong-script output for the given hint
-function isScriptMismatch(text, hint) {
-  if (!text || !hint) return false;
-  const latinHints = new Set(['en','fr','es','pt','de','it','nl','sv','da','no','fi','pl','cs','sk','hu','ro','tr','id','ms','sw','vi','tl','hr','sl','et','lv','lt','is','ga','cy','sq','af','ha','yo','ig','zu','xh','st','tn','rw','kin','lg','ny','sn','so']);
-  if (!latinHints.has(hint)) return false;
-  const t = String(text);
-  if (/[\u0400-\u04FF]/.test(t)) return true;
-  if (/[\u0600-\u06FF]/.test(t)) return true;
-  if (/[\u0590-\u05FF]/.test(t)) return true;
-  if (/[\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7AF]/.test(t)) return true;
-  return false;
+// ---------- Intron Sahara (free tier, supports Kinyarwanda) ----------
+async function transcribeWithIntronSahara(buffer, mime, lang) {
+  const key = process.env.INTRON_API_KEY;
+  if (!key) throw new Error('Intron Sahara not configured');
+  const type = (mime || 'audio/webm').split(';')[0].trim();
+  const blob = new Blob([buffer], { type });
+  const fd = new FormData();
+  fd.append('file', blob, 'voice.webm');
+  if (lang) fd.append('language', lang);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 45000);
+  try {
+    const r = await fetch('https://api.intron.io/v1/asr/transcribe', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${key}` },
+      body: fd,
+      signal: ctrl.signal
+    });
+    if (!r.ok) {
+      const t = await r.text().catch(() => '');
+      const e = new Error(`Intron ${r.status}: ${t.slice(0, 200)}`);
+      e.status = r.status;
+      throw e;
+    }
+    const data = await r.json();
+    const text = data.text || data.transcription || data.transcript || '';
+    return { text, language: data.language || lang || '' };
+  } finally { clearTimeout(timer); }
 }
 
-function isSuspicious(text, hint, audioBytes) {
-  if (looksLikeHallucination(text)) return true;
-  if (isScriptMismatch(text, hint)) return true;
-  const approxSeconds = Math.max(1, audioBytes / 12000);
-  if (approxSeconds < 2 && text.length > 90) return true;
-  return false;
-}
-
-// ---------- 1) Groq Whisper ----------
+// ---------- Groq Whisper ----------
 async function transcribeWithGroq(buffer, mime, hint) {
   const key = process.env.GROQ_API_KEY;
   if (!key) throw new Error('Groq not configured');
@@ -574,7 +498,6 @@ async function transcribeWithGroq(buffer, mime, hint) {
   fd.append('temperature', '0');
   fd.append('prompt', WHISPER_CONTEXT_PROMPT);
   if (hint && whisperSupports(hint)) fd.append('language', hint);
-
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 30000);
   try {
@@ -595,15 +518,13 @@ async function transcribeWithGroq(buffer, mime, hint) {
   } finally { clearTimeout(timer); }
 }
 
-// ---------- 2) Cloudflare Whisper ----------
+// ---------- Cloudflare Whisper ----------
 async function transcribeWithCloudflare(buffer, hint) {
   const accountId = process.env.CF_ACCOUNT_ID || process.env.CLOUDFLARE_ACCOUNT_ID;
   const apiToken = process.env.CF_API_TOKEN || process.env.CLOUDFLARE_API_TOKEN;
   if (!accountId || !apiToken) throw new Error('Cloudflare not configured');
-
   const base64 = buffer.toString('base64');
   const models = ['@cf/openai/whisper-large-v3-turbo', '@cf/openai/whisper'];
-
   let lastErr = null;
   for (const model of models) {
     try {
@@ -637,11 +558,10 @@ async function transcribeWithCloudflare(buffer, hint) {
   throw lastErr || new Error('CF failed');
 }
 
-// ---------- 3) Hugging Face ----------
+// ---------- Hugging Face ----------
 async function transcribeWithHuggingFace(buffer, mime, hint) {
   const hfToken = process.env.HF_TOKEN;
   if (!hfToken) throw new Error('Hugging Face not configured');
-
   const models = [];
   if (hint === 'rw' || hint === 'kin') {
     models.push('mbazaNLP/Whisper-Small-Kinyarwanda');
@@ -651,7 +571,6 @@ async function transcribeWithHuggingFace(buffer, mime, hint) {
     models.push('openai/whisper-large-v3');
     models.push('facebook/mms-1b-all');
   }
-
   let lastErr = null;
   for (const model of models) {
     try {
@@ -681,7 +600,7 @@ async function transcribeWithHuggingFace(buffer, mime, hint) {
       throw new Error('HF returned empty text');
     } catch (e) {
       lastErr = e;
-      console.warn(`[stt] HF ${model}:`, e.message, e.cause?.message ? `(${e.cause.message})` : '');
+      console.warn(`[stt] HF ${model}:`, e.message);
     }
   }
   throw lastErr || new Error('HF failed');
@@ -691,30 +610,42 @@ async function transcribeWithHuggingFace(buffer, mime, hint) {
 app.post('/api/stt', sttLimiter, async (req, res) => {
   const { audio, mime, hint } = req.body || {};
   if (!audio || typeof audio !== 'string') return res.status(400).json({ error: 'audio (base64) required' });
-
   let buffer;
   try { buffer = Buffer.from(audio, 'base64'); }
   catch { return res.status(400).json({ error: 'Invalid audio data' }); }
-
   if (!buffer.length) return res.status(400).json({ error: 'Empty audio' });
   if (buffer.length > 25 * 1024 * 1024) return res.status(413).json({ error: 'Audio too large (max 25 MB)' });
 
   const langHint = normalizeHint(hint);
   console.log(`[stt] request: ${buffer.length} bytes, hint="${langHint || 'none'}"`);
 
-  const needsHF = (langHint === 'rw' || langHint === 'kin') || (langHint && !whisperSupports(langHint));
+  // Route: African languages → Intron Sahara; Kinyarwanda fallback → HF; everything else → Groq/Cloudflare
+  const needsSahara = saharaSupports(langHint);
+  const needsHF = (langHint === 'rw' || langHint === 'kin');
 
-  const providers = needsHF
-    ? [
-        { name: 'HuggingFace', fn: () => transcribeWithHuggingFace(buffer, mime, langHint) },
-        { name: 'Groq',        fn: () => transcribeWithGroq(buffer, mime, '') },
-        { name: 'Cloudflare',  fn: () => transcribeWithCloudflare(buffer, '') }
-      ]
-    : [
-        { name: 'Groq',        fn: () => transcribeWithGroq(buffer, mime, langHint) },
-        { name: 'Cloudflare',  fn: () => transcribeWithCloudflare(buffer, langHint) },
-        { name: 'HuggingFace', fn: () => transcribeWithHuggingFace(buffer, mime, langHint) }
-      ];
+  let providers;
+  if (needsSahara) {
+    providers = [
+      { name: 'IntronSahara', fn: () => transcribeWithIntronSahara(buffer, mime, langHint) },
+      { name: 'HuggingFace',  fn: () => transcribeWithHuggingFace(buffer, mime, langHint) },
+      { name: 'Groq',         fn: () => transcribeWithGroq(buffer, mime, '') },
+      { name: 'Cloudflare',   fn: () => transcribeWithCloudflare(buffer, '') }
+    ];
+  } else if (needsHF) {
+    providers = [
+      { name: 'HuggingFace',  fn: () => transcribeWithHuggingFace(buffer, mime, langHint) },
+      { name: 'IntronSahara', fn: () => transcribeWithIntronSahara(buffer, mime, langHint) },
+      { name: 'Groq',         fn: () => transcribeWithGroq(buffer, mime, '') },
+      { name: 'Cloudflare',   fn: () => transcribeWithCloudflare(buffer, '') }
+    ];
+  } else {
+    providers = [
+      { name: 'Groq',         fn: () => transcribeWithGroq(buffer, mime, langHint) },
+      { name: 'Cloudflare',   fn: () => transcribeWithCloudflare(buffer, langHint) },
+      { name: 'IntronSahara', fn: () => transcribeWithIntronSahara(buffer, mime, langHint) },
+      { name: 'HuggingFace',  fn: () => transcribeWithHuggingFace(buffer, mime, langHint) }
+    ];
+  }
 
   const errors = [];
   for (const p of providers) {
@@ -722,14 +653,9 @@ app.post('/api/stt', sttLimiter, async (req, res) => {
       const result = await p.fn();
       const text = (result?.text || '').trim();
       if (!text) { console.warn(`[stt] ${p.name} empty`); continue; }
-      if (looksLikeHallucination(text)) {
-        console.warn(`[stt] ${p.name} hallucination rejected: "${text.slice(0, 60)}"`);
-        errors.push(`${p.name}: hallucination`);
-        continue;
-      }
-      if (isSuspicious(text, langHint, buffer.length)) {
-        console.warn(`[stt] ${p.name} suspicious: "${text.slice(0, 60)}" — trying next`);
-        errors.push(`${p.name}: suspicious`);
+      if (looksLikePhantom(text)) {
+        console.warn(`[stt] ${p.name} phantom rejected: "${text.slice(0, 60)}"`);
+        errors.push(`${p.name}: phantom`);
         continue;
       }
       console.log(`[stt] ✅ ${p.name} (${text.length} chars, lang=${result.language || langHint || 'auto'}): "${text.slice(0, 80)}"`);
@@ -741,8 +667,7 @@ app.post('/api/stt', sttLimiter, async (req, res) => {
   }
 
   console.warn('[stt] all providers failed:', errors.join(' | '));
-  // Silent audio => 200 with empty text so the client doesn't show an error toast
-  const allSilent = errors.every(e => /hallucination|suspicious/.test(e));
+  const allSilent = errors.every(e => /phantom/.test(e));
   if (allSilent) return res.json({ text: '', language: '', provider: 'silence' });
   res.status(500).json({ error: 'Transcription failed. Please try again.' });
 });
@@ -917,6 +842,27 @@ const PROVIDERS = [
   { name: 'NVIDIA', fn: streamNVIDIA },
   { name: 'Pollinations', fn: streamPollinations }
 ];
+
+// ============ PHANTOM FILTER ============
+const PHANTOM_PHRASES = new Set([
+  'thank you for watching','thanks for watching','please subscribe','subscribe',
+  'the end','a film by','film by','subtitles by','amara.org','amara org',
+  'blank audio','music','silence','applause','laughter',
+  'you','the','a','an','ok','okay','yeah','yes','no','bye','hi','hello',
+  'hmm','mm hmm','uh','um','oh','ah','eh','wow','right','really','so','and','but','or'
+]);
+function looksLikePhantom(text) {
+  if (!text) return true;
+  const t = String(text).trim();
+  if (t.length < 2) return true;
+  const lower = t.toLowerCase().replace(/[.,!?;:。、！？…♪"'"'`~]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (PHANTOM_PHRASES.has(lower)) return true;
+  const words = lower.split(/\s+/);
+  if (words.length === 1 && lower.length <= 3) return true;
+  if (/^[\[\(][^\]\)]{0,40}[\]\)]$/.test(t)) return true;
+  if (!/[\p{L}\p{N}]/u.test(t)) return true;
+  return false;
+}
 
 // ============ TITLE GENERATION ============
 function isGreetingOnly(msg) {
@@ -1134,7 +1080,7 @@ async function generateChatTitle(firstMessage) {
 }
 
 // ============ ROUTES ============
-app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '3.5.0', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
+app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '4.2.0', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
 app.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nSitemap: https://deeprwa.agentdomains.co/sitemap.xml\n`));
 app.get('/sitemap.xml', (req, res) => res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>https://deeprwa.agentdomains.co/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>\n</urlset>`));
 
@@ -1159,8 +1105,9 @@ app.get('/api/debug/stt-providers', (req, res) => {
   const providers = [];
   if (process.env.GROQ_API_KEY) providers.push({ id: 'groq', enabled: true, languages: '99 (Whisper-large-v3)', supports_kinyarwanda: false, context_prompt: true });
   if ((process.env.CF_ACCOUNT_ID || process.env.CLOUDFLARE_ACCOUNT_ID) && (process.env.CF_API_TOKEN || process.env.CLOUDFLARE_API_TOKEN)) providers.push({ id: 'cloudflare', enabled: true, languages: '99 (Whisper-large-v3)', supports_kinyarwanda: false });
+  if (process.env.INTRON_API_KEY) providers.push({ id: 'intron-sahara', enabled: true, languages: '63 (African languages)', supports_kinyarwanda: true, code_switching: 'Kinyarwanda-English-French' });
   if (process.env.HF_TOKEN) providers.push({ id: 'huggingface', enabled: true, models: ['mbazaNLP/Whisper-Small-Kinyarwanda', 'openai/whisper-large-v3', 'facebook/mms-1b-all'], languages: '1,162 via MMS', supports_kinyarwanda: true });
-  res.json({ providers, hf_token_present: !!process.env.HF_TOKEN, whisper_lang_count: WHISPER_LANGS.size, hallucination_filter: WHISPER_HALLUCINATIONS.size });
+  res.json({ providers, hf_token_present: !!process.env.HF_TOKEN, intron_key_present: !!process.env.INTRON_API_KEY, whisper_lang_count: WHISPER_LANGS.size, sahara_lang_count: SAHARA_LANGS.size });
 });
 
 // AUTH: Signup
@@ -1501,6 +1448,7 @@ app.get('/api/files-with-ids', requireAuth, async (req, res) => {
         });
       }
     }
+    console.log(`[files-with-ids] ${all.length} files for user ${req.userId.slice(0,8)}`);
     res.json({ files: all });
   } catch (e) { res.status(500).json({ error: e.message, files: [] }); }
 });
