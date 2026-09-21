@@ -22,7 +22,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="/style.css?v=3.7.0" />
+<link rel="stylesheet" href="/style.css?v=4.2.0" />
 <script src="https://cdn.jsdelivr.net/npm/marked@13.0.3/marked.min.js"></script>
 <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
 <script type="application/ld+json">
@@ -115,10 +115,17 @@
           <span class="voice-label" id="voiceLabel">Listening…</span>
         </div>
         <button type="button" class="mic-btn" id="micBtn" aria-label="Dictate" title="Dictate"><i data-lucide="mic"></i></button>
-        <button type="button" class="send-btn" id="sendBtn" aria-label="Send">
+        <button type="button" class="send-btn" id="sendBtn" aria-label="Send" title="Send">
           <i data-lucide="arrow-up" class="icon-send"></i>
           <i data-lucide="square" class="icon-stop hidden"></i>
-          <i data-lucide="audio-lines" class="icon-voice hidden"></i>
+          <svg class="icon-voice hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M2 10v4"/>
+            <path d="M6 6v12"/>
+            <path d="M10 3v18"/>
+            <path d="M14 8v8"/>
+            <path d="M18 5v14"/>
+            <path d="M22 11v2"/>
+          </svg>
           <i data-lucide="x" class="icon-exit hidden"></i>
         </button>
       </form>
@@ -209,6 +216,6 @@
 
 <div class="toast-container" id="toastContainer"></div>
 
-<script src="/main.js?v=3.7.0"></script>
+<script src="/main.js?v=4.2.0"></script>
 </body>
 </html>
