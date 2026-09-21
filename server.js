@@ -1,4 +1,4 @@
-// DeepRWA — Complete backend (rev.3.3.0)
+// DeepRWA — Complete backend (rev.3.4.0)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -117,7 +117,7 @@ const apiLimiter = rateLimit({
 app.use('/api/', apiLimiter);
 
 const sttLimiter = rateLimit({
-  windowMs: 60 * 1000, max: 20,
+  windowMs: 60 * 1000, max: 30,
   standardHeaders: true, legacyHeaders: false,
   message: { error: 'Too many voice requests, please slow down.' }
 });
@@ -192,7 +192,7 @@ app.get('/av.png', (req, res) => res.sendFile(path.join(__dirname, 'av.png')));
 
 // ============ HEALTH CHECK ============
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', service: 'DeepRWA', version: '3.3.0', time: new Date().toISOString() });
+  res.json({ status: 'ok', service: 'DeepRWA', version: '3.4.0', time: new Date().toISOString() });
 });
 
 // ============ SYSTEM PROMPT ============
@@ -408,7 +408,55 @@ async function classifyImageIntent(userText) {
 }
 
 // ============ SPEECH-TO-TEXT ============
-async function transcribeWithGroq(buffer, mime) {
+
+// Whisper's full supported language list (99 languages)
+const WHISPER_LANGS = new Set([
+  'af','am','ar','as','az','ba','be','bg','bn','bo','br','bs','ca','cs','cy','da','de','el','en',
+  'es','et','eu','fa','fi','fo','fr','gl','gu','ha','haw','he','hi','hr','ht','hu','hy','id','is',
+  'it','ja','jw','ka','kk','km','kn','ko','la','lb','ln','lo','lt','lv','mg','mi','mk','ml','mn',
+  'mr','ms','mt','my','ne','nl','nn','no','oc','pa','pl','ps','pt','ro','ru','sa','sd','si','sk',
+  'sl','sn','so','sq','sr','su','sv','sw','ta','te','tg','th','tk','tl','tr','tt','uk','ur','uz',
+  'vi','yi','yo','zh','yue'
+]);
+
+// Languages Whisper genuinely does NOT support (only a handful of Bantu/other langs)
+function whisperSupports(lang) {
+  if (!lang) return true; // assume auto-detect is fine
+  return WHISPER_LANGS.has(String(lang).toLowerCase());
+}
+
+// Context bias for Whisper — dramatically improves proper-noun accuracy
+const WHISPER_CONTEXT_PROMPT = 'DeepRWA, a question about Rwanda, Kigali, Rwamagana, Musanze, Kinyarwanda, Umuganda, Akagera, Nyungwe, Volcanoes National Park, image, photo, map, history, culture, tourism.';
+
+function normalizeHint(hint) {
+  if (!hint || typeof hint !== 'string') return '';
+  return hint.split(/[-_]/)[0].toLowerCase().trim();
+}
+
+// Reject transcriptions that are obviously wrong: script mismatch with hint,
+// or absurdly short/long for the audio size.
+function isSuspicious(text, hint, audioBytes) {
+  if (!text) return true;
+  const t = text.trim();
+  if (t.length < 2) return true;
+  // Rough duration estimate: ~12 KB per second of Opus at 96 kbps
+  const approxSeconds = Math.max(1, audioBytes / 12000);
+  // Whisper hallucinates long text on very short clips
+  if (approxSeconds < 2 && t.length > 60) return true;
+
+  // Script check: if hint is Latin, reject Cyrillic/CJK/Arabic/Hebrew output
+  const latinHints = new Set(['en','fr','es','pt','de','it','nl','sv','da','no','fi','pl','cs','sk','hu','ro','tr','id','ms','sw','vi','tl','hr','sl','et','lv','lt','is','ga','cy','sq','af','ha','yo','ig','zu','xh','st','tn','rw','kin','lg','ny','sn','so']);
+  if (latinHints.has(hint)) {
+    if (/[\u0400-\u04FF]/.test(t)) return true;   // Cyrillic
+    if (/[\u0600-\u06FF]/.test(t)) return true;   // Arabic
+    if (/[\u0590-\u05FF]/.test(t)) return true;   // Hebrew
+    if (/[\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7AF]/.test(t)) return true; // CJK
+  }
+  return false;
+}
+
+// ---------- 1) Groq Whisper ----------
+async function transcribeWithGroq(buffer, mime, hint) {
   const key = process.env.GROQ_API_KEY;
   if (!key) throw new Error('Groq not configured');
   const type = (mime || 'audio/webm').split(';')[0].trim();
@@ -420,12 +468,15 @@ async function transcribeWithGroq(buffer, mime) {
   const blob = new Blob([buffer], { type });
   const fd = new FormData();
   fd.append('file', blob, `voice.${ext}`);
-  fd.append('model', 'whisper-large-v3-turbo');
+  fd.append('model', 'whisper-large-v3');
   fd.append('response_format', 'verbose_json');
   fd.append('temperature', '0');
-  // NOTE: intentionally NOT sending `language`. Groq rejects `rw` and auto-detect works better.
+  fd.append('prompt', WHISPER_CONTEXT_PROMPT);
+  // Only send language when it's a Whisper-supported lang — otherwise let it auto-detect.
+  if (hint && whisperSupports(hint)) fd.append('language', hint);
+
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 25000);
+  const timer = setTimeout(() => ctrl.abort(), 30000);
   try {
     const r = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
       method: 'POST',
@@ -444,32 +495,30 @@ async function transcribeWithGroq(buffer, mime) {
   } finally { clearTimeout(timer); }
 }
 
-async function transcribeWithCloudflare(buffer) {
+// ---------- 2) Cloudflare Whisper ----------
+async function transcribeWithCloudflare(buffer, hint) {
   const accountId = process.env.CF_ACCOUNT_ID || process.env.CLOUDFLARE_ACCOUNT_ID;
   const apiToken = process.env.CF_API_TOKEN || process.env.CLOUDFLARE_API_TOKEN;
   if (!accountId || !apiToken) throw new Error('Cloudflare not configured');
 
-  // CF Whisper accepts `audio` as a base64 STRING (not an array of numbers).
   const base64 = buffer.toString('base64');
 
-  // Prefer turbo; fall back to the standard Whisper model.
-  const models = [
-    '@cf/openai/whisper-large-v3-turbo',
-    '@cf/openai/whisper'
-  ];
+  const models = ['@cf/openai/whisper-large-v3-turbo', '@cf/openai/whisper'];
 
   let lastErr = null;
   for (const model of models) {
     try {
       const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${model}`;
+      const body = { audio: base64 };
+      if (hint && whisperSupports(hint)) body.language = hint;
       const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 25000);
+      const timer = setTimeout(() => ctrl.abort(), 30000);
       let r;
       try {
         r = await fetch(url, {
           method: 'POST',
           headers: { Authorization: `Bearer ${apiToken}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ audio: base64 }),
+          body: JSON.stringify(body),
           signal: ctrl.signal
         });
       } finally { clearTimeout(timer); }
@@ -489,23 +538,29 @@ async function transcribeWithCloudflare(buffer) {
   throw lastErr || new Error('CF failed');
 }
 
-async function transcribeWithHuggingFace(buffer, mime) {
+// ---------- 3) Hugging Face ----------
+// Tries: mbazaNLP (Kinyarwanda fine-tune) → whisper-large-v3 (multi-lang) → mms-1b-all (1,162 langs)
+async function transcribeWithHuggingFace(buffer, mime, hint) {
   const hfToken = process.env.HF_TOKEN;
   if (!hfToken) throw new Error('Hugging Face not configured');
 
-  // New router endpoint (the legacy api-inference host is being retired).
-  // whisper-large-v3 supports Kinyarwanda ('rw'); mms-1b-all covers 1,162 languages as backup.
-  const models = [
-    'openai/whisper-large-v3',
-    'facebook/mms-1b-all'
-  ];
+  const models = [];
+  if (hint === 'rw' || hint === 'kin') {
+    // Kinyarwanda: prefer the dedicated model
+    models.push('mbazaNLP/Whisper-Small-Kinyarwanda');
+    models.push('openai/whisper-large-v3');
+    models.push('facebook/mms-1b-all');
+  } else {
+    models.push('openai/whisper-large-v3');
+    models.push('facebook/mms-1b-all');
+  }
 
   let lastErr = null;
   for (const model of models) {
     try {
       const url = `https://router.huggingface.co/hf-inference/models/${model}`;
       const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 30000);
+      const timer = setTimeout(() => ctrl.abort(), 45000);
       let r;
       try {
         r = await fetch(url, {
@@ -535,8 +590,9 @@ async function transcribeWithHuggingFace(buffer, mime) {
   throw lastErr || new Error('HF failed');
 }
 
+// ---------- /api/stt ----------
 app.post('/api/stt', sttLimiter, async (req, res) => {
-  const { audio, mime } = req.body || {};
+  const { audio, mime, hint } = req.body || {};
   if (!audio || typeof audio !== 'string') return res.status(400).json({ error: 'audio (base64) required' });
 
   let buffer;
@@ -546,22 +602,37 @@ app.post('/api/stt', sttLimiter, async (req, res) => {
   if (!buffer.length) return res.status(400).json({ error: 'Empty audio' });
   if (buffer.length > 25 * 1024 * 1024) return res.status(413).json({ error: 'Audio too large (max 25 MB)' });
 
-  const providers = [
-    { name: 'Groq',        fn: () => transcribeWithGroq(buffer, mime) },
-    { name: 'Cloudflare',  fn: () => transcribeWithCloudflare(buffer) },
-    { name: 'HuggingFace', fn: () => transcribeWithHuggingFace(buffer, mime) }
-  ];
+  const langHint = normalizeHint(hint);
+  console.log(`[stt] request: ${buffer.length} bytes, hint="${langHint || 'none'}"`);
+
+  // Kinyarwanda / unsupported-by-Whisper languages → straight to Hugging Face
+  const needsHF = (langHint === 'rw' || langHint === 'kin') || (langHint && !whisperSupports(langHint));
+
+  const providers = needsHF
+    ? [
+        { name: 'HuggingFace', fn: () => transcribeWithHuggingFace(buffer, mime, langHint) },
+        { name: 'Groq',        fn: () => transcribeWithGroq(buffer, mime, '') }, // auto-detect
+        { name: 'Cloudflare',  fn: () => transcribeWithCloudflare(buffer, '') }
+      ]
+    : [
+        { name: 'Groq',        fn: () => transcribeWithGroq(buffer, mime, langHint) },
+        { name: 'Cloudflare',  fn: () => transcribeWithCloudflare(buffer, langHint) },
+        { name: 'HuggingFace', fn: () => transcribeWithHuggingFace(buffer, mime, langHint) }
+      ];
 
   const errors = [];
   for (const p of providers) {
     try {
       const result = await p.fn();
       const text = (result?.text || '').trim();
-      if (text) {
-        console.log(`[stt] ${p.name} OK (${text.length} chars, lang=${result.language || 'auto'}): "${text.slice(0, 80)}"`);
-        return res.json({ text, language: result.language || '', provider: p.name });
+      if (!text) { console.warn(`[stt] ${p.name} empty`); continue; }
+      if (isSuspicious(text, langHint, buffer.length)) {
+        console.warn(`[stt] ${p.name} suspicious: "${text.slice(0, 60)}" — trying next`);
+        errors.push(`${p.name}: suspicious`);
+        continue;
       }
-      console.warn(`[stt] ${p.name} returned empty text, trying next provider`);
+      console.log(`[stt] ✅ ${p.name} (${text.length} chars, lang=${result.language || langHint || 'auto'}): "${text.slice(0, 80)}"`);
+      return res.json({ text, language: result.language || langHint || '', provider: p.name });
     } catch (e) {
       console.warn(`[stt] ${p.name} failed:`, e.message);
       errors.push(`${p.name}: ${e.message}`);
@@ -959,7 +1030,7 @@ async function generateChatTitle(firstMessage) {
 }
 
 // ============ ROUTES ============
-app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '3.3.0', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
+app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '3.4.0', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
 app.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nSitemap: https://deeprwa.agentdomains.co/sitemap.xml\n`));
 app.get('/sitemap.xml', (req, res) => res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>https://deeprwa.agentdomains.co/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>\n</urlset>`));
 
@@ -982,10 +1053,10 @@ app.get('/api/debug/image-providers', (req, res) => {
 // ============ SPEECH PROVIDERS DIAGNOSTICS ============
 app.get('/api/debug/stt-providers', (req, res) => {
   const providers = [];
-  if (process.env.GROQ_API_KEY) providers.push({ id: 'groq', enabled: true, languages: '99 (Whisper-large-v3-turbo)', supports_kinyarwanda: false });
+  if (process.env.GROQ_API_KEY) providers.push({ id: 'groq', enabled: true, languages: '99 (Whisper-large-v3)', supports_kinyarwanda: false, context_prompt: true });
   if ((process.env.CF_ACCOUNT_ID || process.env.CLOUDFLARE_ACCOUNT_ID) && (process.env.CF_API_TOKEN || process.env.CLOUDFLARE_API_TOKEN)) providers.push({ id: 'cloudflare', enabled: true, languages: '99 (Whisper-large-v3)', supports_kinyarwanda: false });
-  if (process.env.HF_TOKEN) providers.push({ id: 'huggingface', enabled: true, models: ['openai/whisper-large-v3', 'facebook/mms-1b-all'], languages: '1,162 via MMS', supports_kinyarwanda: true });
-  res.json({ providers, hf_token_present: !!process.env.HF_TOKEN });
+  if (process.env.HF_TOKEN) providers.push({ id: 'huggingface', enabled: true, models: ['mbazaNLP/Whisper-Small-Kinyarwanda', 'openai/whisper-large-v3', 'facebook/mms-1b-all'], languages: '1,162 via MMS', supports_kinyarwanda: true });
+  res.json({ providers, hf_token_present: !!process.env.HF_TOKEN, whisper_lang_count: WHISPER_LANGS.size });
 });
 
 // AUTH: Signup
