@@ -2023,3 +2023,88 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
 }
 .lightbox-close:hover { background: rgba(255,255,255,0.2); }
 .lightbox-close svg { width: 20px; height: 20px; pointer-events: none; }
+
+/* ============================================================
+   VOICE MODE (rev.3.7.0) — send button variants, voice pill
+   ============================================================ */
+
+.send-btn.voice-entry {
+  background: var(--surface-2);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+.send-btn.voice-entry:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.send-btn.voice-exit {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border: 1px solid var(--danger-border);
+}
+.send-btn.voice-exit:hover {
+  background: rgba(239,83,80,0.22);
+}
+
+.voice-status {
+  flex: 1;
+  display: none;
+  align-items: center;
+  gap: 12px;
+  padding: var(--space-sm) var(--space-md);
+  min-height: 44px;
+  min-width: 0;
+}
+.voice-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.voice-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: voice-pulse 1.2s ease-in-out infinite;
+}
+.voice-dot:nth-child(2) { animation-delay: 0.15s; }
+.voice-dot:nth-child(3) { animation-delay: 0.3s; }
+@keyframes voice-pulse {
+  0%, 100% { transform: scale(0.6); opacity: 0.5; }
+  50% { transform: scale(1); opacity: 1; }
+}
+.voice-label {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+body.voice-mode .composer-inner {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}
+body.voice-mode .composer-inner #input,
+body.voice-mode .composer-inner .attach-btn {
+  display: none;
+}
+body.voice-mode .composer-inner .voice-status {
+  display: flex;
+}
+
+body[data-voice-phase="thinking"] .voice-dot { background: var(--rwa-yellow); }
+body[data-voice-phase="speaking"] .voice-dot { background: var(--rwa-green); }
+body[data-voice-phase="transcribing"] .voice-dot { background: var(--text-muted); }
+
+@media (hover: none) {
+  .send-btn.voice-entry:hover { background: var(--surface-2); color: var(--text-muted); border-color: var(--border); }
+  .send-btn.voice-exit:hover { background: var(--danger-soft); }
+}
+
+@media (max-width: 380px) {
+  .voice-status { padding: 4px 8px; gap: 8px; }
+  .voice-dot { width: 5px; height: 5px; }
+}
