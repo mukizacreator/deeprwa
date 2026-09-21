@@ -103,6 +103,26 @@ body {
 .vs-btn svg { width: 14px; height: 14px; pointer-events: none; }
 .vs-label { font-weight: 500; padding: 0 0.3rem; }
 .error { text-align: center; padding: 4rem 1rem; color: var(--text-muted); }
+
+.generated-image-wrap {
+  margin-top: 0.85rem;
+  max-width: min(100%, 560px);
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  line-height: 0;
+}
+.generated-image {
+  width: 100%;
+  height: auto;
+  display: block;
+  border-radius: 12px;
+}
+@media (max-width: 600px) {
+  .generated-image-wrap { max-width: 100%; }
+}
+  
 @media (max-width: 600px) {
   .msg-user .bubble { max-width: 90%; }
   .msg-files { max-width: 90%; }
@@ -213,15 +233,28 @@ function render() {
 
 function renderFilesInline(files) {
   if (!files || !files.length) return '';
-  return `<div class="msg-files">${files.map(f => {
-    const isImg = (f.type || '').startsWith('image/');
-    const url = f.dataUrl || f.url || f.public_url || '';
-    if (!url) return '';
-    const inner = isImg
-      ? `<img src="${url}" class="msg-file-thumb" loading="lazy" alt="attachment" />`
-      : `<div class="msg-file-doc"><i data-lucide="file-text"></i></div>`;
-    return `<a href="${url}" target="_blank" rel="noopener noreferrer">${inner}</a>`;
-  }).join('')}</div>`;
+  const normal = files.filter(f => !f.generated);
+  const generated = files.filter(f => f.generated);
+  let html = '';
+  if (normal.length) {
+    html += `<div class="msg-files">${normal.map(f => {
+      const isImg = (f.type || '').startsWith('image/');
+      const url = f.dataUrl || f.url || f.public_url || '';
+      if (!url) return '';
+      const inner = isImg
+        ? `<img src="${url}" class="msg-file-thumb" loading="lazy" alt="attachment" />`
+        : `<div class="msg-file-doc"><i data-lucide="file-text"></i></div>`;
+      return `<a href="${url}" target="_blank" rel="noopener noreferrer">${inner}</a>`;
+    }).join('')}</div>`;
+  }
+  if (generated.length) {
+    html += generated.map(f => {
+      const url = f.public_url || f.url || f.dataUrl || '';
+      if (!url) return '';
+      return `<div class="generated-image-wrap"><img src="${url}" class="generated-image" loading="lazy" alt="Generated image" /></div>`;
+    }).join('');
+  }
+  return html;
 }
 
 function renderUser(m, i) {
