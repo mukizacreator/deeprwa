@@ -1,4 +1,4 @@
-// DeepRWA — Complete backend (rev.3.2.0)
+// DeepRWA — Complete backend (rev.3.3.0)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -115,256 +115,11 @@ const apiLimiter = rateLimit({
   message: { error: 'Too many requests, please slow down.' }
 });
 app.use('/api/', apiLimiter);
+
 const sttLimiter = rateLimit({
   windowMs: 60 * 1000, max: 20,
   standardHeaders: true, legacyHeaders: false,
   message: { error: 'Too many voice requests, please slow down.' }
-});
-
-// ============ SPEECH-TO-TEXT PROVIDERS ============
-
-// 1) Groq Whisper — fastest, 99 languages, returns detected language
-async function transcribeWithGroq(buffer, mime) {
-  const key = process.env.GROQ_API_KEY;
-  if (!key) throw new Error('Groq not configured');
-  const type = (mime || 'audio/webm').split(';')[0].trim();
-  const ext = type.includes('mp4') || type.includes('m4a') ? 'm4a'
-    : type.includes('ogg') ? 'ogg'
-    : type.includes('wav') ? 'wav'
-    : type.includes('mpeg') || type.includes('mp3') ? 'mp3'
-    : 'webm';
-  const blob = new Blob([buffer], { type });
-  const fd = new FormData();
-  fd.append('file', blob, `voice.${ext}`);
-  fd.append('model', 'whisper-large-v3-turbo');
-  fd.append('response_format', 'verbose_json');
-  fd.append('temperature', '0');
-  const r = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${key}` },
-    body: fd
-  });
-  if (!r.ok) {
-    const t = await r.text().catch(() => '');
-    const e = new Error(`Groq ${r.status}: ${t.slice(0, 120)}`);
-    e.status = r.status;
-    throw e;
-  }
-  const data = await r.json();
-  return { text: data.text || '', language: data.language || '' };
-}
-
-// 2) Cloudflare Workers AI Whisper — free, no card, already configured
-async function transcribeWithCloudflare(buffer) {
-  const accountId = process.env.CF_ACCOUNT_ID || process.env.CLOUDFLARE_ACCOUNT_ID;
-  const apiToken = process.env.CF_API_TOKEN || process.env.CLOUDFLARE_API_TOKEN;
-  if (!accountId || !apiToken) throw new Error('Cloudflare not configured');
-  const audioArray = Array.from(new Uint8Array(buffer));
-  const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/openai/whisper-large-v3-turbo`;
-  const r = await fetch(url, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${apiToken}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ audio: audioArray })
-  });
-  if (!r.ok) { const t = await r.text().catch(() => ''); const e = new Error(`CF ${r.status}: ${t.slice(0, 120)}`); e.status = r.status; throw e; }
-  const data = await r.json();
-  if (data.success === false) throw new Error('CF: ' + (data.errors?.[0]?.message || 'failed'));
-  return { text: data.result?.text || '', language: data.result?.language || '' };
-}
-
-// 3) Hugging Face Inference API — free, no card. Kinyarwanda + 1,162 langs via MMS.
-async function transcribeWithHuggingFace(buffer, mime) {
-  const hfToken = process.env.HF_TOKEN;
-  if (!hfToken) throw new Error('Hugging Face not configured');
-  const models = ['mbazaNLP/Whisper-Small-Kinyarwanda', 'facebook/mms-1b-all'];
-  let lastErr = null;
-  for (const model of models) {
-    try {
-      const url = `https://api-inference.huggingface.co/models/${model}`;
-      const r = await fetch(url, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${hfToken}`,
-          'Content-Type': mime || 'audio/webm'
-        },
-        body: buffer
-      });
-      if (!r.ok) { const t = await r.text().catch(() => ''); throw new Error(`HF ${r.status}: ${t.slice(0, 120)}`); }
-      const data = await r.json();
-      const text = Array.isArray(data) ? (data[0]?.text || '') : (data.text || '');
-      if (text.trim()) return { text, language: '' };
-      throw new Error('HF empty');
-    } catch (e) { lastErr = e; console.warn(`[stt] HF ${model}:`, e.message); }
-  }
-  throw lastErr || new Error('HF failed');
-}
-
-app.post('/api/stt', sttLimiter, async (req, res) => {
-  const { audio, mime } = req.body || {};
-  if (!audio || typeof audio !== 'string') return res.status(400).json({ error: 'audio (base64) required' });
-
-  let buffer;
-  try { buffer = Buffer.from(audio, 'base64'); }
-  catch { return res.status(400).json({ error: 'Invalid audio data' }); }
-
-  if (!buffer.length) return res.status(400).json({ error: 'Empty audio' });
-  if (buffer.length > 25 * 1024 * 1024) return res.status(413).json({ error: 'Audio too large (max 25 MB)' });
-
-  // Groq auto-detects; HF MMS as fallback.
-  const providers = [
-    { name: 'Groq',        fn: () => transcribeWithGroq(buffer, mime) },
-    { name: 'Cloudflare',  fn: () => transcribeWithCloudflare(buffer) },
-    { name: 'HuggingFace', fn: () => transcribeWithHuggingFace(buffer, mime) }
-  ];
-
-  const errors = [];
-  for (const p of providers) {
-    try {
-      const result = await p.fn();
-      if (result && result.text && result.text.trim()) {
-        console.log(`[stt] ${p.name} ✅ (${result.text.length} chars, lang=${result.language || 'auto'})`);
-        return res.json({ text: result.text.trim(), language: result.language || '', provider: p.name });
-      }
-    } catch (e) {
-      console.warn(`[stt] ${p.name} failed:`, e.message);
-      errors.push(`${p.name}: ${e.message}`);
-    }
-  }
-
-  console.warn('[stt] all providers failed:', errors.join(' | '));
-  res.status(500).json({ error: 'Transcription failed. Please try again.' });
-});
-
-// ============ SPEECH-TO-TEXT PROVIDERS ============
-
-// 1) Groq Whisper — fastest, 99 languages (no Kinyarwanda)
-async function transcribeWithGroq(buffer, mime, lang) {
-  const key = process.env.GROQ_API_KEY;
-  if (!key) throw new Error('Groq not configured');
-  const type = (mime || 'audio/webm').split(';')[0].trim();
-  const ext = type.includes('mp4') || type.includes('m4a') ? 'm4a'
-    : type.includes('ogg') ? 'ogg'
-    : type.includes('wav') ? 'wav'
-    : type.includes('mpeg') || type.includes('mp3') ? 'mp3'
-    : 'webm';
-  const blob = new Blob([buffer], { type });
-  const fd = new FormData();
-  fd.append('file', blob, `voice.${ext}`);
-  fd.append('model', 'whisper-large-v3-turbo');
-  fd.append('response_format', 'json');
-  fd.append('temperature', '0');
-  const base = (lang || '').split('-')[0].toLowerCase();
-  if (/^[a-z]{2}$/.test(base)) fd.append('language', base);
-  const r = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${key}` },
-    body: fd
-  });
-  if (!r.ok) { const t = await r.text().catch(() => ''); const e = new Error(`Groq ${r.status}: ${t.slice(0, 120)}`); e.status = r.status; throw e; }
-  const data = await r.json();
-  return data.text || '';
-}
-
-// 2) Cloudflare Workers AI Whisper — free, no card, already configured
-async function transcribeWithCloudflare(buffer, mime, lang) {
-  const accountId = process.env.CF_ACCOUNT_ID || process.env.CLOUDFLARE_ACCOUNT_ID;
-  const apiToken = process.env.CF_API_TOKEN || process.env.CLOUDFLARE_API_TOKEN;
-  if (!accountId || !apiToken) throw new Error('Cloudflare not configured');
-  const audioArray = Array.from(new Uint8Array(buffer));
-  const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/openai/whisper-large-v3-turbo`;
-  const r = await fetch(url, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${apiToken}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ audio: audioArray })
-  });
-  if (!r.ok) { const t = await r.text().catch(() => ''); const e = new Error(`CF ${r.status}: ${t.slice(0, 120)}`); e.status = r.status; throw e; }
-  const data = await r.json();
-  if (data.success === false) throw new Error('CF: ' + (data.errors?.[0]?.message || 'failed'));
-  return data.result?.text || '';
-}
-
-// 3) Hugging Face Inference API — free, no card
-//    - Kinyarwanda → mbazaNLP model, then MMS fallback
-//    - Everything else → MMS (1,162 languages)
-async function transcribeWithHuggingFace(buffer, mime, lang) {
-  const hfToken = process.env.HF_TOKEN;
-  if (!hfToken) throw new Error('Hugging Face not configured');
-
-  const base = (lang || '').split('-')[0].toLowerCase();
-  const models = base === 'rw'
-    ? ['mbazaNLP/Whisper-Small-Kinyarwanda', 'facebook/mms-1b-all']
-    : ['facebook/mms-1b-all'];
-
-  let lastErr = null;
-  for (const model of models) {
-    try {
-      const url = `https://api-inference.huggingface.co/models/${model}`;
-      const r = await fetch(url, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${hfToken}`,
-          'Content-Type': mime || 'audio/webm'
-        },
-        body: buffer
-      });
-      if (!r.ok) { const t = await r.text().catch(() => ''); throw new Error(`HF ${r.status}: ${t.slice(0, 120)}`); }
-      const data = await r.json();
-      const text = Array.isArray(data) ? (data[0]?.text || '') : (data.text || '');
-      if (text.trim()) return text;
-      throw new Error('HF returned empty text');
-    } catch (e) {
-      lastErr = e;
-      console.warn(`[stt] HF ${model} failed:`, e.message);
-    }
-  }
-  throw lastErr || new Error('HF failed');
-}
-
-// Languages Whisper cannot transcribe — route to HF first
-const WHISPER_UNSUPPORTED = new Set(['rw', 'kin']);
-
-app.post('/api/stt', sttLimiter, async (req, res) => {
-  const { audio, mime, lang } = req.body || {};
-  if (!audio || typeof audio !== 'string') return res.status(400).json({ error: 'audio (base64) required' });
-
-  let buffer;
-  try { buffer = Buffer.from(audio, 'base64'); }
-  catch { return res.status(400).json({ error: 'Invalid audio data' }); }
-
-  if (!buffer.length) return res.status(400).json({ error: 'Empty audio' });
-  if (buffer.length > 25 * 1024 * 1024) return res.status(413).json({ error: 'Audio too large (max 25 MB)' });
-
-  const base = (lang || '').split('-')[0].toLowerCase();
-  const useHFOnly = WHISPER_UNSUPPORTED.has(base);
-
-  const providers = useHFOnly
-    ? [
-        { name: 'HuggingFace', fn: () => transcribeWithHuggingFace(buffer, mime, lang) },
-        { name: 'Groq',        fn: () => transcribeWithGroq(buffer, mime, lang) },
-        { name: 'Cloudflare',  fn: () => transcribeWithCloudflare(buffer, mime, lang) }
-      ]
-    : [
-        { name: 'Groq',        fn: () => transcribeWithGroq(buffer, mime, lang) },
-        { name: 'Cloudflare',  fn: () => transcribeWithCloudflare(buffer, mime, lang) },
-        { name: 'HuggingFace', fn: () => transcribeWithHuggingFace(buffer, mime, lang) }
-      ];
-
-  const errors = [];
-  for (const p of providers) {
-    try {
-      const text = await p.fn();
-      if (text && text.trim()) {
-        console.log(`[stt] ${p.name} ✅ (${text.length} chars, lang=${lang || 'auto'})`);
-        return res.json({ text: text.trim(), provider: p.name });
-      }
-    } catch (e) {
-      console.warn(`[stt] ${p.name} failed:`, e.message);
-      errors.push(`${p.name}: ${e.message}`);
-    }
-  }
-
-  console.warn('[stt] all providers failed:', errors.join(' | '));
-  res.status(500).json({ error: 'Transcription failed. Please try again.' });
 });
 
 // ============ JWT ============
@@ -437,7 +192,7 @@ app.get('/av.png', (req, res) => res.sendFile(path.join(__dirname, 'av.png')));
 
 // ============ HEALTH CHECK ============
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', service: 'DeepRWA', version: '3.2.0', time: new Date().toISOString() });
+  res.json({ status: 'ok', service: 'DeepRWA', version: '3.3.0', time: new Date().toISOString() });
 });
 
 // ============ SYSTEM PROMPT ============
@@ -545,7 +300,7 @@ function buildGreetingReply(text) {
 }
 const IDENTITY_REPLY = "I am DeepRWA, created by Emmanuel Mukiza under The Star🌟, specialised in information about Rwanda.";
 
-// ============ IMAGE GENERATION (Cloudflare FLUX.1-schnell only — no watermark) ============
+// ============ IMAGE GENERATION (Cloudflare FLUX.1-schnell) ============
 const RWANDA_IMAGE_KEYWORDS = [
   'rwanda','rwandan','rwandese','kigali','kinyarwanda','umuganda','imigongo','agaseke','inkomane',
   'kivu','nyungwe','akagera','virunga','karisimbi','bisoke','muhabura','sabyinyo','gahinga',
@@ -651,6 +406,171 @@ async function classifyImageIntent(userText) {
   }
   return { action: 'off_topic' };
 }
+
+// ============ SPEECH-TO-TEXT ============
+async function transcribeWithGroq(buffer, mime) {
+  const key = process.env.GROQ_API_KEY;
+  if (!key) throw new Error('Groq not configured');
+  const type = (mime || 'audio/webm').split(';')[0].trim();
+  const ext = type.includes('mp4') || type.includes('m4a') ? 'm4a'
+    : type.includes('ogg') ? 'ogg'
+    : type.includes('wav') ? 'wav'
+    : type.includes('mpeg') || type.includes('mp3') ? 'mp3'
+    : 'webm';
+  const blob = new Blob([buffer], { type });
+  const fd = new FormData();
+  fd.append('file', blob, `voice.${ext}`);
+  fd.append('model', 'whisper-large-v3-turbo');
+  fd.append('response_format', 'verbose_json');
+  fd.append('temperature', '0');
+  // NOTE: intentionally NOT sending `language`. Groq rejects `rw` and auto-detect works better.
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 25000);
+  try {
+    const r = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${key}` },
+      body: fd,
+      signal: ctrl.signal
+    });
+    if (!r.ok) {
+      const t = await r.text().catch(() => '');
+      const e = new Error(`Groq ${r.status}: ${t.slice(0, 200)}`);
+      e.status = r.status;
+      throw e;
+    }
+    const data = await r.json();
+    return { text: data.text || '', language: data.language || '' };
+  } finally { clearTimeout(timer); }
+}
+
+async function transcribeWithCloudflare(buffer) {
+  const accountId = process.env.CF_ACCOUNT_ID || process.env.CLOUDFLARE_ACCOUNT_ID;
+  const apiToken = process.env.CF_API_TOKEN || process.env.CLOUDFLARE_API_TOKEN;
+  if (!accountId || !apiToken) throw new Error('Cloudflare not configured');
+
+  // CF Whisper accepts `audio` as a base64 STRING (not an array of numbers).
+  const base64 = buffer.toString('base64');
+
+  // Prefer turbo; fall back to the standard Whisper model.
+  const models = [
+    '@cf/openai/whisper-large-v3-turbo',
+    '@cf/openai/whisper'
+  ];
+
+  let lastErr = null;
+  for (const model of models) {
+    try {
+      const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${model}`;
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 25000);
+      let r;
+      try {
+        r = await fetch(url, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${apiToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ audio: base64 }),
+          signal: ctrl.signal
+        });
+      } finally { clearTimeout(timer); }
+      if (!r.ok) {
+        const t = await r.text().catch(() => '');
+        throw new Error(`CF ${model} ${r.status}: ${t.slice(0, 200)}`);
+      }
+      const data = await r.json();
+      if (data.success === false) throw new Error('CF: ' + (data.errors?.[0]?.message || 'failed'));
+      const result = data.result || {};
+      const text = result.text || '';
+      const language = result.language || '';
+      if (text.trim()) return { text, language };
+      throw new Error('CF returned empty text');
+    } catch (e) { lastErr = e; console.warn(`[stt] CF ${model}:`, e.message); }
+  }
+  throw lastErr || new Error('CF failed');
+}
+
+async function transcribeWithHuggingFace(buffer, mime) {
+  const hfToken = process.env.HF_TOKEN;
+  if (!hfToken) throw new Error('Hugging Face not configured');
+
+  // New router endpoint (the legacy api-inference host is being retired).
+  // whisper-large-v3 supports Kinyarwanda ('rw'); mms-1b-all covers 1,162 languages as backup.
+  const models = [
+    'openai/whisper-large-v3',
+    'facebook/mms-1b-all'
+  ];
+
+  let lastErr = null;
+  for (const model of models) {
+    try {
+      const url = `https://router.huggingface.co/hf-inference/models/${model}`;
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 30000);
+      let r;
+      try {
+        r = await fetch(url, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${hfToken}`,
+            'Content-Type': mime || 'audio/webm',
+            'Accept': 'application/json'
+          },
+          body: buffer,
+          signal: ctrl.signal
+        });
+      } finally { clearTimeout(timer); }
+      if (!r.ok) {
+        const t = await r.text().catch(() => '');
+        throw new Error(`HF ${model} ${r.status}: ${t.slice(0, 200)}`);
+      }
+      const data = await r.json();
+      const text = Array.isArray(data) ? (data[0]?.text || '') : (data.text || '');
+      if (text.trim()) return { text, language: '' };
+      throw new Error('HF returned empty text');
+    } catch (e) {
+      lastErr = e;
+      console.warn(`[stt] HF ${model}:`, e.message, e.cause?.message ? `(${e.cause.message})` : '');
+    }
+  }
+  throw lastErr || new Error('HF failed');
+}
+
+app.post('/api/stt', sttLimiter, async (req, res) => {
+  const { audio, mime } = req.body || {};
+  if (!audio || typeof audio !== 'string') return res.status(400).json({ error: 'audio (base64) required' });
+
+  let buffer;
+  try { buffer = Buffer.from(audio, 'base64'); }
+  catch { return res.status(400).json({ error: 'Invalid audio data' }); }
+
+  if (!buffer.length) return res.status(400).json({ error: 'Empty audio' });
+  if (buffer.length > 25 * 1024 * 1024) return res.status(413).json({ error: 'Audio too large (max 25 MB)' });
+
+  const providers = [
+    { name: 'Groq',        fn: () => transcribeWithGroq(buffer, mime) },
+    { name: 'Cloudflare',  fn: () => transcribeWithCloudflare(buffer) },
+    { name: 'HuggingFace', fn: () => transcribeWithHuggingFace(buffer, mime) }
+  ];
+
+  const errors = [];
+  for (const p of providers) {
+    try {
+      const result = await p.fn();
+      const text = (result?.text || '').trim();
+      if (text) {
+        console.log(`[stt] ${p.name} OK (${text.length} chars, lang=${result.language || 'auto'}): "${text.slice(0, 80)}"`);
+        return res.json({ text, language: result.language || '', provider: p.name });
+      }
+      console.warn(`[stt] ${p.name} returned empty text, trying next provider`);
+    } catch (e) {
+      console.warn(`[stt] ${p.name} failed:`, e.message);
+      errors.push(`${p.name}: ${e.message}`);
+    }
+  }
+
+  console.warn('[stt] all providers failed:', errors.join(' | '));
+  res.status(500).json({ error: 'Transcription failed. Please try again.' });
+});
 
 // ============ PROVIDERS ============
 const cooldown = new Map();
@@ -1039,7 +959,7 @@ async function generateChatTitle(firstMessage) {
 }
 
 // ============ ROUTES ============
-app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '3.2.0', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
+app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '3.3.0', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
 app.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nSitemap: https://deeprwa.agentdomains.co/sitemap.xml\n`));
 app.get('/sitemap.xml', (req, res) => res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>https://deeprwa.agentdomains.co/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>\n</urlset>`));
 
@@ -1057,6 +977,15 @@ app.get('/api/debug/image-providers', (req, res) => {
     topic_guard: 'Rwanda-only images',
     note: 'Pollinations removed — free tier always adds a watermark'
   });
+});
+
+// ============ SPEECH PROVIDERS DIAGNOSTICS ============
+app.get('/api/debug/stt-providers', (req, res) => {
+  const providers = [];
+  if (process.env.GROQ_API_KEY) providers.push({ id: 'groq', enabled: true, languages: '99 (Whisper-large-v3-turbo)', supports_kinyarwanda: false });
+  if ((process.env.CF_ACCOUNT_ID || process.env.CLOUDFLARE_ACCOUNT_ID) && (process.env.CF_API_TOKEN || process.env.CLOUDFLARE_API_TOKEN)) providers.push({ id: 'cloudflare', enabled: true, languages: '99 (Whisper-large-v3)', supports_kinyarwanda: false });
+  if (process.env.HF_TOKEN) providers.push({ id: 'huggingface', enabled: true, models: ['openai/whisper-large-v3', 'facebook/mms-1b-all'], languages: '1,162 via MMS', supports_kinyarwanda: true });
+  res.json({ providers, hf_token_present: !!process.env.HF_TOKEN });
 });
 
 // AUTH: Signup
@@ -1486,7 +1415,6 @@ async function streamChatResponse(messages, res, conversationId, attachments) {
       return done();
     }
 
-    // ── IMAGE GENERATION (Rwanda-only, Cloudflare FLUX — no watermark) ──
     if (isImageGenerationRequest(userText)) {
       try {
         const intent = await classifyImageIntent(userText);
