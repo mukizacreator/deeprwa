@@ -306,6 +306,18 @@ function getAudioContext() {
 }
 
 // ============ AUDIO RECORDER (VAD) ============
+let _sharedAudioCtx = null;
+function getAudioContext() {
+  if (!_sharedAudioCtx) {
+    try { _sharedAudioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+    catch { _sharedAudioCtx = null; }
+  }
+  if (_sharedAudioCtx && _sharedAudioCtx.state === 'suspended') {
+    _sharedAudioCtx.resume().catch(() => {});
+  }
+  return _sharedAudioCtx;
+}
+
 function pickAudioMime() {
   if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return '';
   const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
@@ -313,10 +325,16 @@ function pickAudioMime() {
   return '';
 }
 
+// Returns { promise, stop, abort }. `promise` resolves with a Blob, or `null`
+// when the recording did not contain enough speech to be worth sending to STT.
 function createRecorder(opts = {}) {
   const {
     maxMs = 60000,
     silenceMs = 3000,
+    minSpeechMs = 700,        // total speech energy time required
+    minPeakRms = 0.028,       // peak RMS during the recording
+    vadThreshold = 0.018,     // absolute minimum threshold
+    vadMultiplier = 2.6,      // multiplier over the rolling noise floor
     autoStopOnSilence = true
   } = opts;
 
@@ -325,6 +343,10 @@ function createRecorder(opts = {}) {
   const chunks = [];
   let stopped = false;
   let resolveFn, rejectFn;
+
+  // Energy tracking
+  let peakRms = 0;
+  let speechMs = 0;
 
   const promise = new Promise((resolve, reject) => { resolveFn = resolve; rejectFn = reject; });
 
@@ -341,7 +363,16 @@ function createRecorder(opts = {}) {
     if (maxTimer) { clearTimeout(maxTimer); maxTimer = null; }
     const finalize = () => {
       teardown();
+      // Reject silent recordings — do NOT send to Whisper.
+      const tooQuiet = peakRms < minPeakRms;
+      const tooShort = speechMs < minSpeechMs;
+      if (autoStopOnSilence && (tooQuiet || tooShort)) {
+        console.log(`[recorder] discarded: peakRms=${peakRms.toFixed(4)} (min ${minPeakRms}), speechMs=${speechMs} (min ${minSpeechMs})`);
+        resolveFn(null);
+        return;
+      }
       const type = recorder?.mimeType || 'audio/webm';
+      console.log(`[recorder] accepted: peakRms=${peakRms.toFixed(4)} speechMs=${speechMs}`);
       resolveFn(new Blob(chunks, { type }));
     };
     try {
@@ -399,6 +430,7 @@ function createRecorder(opts = {}) {
           }
           const rms = Math.sqrt(sum / dataArray.length);
 
+          // Rolling noise floor estimate
           rmsHistory.push(rms);
           if (rmsHistory.length > 20) rmsHistory.shift();
           if (rmsHistory.length >= 6) {
@@ -407,12 +439,15 @@ function createRecorder(opts = {}) {
             noiseFloor = noiseFloor * 0.7 + p10 * 0.3;
           }
 
-          const threshold = Math.max(0.018, noiseFloor * 2.6);
+          const threshold = Math.max(vadThreshold, noiseFloor * vadMultiplier);
           const speaking = rms > threshold;
+
+          if (rms > peakRms) peakRms = rms;
 
           if (speaking) {
             hasSpeech = true;
             silenceStart = 0;
+            speechMs += 100;
           } else if (hasSpeech) {
             if (!silenceStart) silenceStart = Date.now();
             if (Date.now() - silenceStart > silenceMs) finish();
@@ -611,12 +646,16 @@ const VoiceSession = {
     }
   },
 
-  async _loop() {
+    async _loop() {
     if (!this.active) return;
     if (state.isGenerating) {
       await new Promise(r => setTimeout(r, 300));
       return this._loop();
     }
+
+    // Give the speaker a moment to stop ringing before re-arming the mic.
+    await new Promise(r => setTimeout(r, 600));
+    if (!this.active) return;
 
     const timeout = new Promise((_, rej) => {
       this.silenceEndTimer = setTimeout(() => rej(new Error('silence-timeout')), 15000);
@@ -631,7 +670,11 @@ const VoiceSession = {
       this.recorder = null;
       if (!this.active) return;
 
-      if (!blob || blob.size < 1400) return this._loop();
+      // `blob === null` means the client-side VAD rejected the recording as
+      // silent — this is the fix for the phantom "Thank you for watching" and
+      // "The" messages that Whisper hallucinated on silence.
+      if (!blob) return this._loop();
+      if (blob.size < 1400) return this._loop();
 
       this.setPhase('transcribing', 'Transcribing…');
       const result = await this._transcribe(blob);
@@ -738,19 +781,35 @@ async function startInlineDictation() {
     return;
   }
 
-  // Warm the AudioContext inside the user gesture — critical for iOS/Safari.
-  getAudioContext();
+  getAudioContext(); // warm inside the gesture
 
   state._inlineDictationActive = true;
   micBtn.classList.add('listening');
   try {
-    const rec = createRecorder({ maxMs: 60000, silenceMs: 3000, autoStopOnSilence: true });
+    // More lenient thresholds for one-shot dictation: lower VAD bar, shorter
+    // silence window, and a lower minimum energy, since the user explicitly
+    // tapped the mic and expects their voice to be picked up.
+    const rec = createRecorder({
+      maxMs: 60000,
+      silenceMs: 2500,
+      minSpeechMs: 400,
+      minPeakRms: 0.015,
+      vadThreshold: 0.010,
+      vadMultiplier: 2.0,
+      autoStopOnSilence: true
+    });
     state._inlineRecorder = rec;
     const blob = await rec.promise;
     state._inlineRecorder = null;
     micBtn.classList.remove('listening');
     state._inlineDictationActive = false;
-    if (!blob || blob.size < 1400) { toast('Recording too short', 'info', 1800); return; }
+
+    if (!blob) {
+      toast('No speech detected — try speaking closer to the mic', 'info', 2500);
+      return;
+    }
+    if (blob.size < 1400) { toast('Recording too short', 'info', 1800); return; }
+
     const base64 = arrayBufferToBase64(await blob.arrayBuffer());
     const res = await fetch('/api/stt', {
       method: 'POST',
@@ -780,27 +839,6 @@ async function startInlineDictation() {
     micBtn.classList.remove('listening');
     if (e.message !== 'aborted') console.warn('[dictate]', e);
   }
-}
-
-function setupVoiceControls() {
-  micBtn.addEventListener('click', () => {
-    getAudioContext(); // warm context inside the gesture
-    if (VoiceSession.active) { VoiceSession.bargeIn(); return; }
-    if (state._inlineDictationActive) {
-      if (state._inlineRecorder) { try { state._inlineRecorder.stop(); } catch {} }
-      return;
-    }
-    startInlineDictation();
-  });
-
-  sendBtn.addEventListener('click', () => {
-    if (VoiceSession.active) { VoiceSession.exit('Voice session ended.'); return; }
-    if (state.isGenerating) { stopGeneration(); return; }
-    const hasText = inputEl.value.trim().length > 0;
-    const hasFiles = state.attachments.length > 0;
-    if (!hasText && !hasFiles) { VoiceSession.enter(); return; }
-    formEl.requestSubmit();
-  });
 }
 
 // ============ IMAGE LIGHTBOX ============
