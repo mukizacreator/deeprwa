@@ -276,70 +276,204 @@ async function compressImage(file, maxDimension = 1600, quality = 0.85) {
   });
 }
 
-// ============ VOICE INPUT (fixed: no leftover text after Send) ============
+// ============ VOICE INPUT ============
+const VOICE_LANGS = [
+  { code: 'en-US', label: 'English (US)', short: 'EN' },
+  { code: 'en-GB', label: 'English (UK)', short: 'EN' },
+  { code: 'fr-FR', label: 'Français', short: 'FR' },
+  { code: 'sw-KE', label: 'Kiswahili', short: 'SW' },
+  { code: 'ar-SA', label: 'العربية', short: 'AR' },
+  { code: 'es-ES', label: 'Español', short: 'ES' },
+  { code: 'pt-BR', label: 'Português', short: 'PT' },
+  { code: 'de-DE', label: 'Deutsch', short: 'DE' },
+  { code: 'it-IT', label: 'Italiano', short: 'IT' },
+  { code: 'zh-CN', label: '中文', short: 'ZH' },
+  { code: 'hi-IN', label: 'हिन्दी', short: 'HI' },
+  { code: 'ja-JP', label: '日本語', short: 'JA' },
+  { code: 'ko-KR', label: '한국어', short: 'KO' },
+  { code: 'ru-RU', label: 'Русский', short: 'RU' },
+  { code: 'tr-TR', label: 'Türkçe', short: 'TR' },
+  { code: 'rw-RW', label: 'Kinyarwanda', short: 'RW', whisperOnly: true }
+];
+
+const VOICE_LANG_KEY = 'deeprwa_voice_lang';
+
+function voiceLangInfo(code) {
+  return VOICE_LANGS.find(l => l.code === code) || VOICE_LANGS[0];
+}
+function getStoredVoiceLang() {
+  try {
+    const s = localStorage.getItem(VOICE_LANG_KEY);
+    if (s && VOICE_LANGS.some(l => l.code === s)) return s;
+  } catch {}
+  const nav = navigator.language || 'en-US';
+  const exact = VOICE_LANGS.find(l => l.code.toLowerCase() === nav.toLowerCase());
+  if (exact) return exact.code;
+  const base = nav.split('-')[0].toLowerCase();
+  const partial = VOICE_LANGS.find(l => l.code.toLowerCase().startsWith(base));
+  return partial ? partial.code : 'en-US';
+}
+
+let _voiceLang = getStoredVoiceLang();
 let _voiceRecognition = null;
 let _voiceActive = false;
 let _voiceBaseText = '';
-let _voiceFinalBuffer = '';
+let _voiceSessionFinal = '';
 let _voiceRestartTimer = null;
 let _voiceSuppressResults = false;
+let _voiceMediaRecorder = null;
+let _voiceAudioChunks = [];
+let _voiceWhisperMode = false;
+let _voiceStream = null;
+
+function isWebSpeechSupportedFor(code) {
+  const info = voiceLangInfo(code);
+  if (info.whisperOnly) return false;
+  return !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+}
+
+function updateVoiceLangButton() {
+  const label = document.getElementById('voiceLangLabel');
+  const btn = document.getElementById('voiceLangBtn');
+  if (!label) return;
+  const info = voiceLangInfo(_voiceLang);
+  label.textContent = info.short;
+  if (btn) btn.title = `Voice language: ${info.label}`;
+}
+
+function openVoiceLangMenu() {
+  document.querySelectorAll('.voice-lang-menu').forEach(m => m.remove());
+  const btn = document.getElementById('voiceLangBtn');
+  if (!btn) return;
+  const rect = btn.getBoundingClientRect();
+  const menu = document.createElement('div');
+  menu.className = 'chat-menu voice-lang-menu';
+  const menuW = 230;
+  menu.style.left = Math.max(8, Math.min(rect.left - 80, window.innerWidth - menuW - 8)) + 'px';
+  menu.style.top = 'auto';
+  menu.style.bottom = (window.innerHeight - rect.top + 6) + 'px';
+  menu.style.minWidth = menuW + 'px';
+  menu.style.maxHeight = 'min(60vh, 360px)';
+  menu.style.overflowY = 'auto';
+  menu.innerHTML = VOICE_LANGS.map(l => `
+    <button data-lang="${l.code}">
+      <span style="font-family:ui-monospace,monospace;font-size:0.72rem;color:var(--text-muted);min-width:28px;display:inline-block;">${l.short}</span>
+      <span style="flex:1;">${l.label}${l.whisperOnly ? ' <span style="color:var(--text-dim);font-size:0.7rem;">· accurate mode</span>' : ''}</span>
+      ${l.code === _voiceLang ? '<i data-lucide="check"></i>' : ''}
+    </button>`).join('');
+  document.body.appendChild(menu);
+  refreshIcons();
+  const close = (ev) => { if (!menu.contains(ev.target) && ev.target !== btn) { menu.remove(); document.removeEventListener('click', close); } };
+  setTimeout(() => document.addEventListener('click', close), 0);
+  menu.addEventListener('click', (ev) => {
+    const b = ev.target.closest('button[data-lang]');
+    if (!b) return;
+    setVoiceLang(b.dataset.lang);
+    menu.remove();
+  });
+}
+
+function setVoiceLang(code) {
+  if (!VOICE_LANGS.some(l => l.code === code)) return;
+  if (_voiceActive) stopVoiceInput();
+  _voiceLang = code;
+  try { localStorage.setItem(VOICE_LANG_KEY, code); } catch {}
+  updateVoiceLangButton();
+  if (_voiceRecognition) _voiceRecognition.lang = code;
+  toast(`Voice language: ${voiceLangInfo(code).label}`, 'info', 1800);
+}
 
 function setupVoiceInput() {
+  const langBtn = document.getElementById('voiceLangBtn');
+  if (langBtn) {
+    langBtn.addEventListener('click', (e) => { e.stopPropagation(); openVoiceLangMenu(); });
+    updateVoiceLangButton();
+  }
   if (!micBtn) return;
+
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) { micBtn.style.display = 'none'; return; }
+  const canMediaRec = typeof MediaRecorder !== 'undefined' && navigator.mediaDevices?.getUserMedia;
+  if (!SR && !canMediaRec) {
+    micBtn.style.display = 'none';
+    if (langBtn) langBtn.style.display = 'none';
+    return;
+  }
 
-  _voiceRecognition = new SR();
-  _voiceRecognition.continuous = true;
-  _voiceRecognition.interimResults = true;
-  _voiceRecognition.lang = navigator.language || 'en-US';
-  _voiceRecognition.maxAlternatives = 1;
+  if (SR) {
+    _voiceRecognition = new SR();
+    _voiceRecognition.continuous = true;
+    _voiceRecognition.interimResults = true;
+    _voiceRecognition.maxAlternatives = 1;
+    _voiceRecognition.lang = _voiceLang;
 
-  _voiceRecognition.onstart = () => { micBtn.classList.add('listening'); };
+    _voiceRecognition.onstart = () => { micBtn.classList.add('listening'); };
 
-  _voiceRecognition.onresult = (e) => {
-    if (_voiceSuppressResults) return;
-    let interim = '', final = '';
-    for (let i = e.resultIndex; i < e.results.length; i++) {
-      const t = e.results[i][0].transcript;
-      if (e.results[i].isFinal) final += t; else interim += t;
-    }
-    if (final) _voiceFinalBuffer += final;
-    const sep = _voiceBaseText && !/\s$/.test(_voiceBaseText) ? ' ' : '';
-    inputEl.value = _voiceBaseText + sep + _voiceFinalBuffer + interim;
-    autoGrow();
-    updateSendButton();
-  };
-
-  _voiceRecognition.onerror = (e) => {
-    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-      _voiceActive = false; micBtn.classList.remove('listening');
-      toast('Microphone access denied. Allow it in your browser settings.', 'error');
-    } else if (e.error === 'network') {
-      _voiceActive = false; micBtn.classList.remove('listening');
-      toast('Voice needs an internet connection.', 'error');
-    } else if (e.error === 'audio-capture') {
-      _voiceActive = false; micBtn.classList.remove('listening');
-      toast('No microphone found on this device.', 'error');
-    }
-  };
-
-  _voiceRecognition.onend = () => {
-    if (_voiceActive && !_voiceSuppressResults) {
-      if (_voiceRestartTimer) clearTimeout(_voiceRestartTimer);
-      _voiceRestartTimer = setTimeout(() => {
-        _voiceRestartTimer = null;
-        if (!_voiceActive) return;
-        try { _voiceRecognition.start(); } catch (err) {
-          if (!/already started/i.test(err?.message || '')) {
-            _voiceActive = false; micBtn.classList.remove('listening');
-          }
+    // Rebuild textarea from the *current* results array — prevents duplicates.
+    _voiceRecognition.onresult = (e) => {
+      if (_voiceSuppressResults || _voiceWhisperMode) return;
+      let finalText = '', interimText = '';
+      for (let i = 0; i < e.results.length; i++) {
+        const t = e.results[i][0].transcript;
+        if (e.results[i].isFinal) {
+          finalText += (finalText && !/\s$/.test(finalText) && !/^\s/.test(t) ? ' ' : '') + t;
+        } else {
+          interimText += (interimText && !/\s$/.test(interimText) && !/^\s/.test(t) ? ' ' : '') + t;
         }
-      }, 250);
-    } else {
-      micBtn.classList.remove('listening');
-    }
-  };
+      }
+      _voiceSessionFinal = finalText;
+      const parts = [];
+      if (_voiceBaseText) parts.push(_voiceBaseText.replace(/\s+$/, ''));
+      if (_voiceSessionFinal) parts.push(_voiceSessionFinal.replace(/\s+$/, ''));
+      if (interimText) parts.push(interimText.replace(/^\s+/, ''));
+      inputEl.value = parts.join(' ').replace(/\s+/g, ' ');
+      autoGrow();
+      updateSendButton();
+    };
+
+    _voiceRecognition.onerror = (e) => {
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        _voiceActive = false; micBtn.classList.remove('listening');
+        toast('Microphone access denied. Allow it in your browser settings.', 'error');
+      } else if (e.error === 'network') {
+        _voiceActive = false; micBtn.classList.remove('listening');
+        toast('Voice needs an internet connection.', 'error');
+      } else if (e.error === 'audio-capture') {
+        _voiceActive = false; micBtn.classList.remove('listening');
+        toast('No microphone found on this device.', 'error');
+      } else if (e.error === 'language-not-supported' || e.error === 'bad-grammar') {
+        console.warn('[voice] Web Speech lang unsupported, falling back to Whisper');
+        _voiceActive = false; micBtn.classList.remove('listening');
+        try { _voiceRecognition.stop(); } catch {}
+        if (typeof MediaRecorder !== 'undefined' && navigator.mediaDevices?.getUserMedia) {
+          startWhisperRecording();
+        } else {
+          toast('This language is not supported on this device', 'error');
+        }
+      }
+    };
+
+    _voiceRecognition.onend = () => {
+      if (_voiceActive && !_voiceSuppressResults && !_voiceWhisperMode) {
+        const parts = [];
+        if (_voiceBaseText) parts.push(_voiceBaseText.replace(/\s+$/, ''));
+        if (_voiceSessionFinal) parts.push(_voiceSessionFinal.replace(/\s+$/, ''));
+        _voiceBaseText = parts.join(' ').replace(/\s+/g, ' ');
+        _voiceSessionFinal = '';
+        if (_voiceRestartTimer) clearTimeout(_voiceRestartTimer);
+        _voiceRestartTimer = setTimeout(() => {
+          _voiceRestartTimer = null;
+          if (!_voiceActive || _voiceWhisperMode) return;
+          try { _voiceRecognition.start(); } catch (err) {
+            if (!/already started/i.test(err?.message || '')) {
+              _voiceActive = false; micBtn.classList.remove('listening');
+            }
+          }
+        }, 250);
+      } else {
+        micBtn.classList.remove('listening');
+      }
+    };
+  }
 
   micBtn.addEventListener('click', () => {
     if (_voiceActive) stopVoiceInput();
@@ -348,28 +482,128 @@ function setupVoiceInput() {
 }
 
 function startVoiceInput() {
-  if (!_voiceRecognition) return;
-  _voiceActive = true;
-  _voiceSuppressResults = false;
   _voiceBaseText = inputEl.value || '';
-  _voiceFinalBuffer = '';
+  _voiceSessionFinal = '';
+  _voiceSuppressResults = false;
+  _voiceWhisperMode = false;
+
+  // Route to Whisper for languages Chrome's Web Speech can't handle.
+  if (!isWebSpeechSupportedFor(_voiceLang)) {
+    if (typeof MediaRecorder !== 'undefined' && navigator.mediaDevices?.getUserMedia) {
+      startWhisperRecording();
+    } else {
+      toast('Voice input is not available for this language on this device.', 'error');
+    }
+    return;
+  }
+  if (!_voiceRecognition) return;
+
+  _voiceActive = true;
+  _voiceRecognition.lang = _voiceLang;
   micBtn.classList.add('listening');
   try { _voiceRecognition.start(); } catch (err) {
     if (!/already started/i.test(err?.message || '')) {
       _voiceActive = false; micBtn.classList.remove('listening');
+      if (typeof MediaRecorder !== 'undefined' && navigator.mediaDevices?.getUserMedia) {
+        startWhisperRecording();
+      } else {
+        toast('Could not start voice input', 'error');
+      }
     }
   }
 }
 
 function stopVoiceInput() {
+  const wasWhisper = _voiceWhisperMode;
   _voiceActive = false;
   _voiceSuppressResults = true;
   if (_voiceRestartTimer) { clearTimeout(_voiceRestartTimer); _voiceRestartTimer = null; }
-  if (_voiceRecognition) { try { _voiceRecognition.stop(); } catch {} }
+  if (_voiceRecognition && !wasWhisper) { try { _voiceRecognition.stop(); } catch {} }
+  if (_voiceMediaRecorder && _voiceMediaRecorder.state !== 'inactive') {
+    try { _voiceMediaRecorder.stop(); } catch {}
+  }
+  if (_voiceStream) { try { _voiceStream.getTracks().forEach(t => t.stop()); } catch {} _voiceStream = null; }
   micBtn.classList.remove('listening');
   _voiceBaseText = '';
-  _voiceFinalBuffer = '';
+  _voiceSessionFinal = '';
+  _voiceWhisperMode = false;
   setTimeout(() => { _voiceSuppressResults = false; }, 400);
+}
+
+// ============ WHISPER FALLBACK (Kinyarwanda, etc.) ============
+function pickAudioMime() {
+  if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return '';
+  const c = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
+  for (const t of c) { if (MediaRecorder.isTypeSupported(t)) return t; }
+  return '';
+}
+
+async function startWhisperRecording() {
+  try {
+    _voiceWhisperMode = true;
+    _voiceActive = true;
+    _voiceAudioChunks = [];
+    _voiceStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+    const mime = pickAudioMime();
+    _voiceMediaRecorder = mime ? new MediaRecorder(_voiceStream, { mimeType: mime }) : new MediaRecorder(_voiceStream);
+    _voiceMediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) _voiceAudioChunks.push(e.data); };
+    _voiceMediaRecorder.onstop = async () => {
+      const type = _voiceMediaRecorder?.mimeType || 'audio/webm';
+      const blob = new Blob(_voiceAudioChunks, { type });
+      _voiceAudioChunks = [];
+      if (_voiceStream) { _voiceStream.getTracks().forEach(t => t.stop()); _voiceStream = null; }
+      _voiceMediaRecorder = null;
+      _voiceWhisperMode = false;
+      _voiceActive = false;
+      _voiceSuppressResults = false;
+      micBtn.classList.remove('listening');
+      if (blob.size < 1500) { toast('Recording too short — try again', 'info', 2000); return; }
+      toast('Transcribing audio…', 'info', 2500);
+      await transcribeAudio(blob);
+    };
+    _voiceMediaRecorder.start();
+    micBtn.classList.add('listening');
+    toast(`Listening in ${voiceLangInfo(_voiceLang).label} — tap mic to stop`, 'info', 3000);
+  } catch (err) {
+    console.warn('[voice] whisper start failed:', err);
+    _voiceWhisperMode = false;
+    _voiceActive = false;
+    micBtn.classList.remove('listening');
+    toast('Microphone access denied', 'error');
+  }
+}
+
+async function transcribeAudio(blob) {
+  try {
+    const buf = await blob.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    let binary = '';
+    const CH = 0x8000;
+    for (let i = 0; i < bytes.length; i += CH) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+    }
+    const base64 = btoa(binary);
+    const res = await fetch('/api/stt', {
+      method: 'POST',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ audio: base64, mime: blob.type || 'audio/webm', lang: _voiceLang })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      toast(err.error || 'Transcription failed', 'error');
+      return;
+    }
+    const data = await res.json();
+    const text = (data.text || '').trim();
+    if (!text) { toast('No speech detected', 'info'); return; }
+    const existing = inputEl.value.trim();
+    inputEl.value = existing ? (existing + ' ' + text) : text;
+    autoGrow();
+    updateSendButton();
+  } catch (e) {
+    console.warn('[stt] failed:', e);
+    toast('Transcription failed', 'error');
+  }
 }
 
 // ============ VOICE OUTPUT (chunked for long messages) ============
@@ -1650,13 +1884,16 @@ formEl.addEventListener('submit', async (e) => {
             if (!assistantMsg.files) assistantMsg.files = [];
             assistantMsg.files.push(genFile);
             const body = chatEl.querySelector(`.msg-assistant[data-id="${assistantMsg.id}"] .assistant-body`);
-            if (body && !body.querySelector('.generated-image-wrap')) {
-              const holder = document.createElement('div');
-              holder.innerHTML = renderGeneratedImageBlock(genFile);
-              body.appendChild(holder.firstElementChild);
-              refreshIcons();
-              scrollBottom();
-            }
+if (body && !body.querySelector('.generated-image-wrap')) {
+  const holder = document.createElement('div');
+  holder.innerHTML = renderGeneratedImageBlock(genFile);
+  const imgEl = holder.firstElementChild;
+  const actions = body.querySelector('.msg-actions-assistant');
+  if (actions) body.insertBefore(imgEl, actions);
+  else body.appendChild(imgEl);
+  refreshIcons();
+  scrollBottom();
+}
           }
         } catch {}
       }
@@ -1761,13 +1998,16 @@ async function saveEditAndSend(newText) {
             if (!assistantMsg.files) assistantMsg.files = [];
             assistantMsg.files.push(genFile);
             const body = chatEl.querySelector(`.msg-assistant[data-id="${assistantMsg.id}"] .assistant-body`);
-            if (body && !body.querySelector('.generated-image-wrap')) {
-              const holder = document.createElement('div');
-              holder.innerHTML = renderGeneratedImageBlock(genFile);
-              body.appendChild(holder.firstElementChild);
-              refreshIcons();
-              scrollBottom();
-            }
+if (body && !body.querySelector('.generated-image-wrap')) {
+  const holder = document.createElement('div');
+  holder.innerHTML = renderGeneratedImageBlock(genFile);
+  const imgEl = holder.firstElementChild;
+  const actions = body.querySelector('.msg-actions-assistant');
+  if (actions) body.insertBefore(imgEl, actions);
+  else body.appendChild(imgEl);
+  refreshIcons();
+  scrollBottom();
+}
           }
         } catch {}
       }
