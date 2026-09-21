@@ -1,4 +1,4 @@
-// DeepRWA — Complete frontend logic (rev.4.1.1)
+// DeepRWA — Complete frontend logic (rev.4.2.0)
 
 // ============ CLIENT ID ============
 function getOrCreateClientId() {
@@ -310,6 +310,9 @@ function getAudioContext() {
 function getSpeechRecognition() {
   return window.SpeechRecognition || window.webkitSpeechRecognition || null;
 }
+function speechRecognitionAvailable() {
+  return !!getSpeechRecognition();
+}
 function pickRecognitionLang() {
   return navigator.language || 'en-US';
 }
@@ -462,18 +465,11 @@ const StreamingTTS = {
     else utter.lang = pickRecognitionLang();
     utter.rate = 1.05;
     utter.pitch = 1.0;
-
-    // Watchdog: Chrome sometimes never fires onend/onerror. Force-advance.
     let advanced = false;
-    const advance = () => {
-      if (advanced) return;
-      advanced = true;
-      if (session === this.session) this._speakNext();
-    };
+    const advance = () => { if (advanced) return; advanced = true; if (session === this.session) this._speakNext(); };
     utter.onend = advance;
     utter.onerror = advance;
     setTimeout(advance, 12000);
-
     try { window.speechSynthesis.speak(utter); }
     catch { advance(); }
   }
@@ -553,7 +549,135 @@ function speakMessage(text, btn) {
 
 window.addEventListener('beforeunload', () => { stopSpeaking(); StreamingTTS.stop(); });
 
-// ============ VOICE SESSION ============
+// ============ AUDIO RECORDER (Whisper fallback) ============
+function pickAudioMime() {
+  if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return '';
+  const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
+  for (const t of candidates) { if (MediaRecorder.isTypeSupported(t)) return t; }
+  return '';
+}
+
+function createRecorder(opts = {}) {
+  const {
+    maxMs = 60000,
+    silenceMs = 2500,
+    minSpeechMs = 500,
+    minPeakRms = 0.020,
+    vadThreshold = 0.014,
+    vadMultiplier = 2.2,
+    autoStopOnSilence = true
+  } = opts;
+
+  let recorder = null, stream = null, audioCtx = null, analyser = null;
+  let vadInterval = null, maxTimer = null;
+  const chunks = [];
+  let stopped = false;
+  let resolveFn, rejectFn;
+  let peakRms = 0;
+  let speechMs = 0;
+
+  const promise = new Promise((resolve, reject) => { resolveFn = resolve; rejectFn = reject; });
+
+  const teardown = () => {
+    if (vadInterval) { clearInterval(vadInterval); vadInterval = null; }
+    if (maxTimer) { clearTimeout(maxTimer); maxTimer = null; }
+    try { stream?.getTracks().forEach(t => t.stop()); } catch {}
+  };
+
+  const finish = () => {
+    if (stopped) return;
+    stopped = true;
+    if (vadInterval) { clearInterval(vadInterval); vadInterval = null; }
+    if (maxTimer) { clearTimeout(maxTimer); maxTimer = null; }
+    const finalize = () => {
+      teardown();
+      const tooQuiet = peakRms < minPeakRms;
+      const tooShort = speechMs < minSpeechMs;
+      if (autoStopOnSilence && (tooQuiet || tooShort)) {
+        console.log(`[recorder] discarded silent recording (peakRms=${peakRms.toFixed(4)}, speechMs=${speechMs})`);
+        resolveFn(null);
+        return;
+      }
+      const type = recorder?.mimeType || 'audio/webm';
+      console.log(`[recorder] accepted (peakRms=${peakRms.toFixed(4)}, speechMs=${speechMs})`);
+      resolveFn(new Blob(chunks, { type }));
+    };
+    try {
+      if (recorder && recorder.state !== 'inactive') {
+        recorder.onstop = finalize;
+        recorder.stop();
+      } else finalize();
+    } catch { finalize(); }
+  };
+
+  const abort = (reason) => {
+    if (stopped) return;
+    stopped = true;
+    if (vadInterval) { clearInterval(vadInterval); vadInterval = null; }
+    if (maxTimer) { clearTimeout(maxTimer); maxTimer = null; }
+    try { if (recorder && recorder.state !== 'inactive') recorder.stop(); } catch {}
+    teardown();
+    rejectFn(new Error(reason || 'aborted'));
+  };
+
+  (async () => {
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+      });
+      const mime = pickAudioMime();
+      recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+      recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+
+      if (autoStopOnSilence) {
+        audioCtx = getAudioContext() || new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') { try { await audioCtx.resume(); } catch {} }
+        const source = audioCtx.createMediaStreamSource(stream);
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 512;
+        analyser.smoothingTimeConstant = 0.5;
+        source.connect(analyser);
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+        const rmsHistory = [];
+        let noiseFloor = 0.012;
+        let hasSpeech = false;
+        let silenceStart = 0;
+
+        vadInterval = setInterval(() => {
+          if (stopped || !analyser) return;
+          analyser.getByteTimeDomainData(dataArray);
+          let sum = 0;
+          for (let i = 0; i < dataArray.length; i++) {
+            const v = (dataArray[i] - 128) / 128;
+            sum += v * v;
+          }
+          const rms = Math.sqrt(sum / dataArray.length);
+          rmsHistory.push(rms);
+          if (rmsHistory.length > 20) rmsHistory.shift();
+          if (rmsHistory.length >= 6) {
+            const sorted = [...rmsHistory].sort((a, b) => a - b);
+            const p10 = sorted[Math.floor(sorted.length * 0.1)] || sorted[0];
+            noiseFloor = noiseFloor * 0.7 + p10 * 0.3;
+          }
+          const threshold = Math.max(vadThreshold, noiseFloor * vadMultiplier);
+          const speaking = rms > threshold;
+          if (rms > peakRms) peakRms = rms;
+          if (speaking) { hasSpeech = true; silenceStart = 0; speechMs += 100; }
+          else if (hasSpeech) {
+            if (!silenceStart) silenceStart = Date.now();
+            if (Date.now() - silenceStart > silenceMs) finish();
+          }
+        }, 100);
+      }
+      maxTimer = setTimeout(() => finish(), maxMs);
+      recorder.start(100);
+    } catch (e) { abort(e.message || 'getUserMedia failed'); }
+  })();
+
+  return { promise, stop: () => finish(), abort };
+}
+
+// ============ VOICE SESSION (universal: Web Speech OR Whisper) ============
 const VoiceSession = {
   active: false,
   phase: 'idle',
@@ -580,7 +704,7 @@ const VoiceSession = {
 
     this.active = true;
     this._busy = false;
-    this._useWhisper = false;
+    this._useWhisper = !speechRecognitionAvailable();
     this._bargeInHits = 0;
     document.body.classList.add('voice-mode');
     voiceStatus.classList.remove('hidden');
@@ -594,6 +718,10 @@ const VoiceSession = {
     } catch (e) {
       this.exit('Microphone access is required for voice mode.');
       return;
+    }
+
+    if (!speechRecognitionAvailable()) {
+      toast('Using Whisper voice mode (Web Speech not available on this device)', 'info', 3000);
     }
 
     this._startBargeInMonitor();
@@ -710,11 +838,10 @@ const VoiceSession = {
   },
 
   async _listenForTurn() {
-    const SR = getSpeechRecognition();
-    if (SR && !this._useWhisper) {
-      return this._listenWebSpeech();
+    if (this._useWhisper || !speechRecognitionAvailable()) {
+      return this._listenWhisper();
     }
-    return this._listenWhisper();
+    return this._listenWebSpeech();
   },
 
   async _listenWebSpeech() {
@@ -854,6 +981,7 @@ const VoiceSession = {
   }
 };
 
+// ============ PHANTOM FILTER ============
 const PHANTOM_PHRASES = new Set([
   'thank you for watching','thanks for watching','please subscribe','subscribe',
   'the end','a film by','film by','subtitles by','amara.org','amara org',
@@ -875,12 +1003,11 @@ function looksLikePhantom(text) {
 }
 
 // ============ INLINE DICTATION (mic button) ============
-// ============ INLINE DICTATION (mic button) ============
 let _inlineRecognition = null;
 let _inlineDictationActive = false;
-let _inlineBaseText = '';       // never changes after the click
-let _inlineFinalText = '';      // accumulates finalized text
-let _inlineInterimText = '';    // current interim (replaces)
+let _inlineBaseText = '';
+let _inlineFinalText = '';
+let _inlineInterimText = '';
 let _inlineNoSpeechCount = 0;
 let _inlineUseWhisper = false;
 
@@ -970,7 +1097,6 @@ function _startInlineWebSpeech() {
   rec.onend = () => {
     if (_inlineRecognition !== rec) return;
     if (!_inlineDictationActive) return;
-    // Promote any pending interim into final so nothing is lost between restarts.
     if (_inlineInterimText) {
       const t = _inlineInterimText.replace(/^\s+/, '');
       _inlineFinalText = (_inlineFinalText ? _inlineFinalText.replace(/\s+$/, '') + ' ' : '') + t;
@@ -1060,7 +1186,14 @@ function setupVoiceControls() {
     if (state.isGenerating) { stopGeneration(); return; }
     const hasText = inputEl.value.trim().length > 0;
     const hasFiles = state.attachments.length > 0;
-    if (!hasText && !hasFiles) { VoiceSession.enter(); return; }
+    if (!hasText && !hasFiles) {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        toast('Voice conversations are not supported on this device', 'error');
+        return;
+      }
+      VoiceSession.enter();
+      return;
+    }
     formEl.requestSubmit();
   });
 }
@@ -1782,9 +1915,16 @@ function updateSendButton() {
     sendBtn.setAttribute('aria-label', 'Send');
     return;
   }
-  iconVoice.classList.remove('hidden');
-  sendBtn.classList.add('voice-entry');
-  sendBtn.setAttribute('aria-label', 'Start voice conversation');
+  // Empty input — show voice entry if microphone is available.
+  // We do NOT require SpeechRecognition here because VoiceSession has a Whisper fallback.
+  if (navigator.mediaDevices?.getUserMedia) {
+    iconVoice.classList.remove('hidden');
+    sendBtn.classList.add('voice-entry');
+    sendBtn.setAttribute('aria-label', 'Start voice conversation');
+  } else {
+    iconSend.classList.remove('hidden');
+    sendBtn.setAttribute('aria-label', 'Send');
+  }
 }
 
 function stopGeneration() {
