@@ -1,4 +1,4 @@
-// DeepRWA — Complete frontend logic (rev.3.7.0)
+// DeepRWA — Complete frontend logic (rev.3.8.0)
 
 // ============ CLIENT ID ============
 function getOrCreateClientId() {
@@ -291,18 +291,35 @@ async function compressImage(file, maxDimension = 1600, quality = 0.85) {
   });
 }
 
+// ============ SHARED AUDIO CONTEXT ============
+// Created inside the first user gesture so iOS/Safari don't leave it suspended.
+let _sharedAudioCtx = null;
+function getAudioContext() {
+  if (!_sharedAudioCtx) {
+    try { _sharedAudioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+    catch { _sharedAudioCtx = null; }
+  }
+  if (_sharedAudioCtx && _sharedAudioCtx.state === 'suspended') {
+    _sharedAudioCtx.resume().catch(() => {});
+  }
+  return _sharedAudioCtx;
+}
+
 // ============ AUDIO RECORDER (VAD) ============
 function pickAudioMime() {
   if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return '';
   const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
-  for (const t of candidates) {
-    if (MediaRecorder.isTypeSupported(t)) return t;
-  }
+  for (const t of candidates) { if (MediaRecorder.isTypeSupported(t)) return t; }
   return '';
 }
 
 function createRecorder(opts = {}) {
-  const { maxMs = 30000, silenceMs = 1200, autoStopOnSilence = true } = opts;
+  const {
+    maxMs = 60000,
+    silenceMs = 3000,
+    autoStopOnSilence = true
+  } = opts;
+
   let recorder = null, stream = null, audioCtx = null, analyser = null;
   let vadInterval = null, maxTimer = null;
   const chunks = [];
@@ -315,7 +332,6 @@ function createRecorder(opts = {}) {
     if (vadInterval) { clearInterval(vadInterval); vadInterval = null; }
     if (maxTimer) { clearTimeout(maxTimer); maxTimer = null; }
     try { stream?.getTracks().forEach(t => t.stop()); } catch {}
-    try { audioCtx?.close(); } catch {}
   };
 
   const finish = () => {
@@ -332,9 +348,7 @@ function createRecorder(opts = {}) {
       if (recorder && recorder.state !== 'inactive') {
         recorder.onstop = finalize;
         recorder.stop();
-      } else {
-        finalize();
-      }
+      } else finalize();
     } catch { finalize(); }
   };
 
@@ -353,53 +367,57 @@ function createRecorder(opts = {}) {
       stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
       });
+
       const mime = pickAudioMime();
       recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
       recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
 
       if (autoStopOnSilence) {
-        try {
-          audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-          const source = audioCtx.createMediaStreamSource(stream);
-          analyser = audioCtx.createAnalyser();
-          analyser.fftSize = 512;
-          analyser.smoothingTimeConstant = 0.6;
-          source.connect(analyser);
-          const dataArray = new Uint8Array(analyser.frequencyBinCount);
-          const calibration = [];
-          let noiseFloor = 0.012;
-          let hasSpeech = false;
-          let silenceStart = 0;
-
-          vadInterval = setInterval(() => {
-            if (stopped || !analyser) return;
-            analyser.getByteTimeDomainData(dataArray);
-            let sum = 0;
-            for (let i = 0; i < dataArray.length; i++) {
-              const v = (dataArray[i] - 128) / 128;
-              sum += v * v;
-            }
-            const rms = Math.sqrt(sum / dataArray.length);
-            if (calibration.length < 5) {
-              calibration.push(rms);
-              if (calibration.length === 5) {
-                const sorted = [...calibration].sort((a, b) => a - b);
-                noiseFloor = Math.max(0.008, sorted[2] * 1.6);
-              }
-              return;
-            }
-            const speaking = rms > noiseFloor * 2.8;
-            if (speaking) {
-              hasSpeech = true;
-              silenceStart = 0;
-            } else if (hasSpeech) {
-              if (!silenceStart) silenceStart = Date.now();
-              if (Date.now() - silenceStart > silenceMs) finish();
-            }
-          }, 100);
-        } catch (e) {
-          console.warn('[vad] setup failed, running without silence detection:', e.message);
+        audioCtx = getAudioContext() || new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') {
+          try { await audioCtx.resume(); } catch {}
         }
+        const source = audioCtx.createMediaStreamSource(stream);
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 512;
+        analyser.smoothingTimeConstant = 0.5;
+        source.connect(analyser);
+
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+        const rmsHistory = [];
+        let noiseFloor = 0.012;
+        let hasSpeech = false;
+        let silenceStart = 0;
+
+        vadInterval = setInterval(() => {
+          if (stopped || !analyser) return;
+          analyser.getByteTimeDomainData(dataArray);
+          let sum = 0;
+          for (let i = 0; i < dataArray.length; i++) {
+            const v = (dataArray[i] - 128) / 128;
+            sum += v * v;
+          }
+          const rms = Math.sqrt(sum / dataArray.length);
+
+          rmsHistory.push(rms);
+          if (rmsHistory.length > 20) rmsHistory.shift();
+          if (rmsHistory.length >= 6) {
+            const sorted = [...rmsHistory].sort((a, b) => a - b);
+            const p10 = sorted[Math.floor(sorted.length * 0.1)] || sorted[0];
+            noiseFloor = noiseFloor * 0.7 + p10 * 0.3;
+          }
+
+          const threshold = Math.max(0.018, noiseFloor * 2.6);
+          const speaking = rms > threshold;
+
+          if (speaking) {
+            hasSpeech = true;
+            silenceStart = 0;
+          } else if (hasSpeech) {
+            if (!silenceStart) silenceStart = Date.now();
+            if (Date.now() - silenceStart > silenceMs) finish();
+          }
+        }, 100);
       }
 
       maxTimer = setTimeout(() => finish(), maxMs);
@@ -428,7 +446,6 @@ function pickTtsVoice(lang) {
   if (v) return v;
   return null;
 }
-// Warm the voice list (async in Chrome)
 if (window.speechSynthesis) {
   window.speechSynthesis.getVoices();
   window.speechSynthesis.onvoiceschanged = () => {};
@@ -545,12 +562,12 @@ const VoiceSession = {
       return;
     }
     if (state.isGenerating) { toast('Please wait for the current response to finish', 'info'); return; }
+    getAudioContext(); // warm inside gesture
     this.active = true;
     document.body.classList.add('voice-mode');
     voiceStatus.classList.remove('hidden');
     inputEl.disabled = true;
     updateSendButton();
-    // Trigger mic permission inside the user gesture
     try {
       const s = await navigator.mediaDevices.getUserMedia({ audio: true });
       s.getTracks().forEach(t => t.stop());
@@ -601,14 +618,13 @@ const VoiceSession = {
       return this._loop();
     }
 
-    // 15 s silence timeout — user hasn't started speaking at all
     const timeout = new Promise((_, rej) => {
       this.silenceEndTimer = setTimeout(() => rej(new Error('silence-timeout')), 15000);
     });
 
     try {
       this.setPhase('listening', 'Listening…');
-      const rec = createRecorder({ maxMs: 30000, silenceMs: 1200, autoStopOnSilence: true });
+      const rec = createRecorder({ maxMs: 60000, silenceMs: 3000, autoStopOnSilence: true });
       this.recorder = rec;
       const blob = await Promise.race([rec.promise, timeout]);
       if (this.silenceEndTimer) { clearTimeout(this.silenceEndTimer); this.silenceEndTimer = null; }
@@ -652,7 +668,11 @@ const VoiceSession = {
       const res = await fetch('/api/stt', {
         method: 'POST',
         headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ audio: base64, mime: blob.type || 'audio/webm' })
+        body: JSON.stringify({
+          audio: base64,
+          mime: blob.type || 'audio/webm',
+          hint: navigator.language || 'en-US'
+        })
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -717,10 +737,14 @@ async function startInlineDictation() {
     toast('Voice input is not supported on this device', 'error');
     return;
   }
+
+  // Warm the AudioContext inside the user gesture — critical for iOS/Safari.
+  getAudioContext();
+
   state._inlineDictationActive = true;
   micBtn.classList.add('listening');
   try {
-    const rec = createRecorder({ maxMs: 60000, silenceMs: 1500, autoStopOnSilence: true });
+    const rec = createRecorder({ maxMs: 60000, silenceMs: 3000, autoStopOnSilence: true });
     state._inlineRecorder = rec;
     const blob = await rec.promise;
     state._inlineRecorder = null;
@@ -731,7 +755,11 @@ async function startInlineDictation() {
     const res = await fetch('/api/stt', {
       method: 'POST',
       headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ audio: base64, mime: blob.type || 'audio/webm' })
+      body: JSON.stringify({
+        audio: base64,
+        mime: blob.type || 'audio/webm',
+        hint: navigator.language || 'en-US'
+      })
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -756,6 +784,7 @@ async function startInlineDictation() {
 
 function setupVoiceControls() {
   micBtn.addEventListener('click', () => {
+    getAudioContext(); // warm context inside the gesture
     if (VoiceSession.active) { VoiceSession.bargeIn(); return; }
     if (state._inlineDictationActive) {
       if (state._inlineRecorder) { try { state._inlineRecorder.stop(); } catch {} }
