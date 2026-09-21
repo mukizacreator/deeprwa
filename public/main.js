@@ -1,4 +1,4 @@
-// DeepRWA — Complete frontend logic (rev.3.9.0)
+// DeepRWA — Complete frontend logic (rev.4.0.0)
 
 // ============ CLIENT ID ============
 function getOrCreateClientId() {
@@ -62,6 +62,7 @@ const state = {
   _chatMultiSelectMode: false,
   _selectedChats: new Set(),
   _onStreamDone: null,
+  _streamingTTS: false,
   _inlineDictationActive: false,
   _inlineRecorder: null
 };
@@ -292,7 +293,6 @@ async function compressImage(file, maxDimension = 1600, quality = 0.85) {
 }
 
 // ============ SHARED AUDIO CONTEXT ============
-// Created inside the first user gesture so iOS/Safari don't leave it suspended.
 let _sharedAudioCtx = null;
 function getAudioContext() {
   if (!_sharedAudioCtx) {
@@ -305,7 +305,7 @@ function getAudioContext() {
   return _sharedAudioCtx;
 }
 
-// ============ AUDIO RECORDER (VAD) ============
+// ============ AUDIO RECORDER (VAD, Whisper fallback path) ============
 function pickAudioMime() {
   if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return '';
   const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
@@ -313,18 +313,14 @@ function pickAudioMime() {
   return '';
 }
 
-// Returns { promise, stop, abort }.
-// `promise` resolves with a Blob when there was enough real speech, or `null`
-// when the recording was silent (so we never send near-silence to Whisper —
-// this is the fix for the phantom "The" / "Thank you for watching" messages).
 function createRecorder(opts = {}) {
   const {
     maxMs = 60000,
     silenceMs = 3000,
-    minSpeechMs = 700,
-    minPeakRms = 0.028,
-    vadThreshold = 0.018,
-    vadMultiplier = 2.6,
+    minSpeechMs = 500,
+    minPeakRms = 0.022,
+    vadThreshold = 0.014,
+    vadMultiplier = 2.2,
     autoStopOnSilence = true
   } = opts;
 
@@ -333,7 +329,6 @@ function createRecorder(opts = {}) {
   const chunks = [];
   let stopped = false;
   let resolveFn, rejectFn;
-
   let peakRms = 0;
   let speechMs = 0;
 
@@ -386,22 +381,18 @@ function createRecorder(opts = {}) {
       stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
       });
-
       const mime = pickAudioMime();
       recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
       recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
 
       if (autoStopOnSilence) {
         audioCtx = getAudioContext() || new (window.AudioContext || window.webkitAudioContext)();
-        if (audioCtx.state === 'suspended') {
-          try { await audioCtx.resume(); } catch {}
-        }
+        if (audioCtx.state === 'suspended') { try { await audioCtx.resume(); } catch {} }
         const source = audioCtx.createMediaStreamSource(stream);
         analyser = audioCtx.createAnalyser();
         analyser.fftSize = 512;
         analyser.smoothingTimeConstant = 0.5;
         source.connect(analyser);
-
         const dataArray = new Uint8Array(analyser.frequencyBinCount);
         const rmsHistory = [];
         let noiseFloor = 0.012;
@@ -417,7 +408,6 @@ function createRecorder(opts = {}) {
             sum += v * v;
           }
           const rms = Math.sqrt(sum / dataArray.length);
-
           rmsHistory.push(rms);
           if (rmsHistory.length > 20) rmsHistory.shift();
           if (rmsHistory.length >= 6) {
@@ -425,31 +415,30 @@ function createRecorder(opts = {}) {
             const p10 = sorted[Math.floor(sorted.length * 0.1)] || sorted[0];
             noiseFloor = noiseFloor * 0.7 + p10 * 0.3;
           }
-
           const threshold = Math.max(vadThreshold, noiseFloor * vadMultiplier);
           const speaking = rms > threshold;
-
           if (rms > peakRms) peakRms = rms;
-
-          if (speaking) {
-            hasSpeech = true;
-            silenceStart = 0;
-            speechMs += 100;
-          } else if (hasSpeech) {
+          if (speaking) { hasSpeech = true; silenceStart = 0; speechMs += 100; }
+          else if (hasSpeech) {
             if (!silenceStart) silenceStart = Date.now();
             if (Date.now() - silenceStart > silenceMs) finish();
           }
         }, 100);
       }
-
       maxTimer = setTimeout(() => finish(), maxMs);
       recorder.start(100);
-    } catch (e) {
-      abort(e.message || 'getUserMedia failed');
-    }
+    } catch (e) { abort(e.message || 'getUserMedia failed'); }
   })();
 
   return { promise, stop: () => finish(), abort };
+}
+
+// ============ WEB SPEECH HELPERS ============
+function getSpeechRecognition() {
+  return window.SpeechRecognition || window.webkitSpeechRecognition || null;
+}
+function pickRecognitionLang() {
+  return navigator.language || 'en-US';
 }
 
 // ============ TTS VOICE PICKER ============
@@ -473,7 +462,106 @@ if (window.speechSynthesis) {
   window.speechSynthesis.onvoiceschanged = () => {};
 }
 
-// ============ VOICE OUTPUT ============
+// ============ STREAMING TTS ============
+// Speaks sentences as they arrive from the SSE stream — the AI talks while writing.
+const StreamingTTS = {
+  active: false,
+  buffer: '',
+  queue: [],
+  speaking: false,
+  session: 0,
+  resolveEnd: null,
+
+  start() {
+    this.stop();
+    this.active = true;
+    this.session++;
+  },
+
+  feed(chunk) {
+    if (!this.active || !chunk) return;
+    this.buffer += chunk;
+    let idx;
+    while ((idx = this._findBreak(this.buffer)) !== -1) {
+      const sentence = this.buffer.slice(0, idx + 1).trim();
+      this.buffer = this.buffer.slice(idx + 1);
+      if (sentence) this._enqueue(sentence);
+    }
+  },
+
+  end() {
+    if (!this.active && this.queue.length === 0 && !this.speaking) return Promise.resolve();
+    const tail = this.buffer.trim();
+    this.buffer = '';
+    this.active = false;
+    if (tail) this._enqueue(tail);
+    if (!this.speaking && this.queue.length === 0) return Promise.resolve();
+    return new Promise((resolve) => { this.resolveEnd = resolve; });
+  },
+
+  stop() {
+    this.active = false;
+    this.buffer = '';
+    this.session++;
+    this.queue = [];
+    this.speaking = false;
+    if (window.speechSynthesis) { try { window.speechSynthesis.cancel(); } catch {} }
+    if (this.resolveEnd) { const r = this.resolveEnd; this.resolveEnd = null; r(); }
+  },
+
+  _findBreak(s) {
+    for (let i = 8; i < s.length; i++) {
+      const c = s[i];
+      if (c === '\n') return i;
+      if ((c === '.' || c === '!' || c === '?') && !(c === '.' && /\d/.test(s[i + 1] || ''))) {
+        // avoid ellipses
+        if (c === '.' && s[i + 1] === '.') continue;
+        return i;
+      }
+      if ((c === ',' || c === ';' || c === ':') && i >= 60) return i;
+    }
+    if (s.length > 180) {
+      const sp = s.lastIndexOf(' ', 160);
+      return sp > 40 ? sp : 160;
+    }
+    return -1;
+  },
+
+  _enqueue(text) {
+    const clean = stripMarkdownForSpeech(text);
+    if (!clean) return;
+    this.queue.push(clean);
+    if (!this.speaking) this._speakNext();
+  },
+
+  _speakNext() {
+    if (this.queue.length === 0) {
+      this.speaking = false;
+      if (this.resolveEnd) { const r = this.resolveEnd; this.resolveEnd = null; r(); }
+      return;
+    }
+    if (!window.speechSynthesis || !window.SpeechSynthesisUtterance) {
+      this.queue = []; this.speaking = false;
+      if (this.resolveEnd) { const r = this.resolveEnd; this.resolveEnd = null; r(); }
+      return;
+    }
+    this.speaking = true;
+    const text = this.queue.shift();
+    const session = this.session;
+    const utter = new SpeechSynthesisUtterance(text);
+    const voice = pickTtsVoice(pickRecognitionLang());
+    if (voice) { utter.voice = voice; utter.lang = voice.lang; }
+    else utter.lang = pickRecognitionLang();
+    utter.rate = 1.05;
+    utter.pitch = 1.0;
+    utter.onend = () => { if (session === this.session) this._speakNext(); };
+    utter.onerror = () => { if (session === this.session) this._speakNext(); };
+    try { window.speechSynthesis.speak(utter); }
+    catch { this._speakNext(); }
+  }
+};
+
+// ============ VOICE OUTPUT (per-message speak button) ============
 let _currentSpeakBtn = null;
 let _speakChunks = [];
 let _speakIndex = 0;
@@ -514,9 +602,7 @@ function chunkTextForSpeech(text, maxLen = 180) {
           else { if (piece) chunks.push(piece); piece = word; }
         }
         if (piece) current = piece;
-      } else {
-        current = s;
-      }
+      } else current = s;
     }
   }
   if (current) chunks.push(current);
@@ -539,13 +625,11 @@ function speakMessage(text, btn) {
   stopSpeaking();
   const clean = stripMarkdownForSpeech(text);
   if (!clean) { toast('Nothing to read', 'info'); return; }
-
   _speakChunks = chunkTextForSpeech(clean);
   _speakIndex = 0;
   const mySession = _speakSession;
   _currentSpeakBtn = btn;
   btn.classList.add('speaking');
-
   const speakNext = () => {
     if (mySession !== _speakSession) return;
     if (_speakIndex >= _speakChunks.length) {
@@ -554,11 +638,10 @@ function speakMessage(text, btn) {
       return;
     }
     const utter = new SpeechSynthesisUtterance(_speakChunks[_speakIndex]);
-    const voice = pickTtsVoice(navigator.language || 'en-US');
+    const voice = pickTtsVoice(pickRecognitionLang());
     if (voice) { utter.voice = voice; utter.lang = voice.lang; }
-    else utter.lang = navigator.language || 'en-US';
-    utter.rate = 1.0;
-    utter.pitch = 1.0;
+    else utter.lang = pickRecognitionLang();
+    utter.rate = 1.0; utter.pitch = 1.0;
     utter.onend = () => { if (mySession === _speakSession) { _speakIndex++; speakNext(); } };
     utter.onerror = () => { if (mySession === _speakSession) { _speakIndex++; speakNext(); } };
     try { window.speechSynthesis.speak(utter); } catch {}
@@ -566,15 +649,16 @@ function speakMessage(text, btn) {
   speakNext();
 }
 
-window.addEventListener('beforeunload', () => stopSpeaking());
+window.addEventListener('beforeunload', () => { stopSpeaking(); StreamingTTS.stop(); });
 
 // ============ VOICE SESSION (hands-free conversation) ============
 const VoiceSession = {
   active: false,
   phase: 'idle',
   recorder: null,
-  silenceEndTimer: null,
-  _speakAbort: null,
+  _recognition: null,
+  _noSpeechCount: 0,
+  useWhisper: false,
   _warnedNoTts: false,
 
   async enter() {
@@ -586,6 +670,8 @@ const VoiceSession = {
     if (state.isGenerating) { toast('Please wait for the current response to finish', 'info'); return; }
     getAudioContext();
     this.active = true;
+    this.useWhisper = false;
+    this._noSpeechCount = 0;
     document.body.classList.add('voice-mode');
     voiceStatus.classList.remove('hidden');
     inputEl.disabled = true;
@@ -609,9 +695,9 @@ const VoiceSession = {
     document.body.removeAttribute('data-voice-phase');
     voiceStatus.classList.add('hidden');
     inputEl.disabled = false;
+    if (this._recognition) { try { this._recognition.abort(); } catch {} this._recognition = null; }
     if (this.recorder) { try { this.recorder.abort('exit'); } catch {} this.recorder = null; }
-    if (this.silenceEndTimer) { clearTimeout(this.silenceEndTimer); this.silenceEndTimer = null; }
-    if (this._speakAbort) { try { this._speakAbort(); } catch {} this._speakAbort = null; }
+    StreamingTTS.stop();
     stopSpeaking();
     updateSendButton();
     if (reason) toast(reason, 'info', 3000);
@@ -626,9 +712,11 @@ const VoiceSession = {
 
   bargeIn() {
     if (this.phase === 'speaking') {
-      if (this._speakAbort) { try { this._speakAbort(); } catch {} this._speakAbort = null; }
+      StreamingTTS.stop();
       stopSpeaking();
+      if (this._recognition) { try { this._recognition.abort(); } catch {} this._recognition = null; }
     } else if (this.phase === 'listening') {
+      if (this._recognition) { try { this._recognition.stop(); } catch {} }
       if (this.recorder) { try { this.recorder.stop(); } catch {} }
     }
   },
@@ -636,84 +724,140 @@ const VoiceSession = {
   async _loop() {
     if (!this.active) return;
     if (state.isGenerating) {
-      await new Promise(r => setTimeout(r, 300));
+      await new Promise(r => setTimeout(r, 200));
       return this._loop();
     }
-
-    // Give the speaker a moment to stop ringing before re-arming the mic
-    // so the AI's own voice isn't picked up as a new user turn.
-    await new Promise(r => setTimeout(r, 600));
+    // Small tail gap so the AI's own voice doesn't fire the mic
+    await new Promise(r => setTimeout(r, 400));
     if (!this.active) return;
-
-    const timeout = new Promise((_, rej) => {
-      this.silenceEndTimer = setTimeout(() => rej(new Error('silence-timeout')), 15000);
-    });
 
     try {
       this.setPhase('listening', 'Listening…');
-      const rec = createRecorder({ maxMs: 60000, silenceMs: 3000, autoStopOnSilence: true });
-      this.recorder = rec;
-      const blob = await Promise.race([rec.promise, timeout]);
-      if (this.silenceEndTimer) { clearTimeout(this.silenceEndTimer); this.silenceEndTimer = null; }
-      this.recorder = null;
+      const text = await this._listenOnce();
       if (!this.active) return;
-
-      // `null` = client-side VAD rejected the recording as silent.
-      if (!blob) return this._loop();
-      if (blob.size < 1400) return this._loop();
-
-      this.setPhase('transcribing', 'Transcribing…');
-      const result = await this._transcribe(blob);
-      if (!this.active) return;
-      if (!result.text) { return this._loop(); }
+      if (!text) return this._loop();
 
       this.setPhase('thinking', 'Thinking…');
-      await this._sendAndWait(result.text);
-      if (!this.active) return;
-
-      const lastAssistant = [...state.messages].reverse().find(m => m.role === 'assistant' && m.content);
-      if (lastAssistant?.content) {
-        this.setPhase('speaking', 'Speaking…');
-        try { await this._speak(lastAssistant.content, result.language); } catch {}
-      }
+      await this._sendAndWait(text);
       if (!this.active) return;
       this._loop();
     } catch (e) {
-      if (this.silenceEndTimer) { clearTimeout(this.silenceEndTimer); this.silenceEndTimer = null; }
-      if (e.message === 'silence-timeout') {
-        this.exit('Voice session ended — no speech detected.');
-        return;
-      }
-      if (e.message === 'aborted' || e.message === 'exit') return;
       console.warn('[voice] loop error:', e);
       if (this.active) setTimeout(() => this._loop(), 500);
     }
   },
 
-  async _transcribe(blob) {
+  async _listenOnce() {
+    if (this.useWhisper) return this._listenOnceWhisper();
+    const SR = getSpeechRecognition();
+    if (!SR) { this.useWhisper = true; return this._listenOnceWhisper(); }
+
+    return new Promise((resolve) => {
+      let finalText = '';
+      let done = false;
+      const rec = new SR();
+      rec.continuous = false;
+      rec.interimResults = true;
+      rec.lang = pickRecognitionLang();
+      rec.maxAlternatives = 1;
+
+      const cleanup = () => {
+        if (done) return;
+        done = true;
+        clearTimeout(timeout);
+        this._recognition = null;
+        try { rec.abort(); } catch {}
+      };
+
+      const finish = (text) => {
+        if (done) return;
+        cleanup();
+        resolve((text || '').trim());
+      };
+
+      const timeout = setTimeout(() => {
+        if (!done && this.active) { try { rec.stop(); } catch {} }
+      }, 15000);
+
+      this._recognition = rec;
+
+      rec.onresult = (e) => {
+        if (!this.active) return finish('');
+        let interim = '';
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          const t = e.results[i][0].transcript;
+          if (e.results[i].isFinal) finalText += t;
+          else interim += t;
+        }
+        const live = (finalText + ' ' + interim).trim();
+        if (live) this.setPhase('listening', live.slice(-60));
+      };
+
+      rec.onerror = (e) => {
+        if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+          toast('Microphone access denied', 'error');
+          this.exit();
+          return finish('');
+        }
+        if (e.error === 'language-not-supported' || e.error === 'bad-grammar') {
+          console.log('[voice] lang unsupported → Whisper');
+          this.useWhisper = true;
+          return finish('');
+        }
+        if (e.error === 'no-speech') {
+          this._noSpeechCount++;
+          if (this._noSpeechCount >= 3 && !this.useWhisper) {
+            console.log('[voice] switching to Whisper after 3 no-speech events');
+            this.useWhisper = true;
+          }
+          return finish('');
+        }
+        if (e.error === 'aborted') return;
+        console.warn('[voice] rec error:', e.error);
+        finish('');
+      };
+
+      rec.onend = () => {
+        this._noSpeechCount = finalText ? 0 : this._noSpeechCount;
+        if (this.active && !done) finish(finalText);
+      };
+
+      try { rec.start(); }
+      catch (e) {
+        console.warn('[voice] rec start failed:', e);
+        this.useWhisper = true;
+        finish('');
+      }
+    });
+  },
+
+  async _listenOnceWhisper() {
     try {
-      const buf = await blob.arrayBuffer();
-      const base64 = arrayBufferToBase64(buf);
+      const rec = createRecorder({
+        maxMs: 20000,
+        silenceMs: 1500,
+        minSpeechMs: 400,
+        minPeakRms: 0.015,
+        vadThreshold: 0.010,
+        vadMultiplier: 2.0,
+        autoStopOnSilence: true
+      });
+      this.recorder = rec;
+      const blob = await rec.promise;
+      this.recorder = null;
+      if (!blob || blob.size < 1400) return '';
+      const base64 = arrayBufferToBase64(await blob.arrayBuffer());
       const res = await fetch('/api/stt', {
         method: 'POST',
         headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          audio: base64,
-          mime: blob.type || 'audio/webm',
-          hint: navigator.language || 'en-US'
-        })
+        body: JSON.stringify({ audio: base64, mime: blob.type || 'audio/webm', hint: pickRecognitionLang() })
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        toast(err.error || 'Transcription failed', 'error');
-        return { text: '', language: '' };
-      }
+      if (!res.ok) return '';
       const data = await res.json();
-      return { text: (data.text || '').trim(), language: data.language || '' };
+      return (data.text || '').trim();
     } catch (e) {
-      console.warn('[voice] transcribe error:', e);
-      toast('Transcription failed', 'error');
-      return { text: '', language: '' };
+      if (e.message !== 'aborted' && e.message !== 'exit') console.warn('[voice-whisper]', e);
+      return '';
     }
   },
 
@@ -722,62 +866,104 @@ const VoiceSession = {
       inputEl.value = text;
       autoGrow();
       updateSendButton();
+      state._streamingTTS = true;
       state._onStreamDone = () => resolve();
       formEl.requestSubmit();
-    });
-  },
-
-  async _speak(text, lang) {
-    return new Promise((resolve) => {
-      if (!window.speechSynthesis || !window.SpeechSynthesisUtterance) return resolve();
-      const clean = stripMarkdownForSpeech(text);
-      if (!clean) return resolve();
-      const voice = pickTtsVoice(lang);
-      if (!voice && lang) {
-        const base = String(lang).split('-')[0].toLowerCase();
-        if (base === 'rw' && !this._warnedNoTts) {
-          this._warnedNoTts = true;
-          toast('Voice reply not available in Kinyarwanda on this device — reply shown in chat.', 'info', 4500);
-        }
-        return resolve();
-      }
-      const utter = new SpeechSynthesisUtterance(clean);
-      if (voice) { utter.voice = voice; utter.lang = voice.lang; }
-      else utter.lang = lang || 'en-US';
-      utter.rate = 1.0;
-      utter.pitch = 1.0;
-      utter.onend = () => { this._speakAbort = null; resolve(); };
-      utter.onerror = () => { this._speakAbort = null; resolve(); };
-      this._speakAbort = () => {
-        try { window.speechSynthesis.cancel(); } catch {}
-        this._speakAbort = null;
-        resolve();
-      };
-      try { window.speechSynthesis.speak(utter); }
-      catch { this._speakAbort = null; resolve(); }
     });
   }
 };
 
-// ============ INLINE DICTATION (mic button, fills the textarea) ============
-async function startInlineDictation() {
-  if (state._inlineDictationActive) return;
+// ============ INLINE DICTATION (mic button — live transcription) ============
+let _inlineRecognition = null;
+let _inlineDictationActive = false;
+let _inlineBaseText = '';
+let _inlineUseWhisper = false;
+let _inlineNoSpeechCount = 0;
+
+function startInlineDictation() {
+  if (_inlineDictationActive) { stopInlineDictation(); return; }
   if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
     toast('Voice input is not supported on this device', 'error');
     return;
   }
-
-  // Warm the AudioContext inside the user gesture — critical for iOS/Safari.
   getAudioContext();
-
-  state._inlineDictationActive = true;
+  _inlineDictationActive = true;
+  _inlineBaseText = inputEl.value || '';
   micBtn.classList.add('listening');
+
+  const SR = getSpeechRecognition();
+  if (SR && !_inlineUseWhisper) {
+    startInlineWebSpeech(SR);
+  } else {
+    startInlineWhisperFallback();
+  }
+}
+
+function startInlineWebSpeech(SR) {
+  const rec = new SR();
+  rec.continuous = true;
+  rec.interimResults = true;
+  rec.lang = pickRecognitionLang();
+  rec.maxAlternatives = 1;
+  _inlineRecognition = rec;
+
+  rec.onresult = (e) => {
+    if (!_inlineDictationActive) return;
+    let final = '', interim = '';
+    for (let i = 0; i < e.results.length; i++) {
+      const t = e.results[i][0].transcript;
+      if (e.results[i].isFinal) final += t;
+      else interim += t;
+    }
+    const parts = [];
+    if (_inlineBaseText) parts.push(_inlineBaseText.replace(/\s+$/, ''));
+    if (final) parts.push(final.replace(/\s+$/, ''));
+    if (interim) parts.push(interim.replace(/^\s+/, ''));
+    inputEl.value = parts.join(' ').replace(/\s+/g, ' ');
+    autoGrow();
+    updateSendButton();
+  };
+
+  rec.onerror = (e) => {
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+      toast('Microphone access denied', 'error');
+      stopInlineDictation();
+    } else if (e.error === 'language-not-supported' || e.error === 'bad-grammar') {
+      console.log('[inline] lang unsupported → Whisper');
+      _inlineUseWhisper = true;
+      stopInlineDictation();
+      startInlineDictation();
+    } else if (e.error === 'no-speech') {
+      _inlineNoSpeechCount++;
+      if (_inlineNoSpeechCount >= 4) {
+        console.log('[inline] switching to Whisper');
+        _inlineUseWhisper = true;
+        stopInlineDictation();
+      }
+    }
+  };
+
+  rec.onend = () => {
+    if (!_inlineDictationActive) { micBtn.classList.remove('listening'); return; }
+    _inlineBaseText = inputEl.value;
+    try { rec.start(); } catch (e) {
+      if (!/already started/i.test(e?.message || '')) stopInlineDictation();
+    }
+  };
+
+  try { rec.start(); }
+  catch (e) {
+    console.warn('[inline] start failed:', e);
+    _inlineUseWhisper = true;
+    startInlineWhisperFallback();
+  }
+}
+
+async function startInlineWhisperFallback() {
   try {
-    // More lenient thresholds for one-shot dictation: the user explicitly
-    // tapped the mic, so we want to pick up their voice even if it's quiet.
     const rec = createRecorder({
       maxMs: 60000,
-      silenceMs: 2500,
+      silenceMs: 1500,
       minSpeechMs: 400,
       minPeakRms: 0.015,
       vadThreshold: 0.010,
@@ -787,24 +973,16 @@ async function startInlineDictation() {
     state._inlineRecorder = rec;
     const blob = await rec.promise;
     state._inlineRecorder = null;
+    if (!_inlineDictationActive) return;
     micBtn.classList.remove('listening');
-    state._inlineDictationActive = false;
-
-    if (!blob) {
-      toast('No speech detected — try speaking closer to the mic', 'info', 2500);
-      return;
-    }
+    _inlineDictationActive = false;
+    if (!blob) { toast('No speech detected', 'info', 2000); return; }
     if (blob.size < 1400) { toast('Recording too short', 'info', 1800); return; }
-
     const base64 = arrayBufferToBase64(await blob.arrayBuffer());
     const res = await fetch('/api/stt', {
       method: 'POST',
       headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        audio: base64,
-        mime: blob.type || 'audio/webm',
-        hint: navigator.language || 'en-US'
-      })
+      body: JSON.stringify({ audio: base64, mime: blob.type || 'audio/webm', hint: pickRecognitionLang() })
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -820,21 +998,24 @@ async function startInlineDictation() {
     updateSendButton();
     inputEl.focus();
   } catch (e) {
-    state._inlineDictationActive = false;
     state._inlineRecorder = null;
+    _inlineDictationActive = false;
     micBtn.classList.remove('listening');
     if (e.message !== 'aborted') console.warn('[dictate]', e);
   }
+}
+
+function stopInlineDictation() {
+  _inlineDictationActive = false;
+  if (_inlineRecognition) { try { _inlineRecognition.abort(); } catch {} _inlineRecognition = null; }
+  if (state._inlineRecorder) { try { state._inlineRecorder.stop(); } catch {} state._inlineRecorder = null; }
+  micBtn.classList.remove('listening');
 }
 
 function setupVoiceControls() {
   micBtn.addEventListener('click', () => {
     getAudioContext();
     if (VoiceSession.active) { VoiceSession.bargeIn(); return; }
-    if (state._inlineDictationActive) {
-      if (state._inlineRecorder) { try { state._inlineRecorder.stop(); } catch {} }
-      return;
-    }
     startInlineDictation();
   });
 
@@ -850,20 +1031,14 @@ function setupVoiceControls() {
 
 // ============ IMAGE LIGHTBOX ============
 let _lightbox = null;
-
 function openLightbox(src) {
   if (!src) return;
   if (!_lightbox) {
     _lightbox = document.createElement('div');
     _lightbox.className = 'lightbox';
-    _lightbox.innerHTML = `
-      <button class="lightbox-close" aria-label="Close"><i data-lucide="x"></i></button>
-      <img alt="Preview" />
-    `;
+    _lightbox.innerHTML = `<button class="lightbox-close" aria-label="Close"><i data-lucide="x"></i></button><img alt="Preview" />`;
     _lightbox.addEventListener('click', (e) => {
-      if (e.target === _lightbox || e.target.closest('.lightbox-close')) {
-        _lightbox.classList.remove('open');
-      }
+      if (e.target === _lightbox || e.target.closest('.lightbox-close')) _lightbox.classList.remove('open');
     });
     document.body.appendChild(_lightbox);
   }
@@ -982,8 +1157,7 @@ function renderUser() {
     refreshIcons();
     $('accountBtn').addEventListener('click', (e) => { e.stopPropagation(); toggleAccountDropdown(e.currentTarget); });
   } else {
-    sidebarFooter.innerHTML = `
-      <button class="auth-btn" id="authBtn"><i data-lucide="log-in"></i><span>Log in</span></button>`;
+    sidebarFooter.innerHTML = `<button class="auth-btn" id="authBtn"><i data-lucide="log-in"></i><span>Log in</span></button>`;
     refreshIcons();
     $('authBtn').addEventListener('click', () => openAuthModal('login'));
   }
@@ -1044,27 +1218,18 @@ sidebarNav.addEventListener('click', (e) => {
 
 // ============ CHAT LIST ============
 function updateChatsMultiBar() {
-  if (!state._chatMultiSelectMode || !state.chats.length) {
-    chatsMultiBar.classList.add('hidden');
-    return;
-  }
+  if (!state._chatMultiSelectMode || !state.chats.length) { chatsMultiBar.classList.add('hidden'); return; }
   chatsMultiBar.classList.remove('hidden');
   const n = state._selectedChats.size;
   chatsDeleteCountLabel.textContent = n > 0 ? `Delete (${n})` : 'Delete';
   chatsDeleteSelectedBtn.disabled = n === 0;
   chatsPinSelectedBtn.disabled = n === 0;
   const selectedIds = Array.from(state._selectedChats);
-  const allSelectedArePinned = selectedIds.length > 0 && selectedIds.every(id => {
-    const c = state.chats.find(x => x.id === id);
-    return c && c.pinned;
-  });
+  const allSelectedArePinned = selectedIds.length > 0 && selectedIds.every(id => { const c = state.chats.find(x => x.id === id); return c && c.pinned; });
   chatsPinSelectedBtn.innerHTML = allSelectedArePinned ? '<i data-lucide="pin-off"></i>' : '<i data-lucide="pin"></i>';
   chatsPinSelectedBtn.title = allSelectedArePinned ? 'Unpin selected' : 'Pin selected';
-  chatsPinSelectedBtn.setAttribute('aria-label', allSelectedArePinned ? 'Unpin selected' : 'Pin selected');
   const allSelected = state.chats.length > 0 && state.chats.every(c => state._selectedChats.has(c.id));
-  chatsSelectAllBtn.innerHTML = allSelected
-    ? '<i data-lucide="check-square"></i><span>Deselect all</span>'
-    : '<i data-lucide="square"></i><span>Select all</span>';
+  chatsSelectAllBtn.innerHTML = allSelected ? '<i data-lucide="check-square"></i><span>Deselect all</span>' : '<i data-lucide="square"></i><span>Select all</span>';
   refreshIcons();
 }
 
@@ -1077,14 +1242,11 @@ function renderChatList() {
   }
   filesMultiBar.classList.add('hidden');
   updateChatsMultiBar();
-
   if (!state.chats.length) {
     sidebarContent.innerHTML = `<div class="sidebar-empty"><p>No chats yet</p><span>Start a conversation with DeepRWA</span></div>`;
     return;
   }
-
   const inMulti = state._chatMultiSelectMode;
-
   const renderOne = (c) => {
     if (inMulti) {
       const checked = state._selectedChats.has(c.id);
@@ -1102,7 +1264,6 @@ function renderChatList() {
       <button class="chat-item-menu" data-menu="${c.id}" aria-label="Menu"><i data-lucide="more-horizontal"></i></button>
     </div>`;
   };
-
   if (inMulti) {
     sidebarContent.innerHTML = state.chats.map(renderOne).join('');
   } else {
@@ -1140,13 +1301,7 @@ chatsPinSelectedBtn.addEventListener('click', async () => {
     if (!c) continue;
     c.pinned = targetPinned;
     if (state.user && !isLocalId(id)) {
-      try {
-        await fetch(`/api/conversations/${id}`, {
-          method: 'PATCH',
-          headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-          body: JSON.stringify({ pinned: c.pinned })
-        });
-      } catch {}
+      try { await fetch(`/api/conversations/${id}`, { method: 'PATCH', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ pinned: c.pinned }) }); } catch {}
     }
   }
   state._chatMultiSelectMode = false;
@@ -1223,9 +1378,7 @@ function updateMultiBar() {
     filesDeleteCountLabel.textContent = n > 0 ? `Delete (${n})` : 'Delete';
     filesDeleteSelectedBtn.disabled = n === 0;
     const allSelected = state._filesCache.length > 0 && state._filesCache.every((f, idx) => state._selectedFiles.has(fileKey(f, idx)));
-    filesSelectAllBtn.innerHTML = allSelected
-      ? '<i data-lucide="check-square"></i><span>Deselect all</span>'
-      : '<i data-lucide="square"></i><span>Select all</span>';
+    filesSelectAllBtn.innerHTML = allSelected ? '<i data-lucide="check-square"></i><span>Deselect all</span>' : '<i data-lucide="square"></i><span>Select all</span>';
     refreshIcons();
   } else {
     filesMultiBar.classList.add('hidden');
@@ -1251,9 +1404,7 @@ function renderFilesArray(files, isGuest = false) {
         <span class="file-checkbox-mark"></span>
       </label>` : ''}
       <button class="file-item" data-file-view='${escapeHtml(JSON.stringify({url, name: f.name, type: f.type}))}'>
-        ${isImg && url
-          ? `<img src="${url}" class="file-thumb-sm" loading="lazy" alt="file" />`
-          : `<div class="file-thumb-sm"><i data-lucide="file-text"></i></div>`}
+        ${isImg && url ? `<img src="${url}" class="file-thumb-sm" loading="lazy" alt="file" />` : `<div class="file-thumb-sm"><i data-lucide="file-text"></i></div>`}
         <div class="file-item-info">
           <div class="file-item-name" title="${escapeHtml(f.name || 'file')}">${escapeHtml(f.name || 'file')}</div>
           <div class="file-item-meta">${timeAgo(f.created_at)}</div>
@@ -1268,22 +1419,14 @@ function renderFilesArray(files, isGuest = false) {
 // ============ SIDEBAR INTERACTION ============
 sidebarContent.addEventListener('click', (e) => {
   const fileMenuBtn = e.target.closest('[data-file-menu]');
-  if (fileMenuBtn) {
-    e.stopPropagation();
-    openFileMenu(parseInt(fileMenuBtn.dataset.fileMenu), fileMenuBtn.getBoundingClientRect());
-    return;
-  }
+  if (fileMenuBtn) { e.stopPropagation(); openFileMenu(parseInt(fileMenuBtn.dataset.fileMenu), fileMenuBtn.getBoundingClientRect()); return; }
   const fileBtn = e.target.closest('[data-file-view]');
   if (fileBtn && !e.target.closest('.file-checkbox')) {
     try { const d = JSON.parse(fileBtn.dataset.fileView); showFileView(d.url, d.name, d.type); } catch {}
     return;
   }
   const chatMenuBtn = e.target.closest('.chat-item-menu');
-  if (chatMenuBtn) {
-    e.stopPropagation();
-    openChatMenu(chatMenuBtn.dataset.menu, chatMenuBtn.getBoundingClientRect());
-    return;
-  }
+  if (chatMenuBtn) { e.stopPropagation(); openChatMenu(chatMenuBtn.dataset.menu, chatMenuBtn.getBoundingClientRect()); return; }
   const chatItem = e.target.closest('.chat-item');
   if (chatItem) {
     if (state._chatMultiSelectMode) {
@@ -1292,8 +1435,7 @@ sidebarContent.addEventListener('click', (e) => {
       const chk = chatItem.querySelector('[data-chat-check]');
       if (chk) {
         chk.checked = !chk.checked;
-        if (chk.checked) state._selectedChats.add(id);
-        else state._selectedChats.delete(id);
+        if (chk.checked) state._selectedChats.add(id); else state._selectedChats.delete(id);
         chatItem.classList.toggle('selected', chk.checked);
         updateChatsMultiBar();
       }
@@ -1308,8 +1450,7 @@ sidebarContent.addEventListener('change', (e) => {
   const chatChk = e.target.closest('[data-chat-check]');
   if (chatChk) {
     const id = chatChk.dataset.chatCheck;
-    if (chatChk.checked) state._selectedChats.add(id);
-    else state._selectedChats.delete(id);
+    if (chatChk.checked) state._selectedChats.add(id); else state._selectedChats.delete(id);
     const item = chatChk.closest('.chat-item');
     if (item) item.classList.toggle('selected', chatChk.checked);
     updateChatsMultiBar();
@@ -1321,8 +1462,7 @@ sidebarContent.addEventListener('change', (e) => {
     const f = state._filesCache[idx];
     if (!f) return;
     const key = fileKey(f, idx);
-    if (fileChk.checked) state._selectedFiles.add(key);
-    else state._selectedFiles.delete(key);
+    if (fileChk.checked) state._selectedFiles.add(key); else state._selectedFiles.delete(key);
     updateMultiBar();
   }
 });
@@ -1584,13 +1724,11 @@ function updateSendButton() {
   const iconVoice = sendBtn.querySelector('.icon-voice');
   const iconExit = sendBtn.querySelector('.icon-exit');
   if (!iconSend || !iconStop || !iconVoice || !iconExit) return;
-
   iconSend.classList.add('hidden');
   iconStop.classList.add('hidden');
   iconVoice.classList.add('hidden');
   iconExit.classList.add('hidden');
   sendBtn.classList.remove('generating', 'voice-entry', 'voice-exit');
-
   if (VoiceSession.active) {
     iconExit.classList.remove('hidden');
     sendBtn.classList.add('voice-exit');
@@ -1617,6 +1755,8 @@ function stopGeneration() {
   if (state.abortController) { state.abortController.abort(); state.abortController = null; }
   state.isGenerating = false;
   if (!VoiceSession.active) inputEl.disabled = false;
+  StreamingTTS.stop();
+  state._streamingTTS = false;
   updateSendButton();
 }
 
@@ -1772,9 +1912,7 @@ function renderFilesInline(files) {
       return `<button class="msg-file-btn" data-msg-file='${escapeHtml(JSON.stringify({url, name: f.name, type: f.type}))}'>${inner}</button>`;
     }).join('')}</div>`;
   }
-  if (generated.length) {
-    html += generated.map(f => renderGeneratedImageBlock(f)).join('');
-  }
+  if (generated.length) html += generated.map(f => renderGeneratedImageBlock(f)).join('');
   return html;
 }
 
@@ -1841,16 +1979,9 @@ function buildAssistantMessage(m, i) {
 // ============ MESSAGE ACTIONS ============
 chatEl.addEventListener('click', async (e) => {
   const dlBtn = e.target.closest('[data-download-url]');
-  if (dlBtn) {
-    e.stopPropagation();
-    downloadGeneratedImage(dlBtn.dataset.downloadUrl, dlBtn.dataset.downloadName);
-    return;
-  }
+  if (dlBtn) { e.stopPropagation(); downloadGeneratedImage(dlBtn.dataset.downloadUrl, dlBtn.dataset.downloadName); return; }
   const genImg = e.target.closest('[data-lightbox-src]');
-  if (genImg) {
-    openLightbox(genImg.dataset.lightboxSrc);
-    return;
-  }
+  if (genImg) { openLightbox(genImg.dataset.lightboxSrc); return; }
   const fileBtn = e.target.closest('[data-msg-file]');
   if (fileBtn) {
     try { const d = JSON.parse(fileBtn.dataset.msgFile); showFileView(d.url, d.name, d.type); } catch {}
@@ -1970,6 +2101,10 @@ formEl.addEventListener('submit', async (e) => {
   if (!VoiceSession.active) inputEl.disabled = true;
   updateSendButton();
 
+  // Kick off streaming TTS if voice mode is driving this send
+  const useTTS = state._streamingTTS === true;
+  if (useTTS) StreamingTTS.start();
+
   try {
     let chat = state.chats.find(c => c.id === state.activeChatId);
     let isNewChat = false;
@@ -2051,6 +2186,8 @@ formEl.addEventListener('submit', async (e) => {
             const el = chatEl.querySelector(`.msg-assistant[data-id="${assistantMsg.id}"] .assistant-text`);
             if (el) el.innerHTML = renderMarkdown(fullText);
             scrollBottom();
+            // Feed into streaming TTS so the AI speaks while writing
+            if (useTTS) StreamingTTS.feed(j.text);
           }
           if (j.image) {
             const genFile = { url: j.image, public_url: j.image, type: 'image/jpeg', name: `generated-${Date.now()}.jpg`, generated: true };
@@ -2099,6 +2236,11 @@ formEl.addEventListener('submit', async (e) => {
       inputEl.focus();
     }
     updateSendButton();
+    // Drain the TTS queue before notifying voice session that the turn is done
+    if (useTTS) {
+      try { await StreamingTTS.end(); } catch (e) { console.warn('[tts]', e); }
+      state._streamingTTS = false;
+    }
     if (state._onStreamDone) {
       const cb = state._onStreamDone;
       state._onStreamDone = null;
@@ -2601,7 +2743,6 @@ function renderAccountTab() {
   refreshIcons(); attachPasswordToggles(settingsContent);
 
   $('changeEmailBtn').onclick = () => { $('changeEmailArea').classList.toggle('hidden'); if (!$('changeEmailArea').classList.contains('hidden')) $('newEmailInput').focus(); };
-
   $('sendEmailCodeBtn').onclick = async () => {
     const newEmail = $('newEmailInput')?.value.trim();
     const btn = $('sendEmailCodeBtn');
@@ -2616,7 +2757,6 @@ function renderAccountTab() {
   };
 
   $('changePwBtn').onclick = () => { $('changePwArea').classList.toggle('hidden'); if (!$('changePwArea').classList.contains('hidden')) $('currentPw').focus(); };
-
   $('sendPwCodeBtn').onclick = async () => {
     const current = $('currentPw').value, newPw = $('newPw').value, confirm = $('confirmPw').value;
     const btn = $('sendPwCodeBtn');
@@ -2663,7 +2803,6 @@ function renderActionVerify(action, targetEmail) {
   const headline = action === 'change-email' ? 'Verify new email' : action === 'change-password' ? 'Verify password change' : 'Verify account deletion';
   const verifyLabel = action === 'change-email' ? 'Verify & change email' : action === 'change-password' ? 'Verify & change password' : 'Verify & delete';
   const workingLabel = action === 'change-email' ? 'Changing email…' : action === 'change-password' ? 'Changing password…' : 'Deleting account…';
-
   settingsContent.innerHTML = `
     <h3>${headline}</h3>
     <p class="modal-sub">We sent a 6-digit code to <strong>${escapeHtml(targetEmail || '')}</strong></p>
@@ -2672,7 +2811,6 @@ function renderActionVerify(action, targetEmail) {
     <button class="link-btn" id="actResend">Resend code</button>
     <button class="link-btn" id="actBack">Back</button>`;
   refreshIcons(); $('actCode').focus();
-
   const resendBtn = $('actResend'); attachCountdown(resendBtn, 60);
   resendBtn.onclick = async () => {
     if (resendBtn.disabled) return;
@@ -2685,9 +2823,7 @@ function renderActionVerify(action, targetEmail) {
       attachCountdown(resendBtn, 60); toast('Code resent', 'success');
     } catch { toast('Network error', 'error'); }
   };
-
   $('actBack').onclick = () => renderSettingsTab('account');
-
   $('actVerify').onclick = async () => {
     const code = $('actCode').value.trim();
     if (code.length !== 6) { toast('Enter 6-digit code', 'error'); return; }
@@ -2761,7 +2897,6 @@ async function setup2FA() {
     refreshIcons();
     $('copySecret').onclick = async () => { try { await navigator.clipboard.writeText(data.secret); toast('Secret copied', 'success', 2000); } catch {} };
     $('cancel2fa').onclick = () => renderSecurityTab();
-
     $('confirm2faBtn').onclick = async () => {
       const code = $('faSetupCode').value.trim();
       if (code.length !== 6) { toast('Enter the 6-digit code', 'error'); return; }
