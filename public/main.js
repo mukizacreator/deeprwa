@@ -3322,5 +3322,138 @@ function closeAllModals() {
   clearAuthModalState();
 }
 
+// ============ DIAGNOSTIC PANEL ============
+// Visit https://deeprwa.agentdomains.co/?diag=1 on any device to see
+// a full capability report. Screenshot it and share for debugging.
+function renderDiagnosticPanel() {
+  const ua = navigator.userAgent || 'unknown';
+  const md = navigator.mediaDevices;
+  const hasGetUserMedia = typeof md?.getUserMedia === 'function';
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const hasSR = typeof SR === 'function';
+  const hasSynth = typeof window.SpeechSynthesisUtterance === 'function';
+  const hasAudioCtx = !!(window.AudioContext || window.webkitAudioContext);
+  const hasMediaRec = typeof window.MediaRecorder === 'function';
+  const hasServiceWorker = 'serviceWorker' in navigator;
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches;
+  const isInApp = /FBAN|FBAV|Instagram|Twitter|Line\/|WhatsApp|MicroMessenger|GSA|TikTok|Snapchat/i.test(ua);
+
+  const deviceType = /Android/i.test(ua) ? 'Android'
+    : /iPhone|iPad|iPod/i.test(ua) ? 'iOS'
+    : /Windows/i.test(ua) ? 'Windows'
+    : /Mac/i.test(ua) ? 'macOS'
+    : /Linux/i.test(ua) ? 'Linux'
+    : 'unknown';
+
+  const browser = /Edg\//i.test(ua) ? 'Edge'
+    : /OPR\//i.test(ua) ? 'Opera'
+    : /Chrome\//i.test(ua) && !/Edg/i.test(ua) ? 'Chrome'
+    : /Firefox\//i.test(ua) ? 'Firefox'
+    : /Safari\//i.test(ua) ? 'Safari'
+    : 'unknown';
+
+  const rows = [
+    ['Device type', deviceType],
+    ['Browser (UA)', browser],
+    ['In-app browser?', isInApp ? '⚠ YES (blocks mic access)' : 'no'],
+    ['Page URL', location.href],
+    ['Protocol', location.protocol],
+    ['Secure context (HTTPS)', window.isSecureContext ? '✓ yes' : '✗ no'],
+    ['Standalone (PWA)', isStandalone ? 'yes' : 'no'],
+    ['', ''],
+    ['navigator.mediaDevices', md ? '✓ object' : '✗ undefined'],
+    ['mediaDevices.getUserMedia', hasGetUserMedia ? '✓ function' : '✗ missing'],
+    ['MediaRecorder', hasMediaRec ? '✓ yes' : '✗ no'],
+    ['AudioContext', hasAudioCtx ? '✓ yes' : '✗ no'],
+    ['SpeechRecognition (Web Speech)', hasSR ? '✓ yes' : '✗ missing'],
+    ['SpeechSynthesis (TTS)', hasSynth ? '✓ yes' : '✗ missing'],
+    ['Service Worker', hasServiceWorker ? 'yes' : 'no'],
+    ['', ''],
+    ['Expected voice button', (window.isSecureContext && md && hasGetUserMedia) ? '✓ should appear' : '⚠ restricted'],
+    ['', ''],
+    ['Full user agent', ua]
+  ];
+
+  const overlay = document.createElement('div');
+  overlay.style.cssText = `
+    position: fixed; inset: 0; z-index: 99999;
+    background: #000; color: #e6e8eb;
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    padding: 16px; padding-top: calc(16px + env(safe-area-inset-top,0px));
+    padding-bottom: calc(16px + env(safe-area-inset-bottom,0px));
+    overflow-y: auto; -webkit-overflow-scrolling: touch;
+  `;
+
+  const close = document.createElement('button');
+  close.textContent = '✕ close';
+  close.style.cssText = `
+    position: sticky; top: 0; float: right;
+    background: #2a2a2a; color: #fff; border: 1px solid #444;
+    border-radius: 6px; padding: 6px 12px; font-size: 13px;
+    cursor: pointer; margin-left: 8px; margin-bottom: 12px;
+  `;
+  close.addEventListener('click', () => overlay.remove());
+
+  const title = document.createElement('h2');
+  title.textContent = 'DeepRWA — Device diagnostics';
+  title.style.cssText = 'font-family: -apple-system, system-ui, sans-serif; font-size: 18px; margin: 0 0 4px 0; color: #fff;';
+
+  const sub = document.createElement('p');
+  sub.textContent = 'Screenshot this and share to help diagnose voice button issues.';
+  sub.style.cssText = 'color: #8b9199; font-size: 12px; margin: 0 0 16px 0; font-family: system-ui, sans-serif;';
+
+  const table = document.createElement('table');
+  table.style.cssText = 'width: 100%; border-collapse: collapse;';
+  rows.forEach(([k, v]) => {
+    const tr = document.createElement('tr');
+    const td1 = document.createElement('td');
+    td1.textContent = k;
+    td1.style.cssText = 'padding: 6px 8px 6px 0; vertical-align: top; color: #8b9199; white-space: nowrap;';
+    const td2 = document.createElement('td');
+    td2.textContent = v;
+    td2.style.cssText = 'padding: 6px 0; word-break: break-all; color: #e6e8eb;';
+    if (/^⚠/.test(v)) td2.style.color = '#fad201';
+    if (/^✗/.test(v)) td2.style.color = '#ef5350';
+    if (/^✓/.test(v)) td2.style.color = '#4caf50';
+    tr.appendChild(td1); tr.appendChild(td2);
+    table.appendChild(tr);
+  });
+
+  const copyBtn = document.createElement('button');
+  copyBtn.textContent = '📋 Copy report to clipboard';
+  copyBtn.style.cssText = `
+    margin-top: 16px; padding: 10px 16px;
+    background: #3b6ef5; color: #fff; border: none; border-radius: 6px;
+    font-size: 14px; font-weight: 600; cursor: pointer;
+    width: 100%; min-height: 44px;
+  `;
+  copyBtn.addEventListener('click', async () => {
+    const text = rows.map(([k, v]) => `${k}: ${v}`).join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      copyBtn.textContent = '✓ Copied';
+      setTimeout(() => { copyBtn.textContent = '📋 Copy report to clipboard'; }, 2000);
+    } catch {
+      copyBtn.textContent = 'Copy failed — screenshot instead';
+    }
+  });
+
+  overlay.appendChild(close);
+  overlay.appendChild(title);
+  overlay.appendChild(sub);
+  overlay.appendChild(table);
+  overlay.appendChild(copyBtn);
+  document.body.appendChild(overlay);
+}
+
+function maybeShowDiagnosticPanel() {
+  const params = new URLSearchParams(location.search);
+  if (params.has('diag') || params.has('debug')) {
+    // Wait until DOM is fully ready
+    setTimeout(renderDiagnosticPanel, 300);
+  }
+}
+
 // ============ BOOT ============
 init();
+maybeShowDiagnosticPanel();
