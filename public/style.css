@@ -1867,6 +1867,63 @@ button.msg-file-btn { background: transparent; border: none; padding: 0; cursor:
   .mic-btn.listening:hover { background: var(--danger-soft); color: var(--danger); }
 }
 
+/* ============ VOICE LANGUAGE PICKER ============ */
+.voice-lang-btn {
+  flex-shrink: 0;
+  width: 42px;
+  height: 44px;
+  min-width: 42px;
+  min-height: 44px;
+  border-radius: 22px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.02em;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+.voice-lang-btn:hover { background: var(--surface-2); color: var(--text); }
+.voice-lang-btn:active { opacity: 0.72; }
+.voice-lang-btn span { pointer-events: none; }
+
+.voice-lang-menu {
+  padding: 4px;
+  min-width: 220px;
+}
+.voice-lang-menu button {
+  gap: 0.5rem;
+  padding: 8px 10px;
+  min-height: 40px;
+  font-size: var(--fs-sm);
+}
+.voice-lang-menu button svg {
+  width: 14px;
+  height: 14px;
+  color: var(--accent);
+  margin-left: auto;
+}
+
+@media (max-width: 380px) {
+  .voice-lang-btn {
+    width: 36px;
+    min-width: 36px;
+    height: 40px;
+    min-height: 40px;
+    font-size: 10px;
+  }
+}
+
+@media (hover: none) {
+  .voice-lang-btn:hover { background: transparent; color: var(--text-muted); }
+}
+
 /* ============================================================
    GENERATED IMAGES — wrapper, download button
    ============================================================ */
