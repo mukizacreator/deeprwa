@@ -107,15 +107,18 @@
     <div class="composer" id="composerWrap">
       <div class="file-previews" id="filePreviews" hidden></div>
       <form class="composer-inner" id="composer">
-        <button type="button" class="attach-btn" id="attachBtn" aria-label="Attach"><i data-lucide="paperclip"></i></button>
-        <input type="file" id="fileInput" multiple hidden accept="image/*,application/pdf,text/*,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.md,.csv,.json" />
-        <textarea id="input" rows="1" placeholder="Ask anything about Rwanda…" autocomplete="off" autocorrect="off" autocapitalize="sentences" spellcheck="false" enterkeyhint="send"></textarea>
-        <button type="button" class="mic-btn" id="micBtn" aria-label="Voice input" title="Speak"><i data-lucide="mic"></i></button>
-        <button type="button" class="send-btn" id="sendBtn" disabled aria-label="Send">
-          <i data-lucide="arrow-up" class="icon-send"></i>
-          <i data-lucide="square" class="icon-stop hidden"></i>
-        </button>
-      </form>
+  <button type="button" class="attach-btn" id="attachBtn" aria-label="Attach"><i data-lucide="paperclip"></i></button>
+  <input type="file" id="fileInput" multiple hidden accept="image/*,application/pdf,text/*,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.md,.csv,.json" />
+  <textarea id="input" rows="1" placeholder="Ask anything about Rwanda…" autocomplete="off" autocorrect="off" autocapitalize="sentences" spellcheck="false" enterkeyhint="send"></textarea>
+  <button type="button" class="voice-lang-btn" id="voiceLangBtn" aria-label="Voice language" title="Voice language">
+    <span id="voiceLangLabel">EN</span>
+  </button>
+  <button type="button" class="mic-btn" id="micBtn" aria-label="Voice input" title="Speak"><i data-lucide="mic"></i></button>
+  <button type="button" class="send-btn" id="sendBtn" disabled aria-label="Send">
+    <i data-lucide="arrow-up" class="icon-send"></i>
+    <i data-lucide="square" class="icon-stop hidden"></i>
+  </button>
+</form>
       <p class="composer-disclaimer">DeepRWA — Check important information.</p>
     </div>
   </main>
