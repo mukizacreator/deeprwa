@@ -693,14 +693,16 @@ const VoiceSession = {
   _currentRecognition: null,
   recorder: null,
 
-  async enter() {
+    async enter() {
     if (this.active) return;
-    if (!navigator.mediaDevices?.getUserMedia) {
-      toast('Voice conversations are not supported on this device', 'error');
+    getAudioContext();
+
+    if (state.isGenerating) { toast('Please wait for the current response to finish', 'info'); return; }
+
+    if (!navigator.mediaDevices) {
+      toast('Voice input is not supported in this browser.', 'error', 5000);
       return;
     }
-    if (state.isGenerating) { toast('Please wait for the current response to finish', 'info'); return; }
-    getAudioContext();
 
     this.active = true;
     this._busy = false;
@@ -711,17 +713,28 @@ const VoiceSession = {
     inputEl.disabled = true;
     updateSendButton();
 
-        try {
-      // Pre-flight: on Android Chrome, getUserMedia may be absent until
-      // the first permission grant. This call forces the prompt.
-      if (typeof navigator.mediaDevices.getUserMedia !== 'function') {
-        toast('Requesting microphone access…', 'info', 2500);
-      }
+    // Pre-flight permission request. On Android Chrome, getUserMedia
+    // may be absent until the first grant — this forces the prompt.
+    try {
       this._micStream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
       });
     } catch (e) {
-      this.exit('Microphone access is required for voice mode. Please allow it in your browser settings and try again.');
+      console.warn('[voice] permission denied:', e?.name, e?.message);
+      this.active = false;
+      this.setPhase('idle', '');
+      document.body.classList.remove('voice-mode');
+      document.body.removeAttribute('data-voice-phase');
+      voiceStatus.classList.add('hidden');
+      inputEl.disabled = false;
+      updateSendButton();
+      if (e?.name === 'NotAllowedError' || e?.name === 'SecurityError') {
+        toast('Microphone permission denied. Allow it in your browser settings and try again.', 'error', 6000);
+      } else if (e?.name === 'NotFoundError') {
+        toast('No microphone found on this device.', 'error', 5000);
+      } else {
+        toast('Could not access the microphone. Please try again.', 'error', 5000);
+      }
       return;
     }
 
@@ -1186,27 +1199,33 @@ function setupVoiceControls() {
     startInlineDictation();
   });
 
-    sendBtn.addEventListener('click', async () => {
+      sendBtn.addEventListener('click', async () => {
     if (VoiceSession.active) { VoiceSession.exit('Voice session ended.'); return; }
     if (state.isGenerating) { stopGeneration(); return; }
+
     const hasText = inputEl.value.trim().length > 0;
     const hasFiles = state.attachments.length > 0;
-    if (!hasText && !hasFiles) {
-      // Voice mode entry. On mobile, request mic permission on first tap.
-      if (!navigator.mediaDevices) {
-        toast('Voice conversations are not supported on this device', 'error');
-        return;
-      }
-      try {
-        if (!navigator.mediaDevices.getUserMedia) {
-          // Some Android builds hide getUserMedia until permission is granted.
-          await navigator.mediaDevices.getUserMedia({ audio: true }).catch(() => {});
-        }
-      } catch {}
-      VoiceSession.enter();
+    if (hasText || hasFiles) { formEl.requestSubmit(); return; }
+
+    // Voice entry tapped. Diagnose capability in the console for debugging.
+    console.log('[voice-tap] mediaDevices:', typeof navigator.mediaDevices,
+                'getUserMedia:', typeof navigator.mediaDevices?.getUserMedia,
+                'isSecureContext:', window.isSecureContext,
+                'userAgent:', navigator.userAgent);
+
+    if (!window.isSecureContext) {
+      toast('Voice requires a secure (HTTPS) connection.', 'error', 5000);
       return;
     }
-    formEl.requestSubmit();
+    if (!navigator.mediaDevices) {
+      toast('Voice conversations are not supported in this browser. Try opening DeepRWA in Chrome or Safari directly.', 'error', 6000);
+      return;
+    }
+    if (typeof navigator.mediaDevices.getUserMedia !== 'function') {
+      // Some Android builds hide getUserMedia until you ask for it once.
+      toast('Requesting microphone access…', 'info', 3000);
+    }
+    VoiceSession.enter();
   });
 }
 
@@ -1904,7 +1923,11 @@ function updateSendButton() {
   const iconStop = sendBtn.querySelector('.icon-stop');
   const iconVoice = sendBtn.querySelector('.icon-voice');
   const iconExit = sendBtn.querySelector('.icon-exit');
-  if (!iconSend || !iconStop || !iconVoice || !iconExit) return;
+  if (!iconSend || !iconStop || !iconVoice || !iconExit) {
+    // Icons not yet rendered — try again next tick
+    setTimeout(() => { try { updateSendButton(); } catch {} }, 100);
+    return;
+  }
   iconSend.classList.add('hidden');
   iconStop.classList.add('hidden');
   iconVoice.classList.add('hidden');
@@ -1928,18 +1951,12 @@ function updateSendButton() {
     sendBtn.setAttribute('aria-label', 'Send');
     return;
   }
-  // Empty input — show voice entry whenever mediaDevices exists.
-  // We do NOT gate on getUserMedia here because on Android Chrome
-  // getUserMedia only appears after the first permission grant.
-  // The button shows immediately; tapping it triggers the prompt.
-  if (navigator.mediaDevices) {
-    iconVoice.classList.remove('hidden');
-    sendBtn.classList.add('voice-entry');
-    sendBtn.setAttribute('aria-label', 'Start voice conversation');
-  } else {
-    iconSend.classList.remove('hidden');
-    sendBtn.setAttribute('aria-label', 'Send');
-  }
+  // Empty input — ALWAYS show the voice entry button.
+  // Unsupported devices get a helpful toast when they tap it.
+  iconVoice.classList.remove('hidden');
+  sendBtn.classList.add('voice-entry');
+  sendBtn.setAttribute('aria-label', 'Start voice conversation');
+  sendBtn.title = 'Start voice conversation';
 }
 
 function stopGeneration() {
