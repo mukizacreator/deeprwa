@@ -711,12 +711,17 @@ const VoiceSession = {
     inputEl.disabled = true;
     updateSendButton();
 
-    try {
+        try {
+      // Pre-flight: on Android Chrome, getUserMedia may be absent until
+      // the first permission grant. This call forces the prompt.
+      if (typeof navigator.mediaDevices.getUserMedia !== 'function') {
+        toast('Requesting microphone access…', 'info', 2500);
+      }
       this._micStream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
       });
     } catch (e) {
-      this.exit('Microphone access is required for voice mode.');
+      this.exit('Microphone access is required for voice mode. Please allow it in your browser settings and try again.');
       return;
     }
 
@@ -1181,16 +1186,23 @@ function setupVoiceControls() {
     startInlineDictation();
   });
 
-  sendBtn.addEventListener('click', () => {
+    sendBtn.addEventListener('click', async () => {
     if (VoiceSession.active) { VoiceSession.exit('Voice session ended.'); return; }
     if (state.isGenerating) { stopGeneration(); return; }
     const hasText = inputEl.value.trim().length > 0;
     const hasFiles = state.attachments.length > 0;
     if (!hasText && !hasFiles) {
-      if (!navigator.mediaDevices?.getUserMedia) {
+      // Voice mode entry. On mobile, request mic permission on first tap.
+      if (!navigator.mediaDevices) {
         toast('Voice conversations are not supported on this device', 'error');
         return;
       }
+      try {
+        if (!navigator.mediaDevices.getUserMedia) {
+          // Some Android builds hide getUserMedia until permission is granted.
+          await navigator.mediaDevices.getUserMedia({ audio: true }).catch(() => {});
+        }
+      } catch {}
       VoiceSession.enter();
       return;
     }
@@ -1898,6 +1910,7 @@ function updateSendButton() {
   iconVoice.classList.add('hidden');
   iconExit.classList.add('hidden');
   sendBtn.classList.remove('generating', 'voice-entry', 'voice-exit');
+
   if (VoiceSession.active) {
     iconExit.classList.remove('hidden');
     sendBtn.classList.add('voice-exit');
@@ -1915,9 +1928,11 @@ function updateSendButton() {
     sendBtn.setAttribute('aria-label', 'Send');
     return;
   }
-  // Empty input — show voice entry if microphone is available.
-  // We do NOT require SpeechRecognition here because VoiceSession has a Whisper fallback.
-  if (navigator.mediaDevices?.getUserMedia) {
+  // Empty input — show voice entry whenever mediaDevices exists.
+  // We do NOT gate on getUserMedia here because on Android Chrome
+  // getUserMedia only appears after the first permission grant.
+  // The button shows immediately; tapping it triggers the prompt.
+  if (navigator.mediaDevices) {
     iconVoice.classList.remove('hidden');
     sendBtn.classList.add('voice-entry');
     sendBtn.setAttribute('aria-label', 'Start voice conversation');
