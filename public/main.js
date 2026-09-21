@@ -1,4 +1,4 @@
-// DeepRWA — Complete frontend logic (rev.4.1.0)
+// DeepRWA — Complete frontend logic (rev.4.1.1)
 
 // ============ CLIENT ID ============
 function getOrCreateClientId() {
@@ -306,134 +306,6 @@ function getAudioContext() {
   return _sharedAudioCtx;
 }
 
-// ============ AUDIO RECORDER (Whisper fallback path) ============
-function pickAudioMime() {
-  if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return '';
-  const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
-  for (const t of candidates) { if (MediaRecorder.isTypeSupported(t)) return t; }
-  return '';
-}
-
-function createRecorder(opts = {}) {
-  const {
-    maxMs = 60000,
-    silenceMs = 2500,
-    minSpeechMs = 500,
-    minPeakRms = 0.020,
-    vadThreshold = 0.014,
-    vadMultiplier = 2.2,
-    autoStopOnSilence = true
-  } = opts;
-
-  let recorder = null, stream = null, audioCtx = null, analyser = null;
-  let vadInterval = null, maxTimer = null;
-  const chunks = [];
-  let stopped = false;
-  let resolveFn, rejectFn;
-  let peakRms = 0;
-  let speechMs = 0;
-
-  const promise = new Promise((resolve, reject) => { resolveFn = resolve; rejectFn = reject; });
-
-  const teardown = () => {
-    if (vadInterval) { clearInterval(vadInterval); vadInterval = null; }
-    if (maxTimer) { clearTimeout(maxTimer); maxTimer = null; }
-    try { stream?.getTracks().forEach(t => t.stop()); } catch {}
-  };
-
-  const finish = () => {
-    if (stopped) return;
-    stopped = true;
-    if (vadInterval) { clearInterval(vadInterval); vadInterval = null; }
-    if (maxTimer) { clearTimeout(maxTimer); maxTimer = null; }
-    const finalize = () => {
-      teardown();
-      const tooQuiet = peakRms < minPeakRms;
-      const tooShort = speechMs < minSpeechMs;
-      if (autoStopOnSilence && (tooQuiet || tooShort)) {
-        console.log(`[recorder] discarded silent recording (peakRms=${peakRms.toFixed(4)}, speechMs=${speechMs})`);
-        resolveFn(null);
-        return;
-      }
-      const type = recorder?.mimeType || 'audio/webm';
-      console.log(`[recorder] accepted (peakRms=${peakRms.toFixed(4)}, speechMs=${speechMs})`);
-      resolveFn(new Blob(chunks, { type }));
-    };
-    try {
-      if (recorder && recorder.state !== 'inactive') {
-        recorder.onstop = finalize;
-        recorder.stop();
-      } else finalize();
-    } catch { finalize(); }
-  };
-
-  const abort = (reason) => {
-    if (stopped) return;
-    stopped = true;
-    if (vadInterval) { clearInterval(vadInterval); vadInterval = null; }
-    if (maxTimer) { clearTimeout(maxTimer); maxTimer = null; }
-    try { if (recorder && recorder.state !== 'inactive') recorder.stop(); } catch {}
-    teardown();
-    rejectFn(new Error(reason || 'aborted'));
-  };
-
-  (async () => {
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
-      });
-      const mime = pickAudioMime();
-      recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
-      recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
-
-      if (autoStopOnSilence) {
-        audioCtx = getAudioContext() || new (window.AudioContext || window.webkitAudioContext)();
-        if (audioCtx.state === 'suspended') { try { await audioCtx.resume(); } catch {} }
-        const source = audioCtx.createMediaStreamSource(stream);
-        analyser = audioCtx.createAnalyser();
-        analyser.fftSize = 512;
-        analyser.smoothingTimeConstant = 0.5;
-        source.connect(analyser);
-        const dataArray = new Uint8Array(analyser.frequencyBinCount);
-        const rmsHistory = [];
-        let noiseFloor = 0.012;
-        let hasSpeech = false;
-        let silenceStart = 0;
-
-        vadInterval = setInterval(() => {
-          if (stopped || !analyser) return;
-          analyser.getByteTimeDomainData(dataArray);
-          let sum = 0;
-          for (let i = 0; i < dataArray.length; i++) {
-            const v = (dataArray[i] - 128) / 128;
-            sum += v * v;
-          }
-          const rms = Math.sqrt(sum / dataArray.length);
-          rmsHistory.push(rms);
-          if (rmsHistory.length > 20) rmsHistory.shift();
-          if (rmsHistory.length >= 6) {
-            const sorted = [...rmsHistory].sort((a, b) => a - b);
-            const p10 = sorted[Math.floor(sorted.length * 0.1)] || sorted[0];
-            noiseFloor = noiseFloor * 0.7 + p10 * 0.3;
-          }
-          const threshold = Math.max(vadThreshold, noiseFloor * vadMultiplier);
-          const speaking = rms > threshold;
-          if (rms > peakRms) peakRms = rms;
-          if (speaking) { hasSpeech = true; silenceStart = 0; speechMs += 100; }
-          else if (hasSpeech) {
-            if (!silenceStart) silenceStart = Date.now();
-            if (Date.now() - silenceStart > silenceMs) finish();
-          }
-        }, 100);
-      }
-      maxTimer = setTimeout(() => finish(), maxMs);
-      recorder.start(100);
-    } catch (e) { abort(e.message || 'getUserMedia failed'); }
-  })();
-
-  return { promise, stop: () => finish(), abort };
-}
-
 // ============ WEB SPEECH HELPERS ============
 function getSpeechRecognition() {
   return window.SpeechRecognition || window.webkitSpeechRecognition || null;
@@ -442,29 +314,20 @@ function pickRecognitionLang() {
   return navigator.language || 'en-US';
 }
 
-// ============ SEMANTIC ENDPOINTING (ChatGPT-style smart turn detection) ============
-// ChatGPT's Advanced Voice Mode uses a turn-detection model that estimates
-// whether the user has actually finished thinking — not just whether the
-// audio went quiet. We approximate that with a heuristic on the interim
-// transcript: if it ends mid-clause, we extend the silence window.
-
+// ============ SEMANTIC ENDPOINTING ============
 const INCOMPLETE_TAIL = /\b(and|or|but|because|so|the|a|an|of|to|for|with|about|in|on|at|is|are|was|were|my|your|his|her|its|their|our|this|that|these|those|if|when|while|though|although|um|uh|like|well|then|also|plus|such as|as|than|by|from|into|over|under|between|before|after|during|without|within|along|across|behind|beyond|upon|via|per|versus|vs)\s*$/i;
 const QUESTION_TAIL = /\b(what|where|when|why|who|how|which|whose|whom)\s*$/i;
 const INTRO_TAIL = /^(so|now|okay|ok|well|alright|right|hmm|um|uh|let me|i want to|i need to|can you|could you|please|tell me|explain|describe|show me|give me|help me|i was|i have|i'd like)\b/i;
 
-// Returns a dynamic silence threshold in ms.
-//   - If the interim transcript clearly trails off mid-clause → LONG wait.
-//   - If it looks like a finished thought (ends with . ! ? or punctuation) → SHORT wait.
-//   - Otherwise → MEDIUM wait.
 function computeDynamicSilenceMs(interim) {
   const text = (interim || '').trim();
-  if (!text) return 1500;              // nothing transcribed yet — be patient
-  if (INCOMPLETE_TAIL.test(text)) return 3000;   // "…and the", "…because", "…my"
-  if (QUESTION_TAIL.test(text)) return 3000;     // "…what", "…where", "…how"
-  if (INTRO_TAIL.test(text) && text.length < 40) return 2800; // "so I want to ask about…"
-  if (/[.!?]\s*$/.test(text)) return 1000;       // clearly complete
-  if (text.length < 12) return 2500;             // very short fragment — wait
-  return 1500;                                    // default
+  if (!text) return 1500;
+  if (INCOMPLETE_TAIL.test(text)) return 3000;
+  if (QUESTION_TAIL.test(text)) return 3000;
+  if (INTRO_TAIL.test(text) && text.length < 40) return 2800;
+  if (/[.!?]\s*$/.test(text)) return 1000;
+  if (text.length < 12) return 2500;
+  return 1500;
 }
 
 // ============ TTS VOICE PICKER ============
@@ -488,6 +351,25 @@ if (window.speechSynthesis) {
   window.speechSynthesis.onvoiceschanged = () => {};
 }
 
+function stripMarkdownForSpeech(text) {
+  return String(text || '')
+    .replace(/```[\s\S]*?```/g, ' code block ')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/!\[[^\]]*\]\([^)]+\)/g, '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/_([^_]+)_/g, '$1')
+    .replace(/^\s*[-*+]\s+/gm, '')
+    .replace(/^\s*\d+\.\s+/gm, '')
+    .replace(/^>\s+/gm, '')
+    .replace(/\n{2,}/g, '. ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 // ============ STREAMING TTS ============
 const StreamingTTS = {
   active: false,
@@ -496,6 +378,7 @@ const StreamingTTS = {
   speaking: false,
   session: 0,
   resolveEnd: null,
+  onSpeak: null,
 
   start() {
     this.stop();
@@ -572,16 +455,27 @@ const StreamingTTS = {
     this.speaking = true;
     const text = this.queue.shift();
     const session = this.session;
+    if (typeof this.onSpeak === 'function') { try { this.onSpeak(text); } catch {} }
     const utter = new SpeechSynthesisUtterance(text);
     const voice = pickTtsVoice(pickRecognitionLang());
     if (voice) { utter.voice = voice; utter.lang = voice.lang; }
     else utter.lang = pickRecognitionLang();
     utter.rate = 1.05;
     utter.pitch = 1.0;
-    utter.onend = () => { if (session === this.session) this._speakNext(); };
-    utter.onerror = () => { if (session === this.session) this._speakNext(); };
+
+    // Watchdog: Chrome sometimes never fires onend/onerror. Force-advance.
+    let advanced = false;
+    const advance = () => {
+      if (advanced) return;
+      advanced = true;
+      if (session === this.session) this._speakNext();
+    };
+    utter.onend = advance;
+    utter.onerror = advance;
+    setTimeout(advance, 12000);
+
     try { window.speechSynthesis.speak(utter); }
-    catch { this._speakNext(); }
+    catch { advance(); }
   }
 };
 
@@ -590,25 +484,6 @@ let _currentSpeakBtn = null;
 let _speakChunks = [];
 let _speakIndex = 0;
 let _speakSession = 0;
-
-function stripMarkdownForSpeech(text) {
-  return String(text || '')
-    .replace(/```[\s\S]*?```/g, ' code block ')
-    .replace(/`([^`]+)`/g, '$1')
-    .replace(/!\[[^\]]*\]\([^)]+\)/g, '')
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-    .replace(/^#{1,6}\s+/gm, '')
-    .replace(/\*\*([^*]+)\*\*/g, '$1')
-    .replace(/\*([^*]+)\*/g, '$1')
-    .replace(/__([^_]+)__/g, '$1')
-    .replace(/_([^_]+)_/g, '$1')
-    .replace(/^\s*[-*+]\s+/gm, '')
-    .replace(/^\s*\d+\.\s+/gm, '')
-    .replace(/^>\s+/gm, '')
-    .replace(/\n{2,}/g, '. ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
 
 function chunkTextForSpeech(text, maxLen = 180) {
   const sentences = String(text || '').split(/(?<=[.!?])\s+/).filter(Boolean);
@@ -666,25 +541,19 @@ function speakMessage(text, btn) {
     if (voice) { utter.voice = voice; utter.lang = voice.lang; }
     else utter.lang = pickRecognitionLang();
     utter.rate = 1.0; utter.pitch = 1.0;
-    utter.onend = () => { if (mySession === _speakSession) { _speakIndex++; speakNext(); } };
-    utter.onerror = () => { if (mySession === _speakSession) { _speakIndex++; speakNext(); } };
-    try { window.speechSynthesis.speak(utter); } catch {}
+    let advanced = false;
+    const advance = () => { if (advanced) return; advanced = true; if (mySession === _speakSession) { _speakIndex++; speakNext(); } };
+    utter.onend = advance;
+    utter.onerror = advance;
+    setTimeout(advance, 12000);
+    try { window.speechSynthesis.speak(utter); } catch { advance(); }
   };
   speakNext();
 }
 
 window.addEventListener('beforeunload', () => { stopSpeaking(); StreamingTTS.stop(); });
 
-// ============ VOICE SESSION (hands-free conversation, ChatGPT-style) ============
-// Architecture:
-//   1. A single continuous SpeechRecognition instance with interimResults.
-//   2. A "thinking timer" that recomputes on every interim result. If the
-//      transcript ends mid-clause, it extends. If it looks complete, it fires.
-//   3. Full-duplex barge-in: while the AI is speaking, an analyser monitors
-//      mic energy; the moment the user's voice crosses the threshold,
-//      speechSynthesis.cancel() fires and the AI stops mid-sentence.
-//   4. After a turn, we keep the recognition running (so a follow-up "and…"
-//      is caught instantly) but we clear the transcript buffer.
+// ============ VOICE SESSION ============
 const VoiceSession = {
   active: false,
   phase: 'idle',
@@ -701,8 +570,8 @@ const VoiceSession = {
   _lastSpeechTime: 0,
   _warnedNoTts: false,
   _busy: false,
-  _bargeInThreshold: 0.025,
   _bargeInHits: 0,
+  _bargeInThreshold: 0.03,
 
   async enter() {
     if (this.active) return;
@@ -718,6 +587,7 @@ const VoiceSession = {
     this._busy = false;
     this._turnBuffer = '';
     this._interimBuffer = '';
+    this._bargeInHits = 0;
     document.body.classList.add('voice-mode');
     voiceStatus.classList.remove('hidden');
     inputEl.disabled = true;
@@ -732,10 +602,7 @@ const VoiceSession = {
       return;
     }
 
-    // Start the barge-in monitor. It watches mic energy continuously
-    // so a user can interrupt the AI mid-sentence.
     this._startBargeInMonitor();
-
     this.setPhase('listening', 'Listening…');
     this._startRecognition();
   },
@@ -748,7 +615,7 @@ const VoiceSession = {
     document.body.removeAttribute('data-voice-phase');
     voiceStatus.classList.add('hidden');
     inputEl.disabled = false;
-    if (this._recognition) { try { this._recognition.abort(); } catch {} this._recognition = null; }
+    this._stopRecognition();
     if (this._thinkingTimer) { clearTimeout(this._thinkingTimer); this._thinkingTimer = null; }
     if (this._hardCapTimer) { clearTimeout(this._hardCapTimer); this._hardCapTimer = null; }
     if (this._bargeInTimer) { clearInterval(this._bargeInTimer); this._bargeInTimer = null; }
@@ -768,15 +635,14 @@ const VoiceSession = {
   },
 
   bargeIn() {
-    // Manual tap on the mic button during voice mode = immediate interrupt.
-    if (this.phase === 'speaking') {
-      StreamingTTS.stop();
-      stopSpeaking();
-      this.setPhase('listening', 'Listening…');
-    }
+    if (this.phase !== 'speaking') return;
+    StreamingTTS.stop();
+    stopSpeaking();
+    if (state.abortController) { try { state.abortController.abort(); } catch {} }
+    // The send's finally will fire _onStreamDone, and _onTurnEnd will
+    // transition to listening + restart recognition.
   },
 
-  // ----- Barge-in monitor (full-duplex listening) -----
   _startBargeInMonitor() {
     if (!this._micStream) return;
     try {
@@ -799,19 +665,15 @@ const VoiceSession = {
           sum += v * v;
         }
         const rms = Math.sqrt(sum / data.length);
-        // Only track noise floor when the AI is NOT speaking
         if (this.phase !== 'speaking') {
           noiseFloor = noiseFloor * 0.95 + rms * 0.05;
         }
-        // Barge-in: user speaks while AI is speaking
         if (this.phase === 'speaking' && rms > Math.max(this._bargeInThreshold, noiseFloor * 3)) {
           this._bargeInHits++;
           if (this._bargeInHits >= 3) {
             console.log('[voice] barge-in detected');
-            StreamingTTS.stop();
-            stopSpeaking();
             this._bargeInHits = 0;
-            this.setPhase('listening', 'Listening…');
+            this.bargeIn();
           }
         } else if (this.phase !== 'speaking') {
           this._bargeInHits = 0;
@@ -822,14 +684,27 @@ const VoiceSession = {
     }
   },
 
-  // ----- Continuous recognition -----
+  // ---------- Recognition lifecycle ----------
+  _stopRecognition() {
+    if (!this._recognition) return;
+    const rec = this._recognition;
+    this._recognition = null;
+    // Null handlers BEFORE abort so onend cannot silently restart.
+    try { rec.onend = null; rec.onresult = null; rec.onerror = null; } catch {}
+    try { rec.abort(); } catch {}
+  },
+
   _startRecognition() {
+    if (!this.active) return;
+    this._stopRecognition();
+
     const SR = getSpeechRecognition();
     if (!SR) {
       toast('Speech recognition is not available on this browser', 'error');
       this.exit();
       return;
     }
+
     const rec = new SR();
     rec.continuous = true;
     rec.interimResults = true;
@@ -837,38 +712,22 @@ const VoiceSession = {
     rec.maxAlternatives = 1;
     this._recognition = rec;
 
-    rec.onstart = () => {
-      // Recognition restarted — reset turn buffers so a new utterance is clean.
-      if (this.phase === 'listening' || this.phase === 'idle') {
-        this._turnBuffer = '';
-        this._interimBuffer = '';
-      }
-    };
-
     rec.onresult = (e) => {
       if (!this.active) return;
-      // If AI is currently speaking or thinking, ignore results — the user
-      // is likely just making a noise or the mic is picking up the TTS.
+      if (this._recognition !== rec) return; // stale
       if (this.phase === 'speaking' || this.phase === 'thinking' || this._busy) return;
 
-      let finalText = '';
-      let interimText = '';
+      let finalText = '', interimText = '';
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const t = e.results[i][0].transcript;
         if (e.results[i].isFinal) finalText += t;
         else interimText += t;
       }
-
       if (finalText) this._turnBuffer += finalText;
       this._interimBuffer = interimText;
       const combined = (this._turnBuffer + ' ' + this._interimBuffer).trim();
-
       this._lastSpeechTime = Date.now();
-
-      // Live feedback in the status pill
       if (combined) this.setPhase('listening', combined.slice(-70));
-
-      // Recompute the dynamic silence window based on what we've heard.
       this._scheduleTurnEnd(combined);
     };
 
@@ -880,11 +739,6 @@ const VoiceSession = {
       }
       if (e.error === 'no-speech') {
         this._noSpeechCount++;
-        // Soft reset so recognition doesn't get stuck
-        if (this._noSpeechCount > 5) {
-          this._noSpeechCount = 0;
-          try { rec.abort(); } catch {}
-        }
         return;
       }
       if (e.error === 'aborted') return;
@@ -892,30 +746,26 @@ const VoiceSession = {
     };
 
     rec.onend = () => {
+      if (this._recognition !== rec) return; // replaced
       if (!this.active) return;
-      // Continuous mode: auto-restart. Keep the turn buffer intact —
-      // Chrome sometimes fires onend mid-turn during long pauses.
-      try { rec.start(); } catch (e) {
-        if (!/already started/i.test(e?.message || '')) {
-          setTimeout(() => { if (this.active) this._startRecognition(); }, 250);
-        }
-      }
+      // Natural end (Chrome sometimes stops continuous recognition). Replace.
+      this._recognition = null;
+      setTimeout(() => { if (this.active) this._startRecognition(); }, 150);
     };
 
     try { rec.start(); }
     catch (e) {
       console.warn('[voice] rec start failed:', e);
-      setTimeout(() => { if (this.active) this._startRecognition(); }, 500);
+      this._recognition = null;
+      if (this.active) setTimeout(() => this._startRecognition(), 300);
     }
   },
 
-  // ----- Dynamic endpointing -----
   _scheduleTurnEnd(interim) {
     if (this._thinkingTimer) { clearTimeout(this._thinkingTimer); this._thinkingTimer = null; }
     if (this._hardCapTimer) { clearTimeout(this._hardCapTimer); this._hardCapTimer = null; }
 
     if (!interim || !interim.trim()) {
-      // No transcript yet. Give the user a long first-gesture window.
       this._thinkingTimer = setTimeout(() => this._onTurnEnd('silent'), 15000);
       return;
     }
@@ -923,12 +773,8 @@ const VoiceSession = {
     const dynamicMs = computeDynamicSilenceMs(interim);
     console.log(`[voice] endpoint window: ${dynamicMs}ms for "${interim.slice(-50)}"`);
 
-    this._thinkingTimer = setTimeout(() => {
-      this._onTurnEnd('silence');
-    }, dynamicMs);
+    this._thinkingTimer = setTimeout(() => this._onTurnEnd('silence'), dynamicMs);
 
-    // Hard cap: if the user has said *something* but the timer keeps
-    // getting pushed, force a turn after 8 s of no new audio.
     this._hardCapTimer = setTimeout(() => {
       const sinceSpeech = Date.now() - (this._lastSpeechTime || Date.now());
       if (sinceSpeech >= 7000) this._onTurnEnd('hard-cap');
@@ -946,12 +792,9 @@ const VoiceSession = {
     if (this._hardCapTimer) { clearTimeout(this._hardCapTimer); this._hardCapTimer = null; }
 
     if (!text) {
-      // Nothing said — just go back to listening.
       this.setPhase('listening', 'Listening…');
       return;
     }
-
-    // Final safety: reject obvious Whisper-style hallucinations
     if (looksLikePhantom(text)) {
       console.log(`[voice] rejected phantom: "${text}"`);
       this.setPhase('listening', 'Listening…');
@@ -960,9 +803,7 @@ const VoiceSession = {
 
     this._busy = true;
     this.setPhase('thinking', 'Thinking…');
-
-    // Stop recognition while we generate the reply, then restart.
-    if (this._recognition) { try { this._recognition.abort(); } catch {} }
+    this._stopRecognition();
 
     try {
       await this._sendAndWait(text);
@@ -974,8 +815,7 @@ const VoiceSession = {
     if (!this.active) return;
 
     this.setPhase('listening', 'Listening…');
-    // Restart recognition for the next turn.
-    setTimeout(() => { if (this.active) this._startRecognition(); }, 200);
+    this._startRecognition();
   },
 
   async _sendAndWait(text) {
@@ -990,7 +830,6 @@ const VoiceSession = {
   }
 };
 
-// Small list of confirmed Whisper hallucinations — reject even from Web Speech.
 const PHANTOM_PHRASES = new Set([
   'thank you for watching','thanks for watching','please subscribe','subscribe',
   'the end','a film by','film by','subtitles by','amara.org','amara org',
@@ -1011,7 +850,7 @@ function looksLikePhantom(text) {
   return false;
 }
 
-// ============ INLINE DICTATION (mic button — live transcription) ============
+// ============ INLINE DICTATION (mic button) ============
 let _inlineRecognition = null;
 let _inlineDictationActive = false;
 let _inlineBaseText = '';
@@ -1029,7 +868,23 @@ function startInlineDictation() {
 
   _inlineDictationActive = true;
   _inlineBaseText = inputEl.value || '';
+  _inlineNoSpeechCount = 0;
   micBtn.classList.add('listening');
+  _startInlineRecognition();
+}
+
+function _startInlineRecognition() {
+  if (!_inlineDictationActive) return;
+  // Cleanup previous
+  if (_inlineRecognition) {
+    const old = _inlineRecognition;
+    _inlineRecognition = null;
+    try { old.onend = null; old.onresult = null; old.onerror = null; } catch {}
+    try { old.abort(); } catch {}
+  }
+
+  const SR = getSpeechRecognition();
+  if (!SR) { stopInlineDictation(); return; }
 
   const rec = new SR();
   rec.continuous = true;
@@ -1039,9 +894,9 @@ function startInlineDictation() {
   _inlineRecognition = rec;
 
   rec.onresult = (e) => {
-    if (!_inlineDictationActive) return;
+    if (!_inlineDictationActive || _inlineRecognition !== rec) return;
     let final = '', interim = '';
-    for (let i = 0; i < e.results.length; i++) {
+    for (let i = e.resultIndex; i < e.results.length; i++) {
       const t = e.results[i][0].transcript;
       if (e.results[i].isFinal) final += t;
       else interim += t;
@@ -1066,21 +921,30 @@ function startInlineDictation() {
   };
 
   rec.onend = () => {
-    if (!_inlineDictationActive) { micBtn.classList.remove('listening'); return; }
-    // Commit what we've heard and restart
+    if (_inlineRecognition !== rec) return;
+    if (!_inlineDictationActive) return;
+    // Commit accumulated final text into base so the next session doesn't duplicate.
     _inlineBaseText = inputEl.value;
-    try { rec.start(); } catch (e) {
-      if (!/already started/i.test(e?.message || '')) stopInlineDictation();
-    }
+    _inlineRecognition = null;
+    setTimeout(() => { if (_inlineDictationActive) _startInlineRecognition(); }, 150);
   };
 
   try { rec.start(); }
-  catch (e) { console.warn('[inline] start failed:', e); stopInlineDictation(); }
+  catch (e) {
+    console.warn('[inline] start failed:', e);
+    _inlineRecognition = null;
+    if (_inlineDictationActive) setTimeout(() => _startInlineRecognition(), 300);
+  }
 }
 
 function stopInlineDictation() {
   _inlineDictationActive = false;
-  if (_inlineRecognition) { try { _inlineRecognition.abort(); } catch {} _inlineRecognition = null; }
+  if (_inlineRecognition) {
+    const old = _inlineRecognition;
+    _inlineRecognition = null;
+    try { old.onend = null; old.onresult = null; old.onerror = null; } catch {}
+    try { old.abort(); } catch {}
+  }
   micBtn.classList.remove('listening');
 }
 
@@ -2174,7 +2038,10 @@ formEl.addEventListener('submit', async (e) => {
   updateSendButton();
 
   const useTTS = state._streamingTTS === true;
-  if (useTTS) StreamingTTS.start();
+  if (useTTS) {
+    StreamingTTS.start();
+    if (VoiceSession.active) VoiceSession.setPhase('speaking', 'Speaking…');
+  }
 
   try {
     let chat = state.chats.find(c => c.id === state.activeChatId);
