@@ -121,51 +121,136 @@ const sttLimiter = rateLimit({
   message: { error: 'Too many voice requests, please slow down.' }
 });
 
-// ============ SPEECH-TO-TEXT (Whisper via Groq — supports Kinyarwanda) ============
+// ============ SPEECH-TO-TEXT PROVIDERS ============
+
+// 1) Groq Whisper — fastest, 99 languages (no Kinyarwanda)
+async function transcribeWithGroq(buffer, mime, lang) {
+  const key = process.env.GROQ_API_KEY;
+  if (!key) throw new Error('Groq not configured');
+  const type = (mime || 'audio/webm').split(';')[0].trim();
+  const ext = type.includes('mp4') || type.includes('m4a') ? 'm4a'
+    : type.includes('ogg') ? 'ogg'
+    : type.includes('wav') ? 'wav'
+    : type.includes('mpeg') || type.includes('mp3') ? 'mp3'
+    : 'webm';
+  const blob = new Blob([buffer], { type });
+  const fd = new FormData();
+  fd.append('file', blob, `voice.${ext}`);
+  fd.append('model', 'whisper-large-v3-turbo');
+  fd.append('response_format', 'json');
+  fd.append('temperature', '0');
+  const base = (lang || '').split('-')[0].toLowerCase();
+  if (/^[a-z]{2}$/.test(base)) fd.append('language', base);
+  const r = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${key}` },
+    body: fd
+  });
+  if (!r.ok) { const t = await r.text().catch(() => ''); const e = new Error(`Groq ${r.status}: ${t.slice(0, 120)}`); e.status = r.status; throw e; }
+  const data = await r.json();
+  return data.text || '';
+}
+
+// 2) Cloudflare Workers AI Whisper — free, no card, already configured
+async function transcribeWithCloudflare(buffer, mime, lang) {
+  const accountId = process.env.CF_ACCOUNT_ID || process.env.CLOUDFLARE_ACCOUNT_ID;
+  const apiToken = process.env.CF_API_TOKEN || process.env.CLOUDFLARE_API_TOKEN;
+  if (!accountId || !apiToken) throw new Error('Cloudflare not configured');
+  const audioArray = Array.from(new Uint8Array(buffer));
+  const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/openai/whisper-large-v3-turbo`;
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ audio: audioArray })
+  });
+  if (!r.ok) { const t = await r.text().catch(() => ''); const e = new Error(`CF ${r.status}: ${t.slice(0, 120)}`); e.status = r.status; throw e; }
+  const data = await r.json();
+  if (data.success === false) throw new Error('CF: ' + (data.errors?.[0]?.message || 'failed'));
+  return data.result?.text || '';
+}
+
+// 3) Hugging Face Inference API — free, no card
+//    - Kinyarwanda → mbazaNLP model, then MMS fallback
+//    - Everything else → MMS (1,162 languages)
+async function transcribeWithHuggingFace(buffer, mime, lang) {
+  const hfToken = process.env.HF_TOKEN;
+  if (!hfToken) throw new Error('Hugging Face not configured');
+
+  const base = (lang || '').split('-')[0].toLowerCase();
+  const models = base === 'rw'
+    ? ['mbazaNLP/Whisper-Small-Kinyarwanda', 'facebook/mms-1b-all']
+    : ['facebook/mms-1b-all'];
+
+  let lastErr = null;
+  for (const model of models) {
+    try {
+      const url = `https://api-inference.huggingface.co/models/${model}`;
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${hfToken}`,
+          'Content-Type': mime || 'audio/webm'
+        },
+        body: buffer
+      });
+      if (!r.ok) { const t = await r.text().catch(() => ''); throw new Error(`HF ${r.status}: ${t.slice(0, 120)}`); }
+      const data = await r.json();
+      const text = Array.isArray(data) ? (data[0]?.text || '') : (data.text || '');
+      if (text.trim()) return text;
+      throw new Error('HF returned empty text');
+    } catch (e) {
+      lastErr = e;
+      console.warn(`[stt] HF ${model} failed:`, e.message);
+    }
+  }
+  throw lastErr || new Error('HF failed');
+}
+
+// Languages Whisper cannot transcribe — route to HF first
+const WHISPER_UNSUPPORTED = new Set(['rw', 'kin']);
+
 app.post('/api/stt', sttLimiter, async (req, res) => {
   const { audio, mime, lang } = req.body || {};
   if (!audio || typeof audio !== 'string') return res.status(400).json({ error: 'audio (base64) required' });
-  if (!process.env.GROQ_API_KEY) return res.status(503).json({ error: 'Speech recognition not configured' });
-  try {
-    const buffer = Buffer.from(audio, 'base64');
-    if (!buffer.length) return res.status(400).json({ error: 'Empty audio' });
-    if (buffer.length > 25 * 1024 * 1024) return res.status(413).json({ error: 'Audio too large (max 25 MB)' });
 
-    const type = (mime || 'audio/webm').split(';')[0].trim();
-    const ext = type.includes('mp4') || type.includes('m4a') ? 'm4a'
-      : type.includes('ogg') ? 'ogg'
-      : type.includes('wav') ? 'wav'
-      : type.includes('mpeg') || type.includes('mp3') ? 'mp3'
-      : 'webm';
+  let buffer;
+  try { buffer = Buffer.from(audio, 'base64'); }
+  catch { return res.status(400).json({ error: 'Invalid audio data' }); }
 
-    const blob = new Blob([buffer], { type });
-    const fd = new FormData();
-    fd.append('file', blob, `voice.${ext}`);
-    fd.append('model', 'whisper-large-v3-turbo');
-    fd.append('response_format', 'json');
-    fd.append('temperature', '0');
-    if (lang && typeof lang === 'string') {
-      const base = lang.split('-')[0].toLowerCase();
-      if (/^[a-z]{2}$/.test(base)) fd.append('language', base);
+  if (!buffer.length) return res.status(400).json({ error: 'Empty audio' });
+  if (buffer.length > 25 * 1024 * 1024) return res.status(413).json({ error: 'Audio too large (max 25 MB)' });
+
+  const base = (lang || '').split('-')[0].toLowerCase();
+  const useHFOnly = WHISPER_UNSUPPORTED.has(base);
+
+  const providers = useHFOnly
+    ? [
+        { name: 'HuggingFace', fn: () => transcribeWithHuggingFace(buffer, mime, lang) },
+        { name: 'Groq',        fn: () => transcribeWithGroq(buffer, mime, lang) },
+        { name: 'Cloudflare',  fn: () => transcribeWithCloudflare(buffer, mime, lang) }
+      ]
+    : [
+        { name: 'Groq',        fn: () => transcribeWithGroq(buffer, mime, lang) },
+        { name: 'Cloudflare',  fn: () => transcribeWithCloudflare(buffer, mime, lang) },
+        { name: 'HuggingFace', fn: () => transcribeWithHuggingFace(buffer, mime, lang) }
+      ];
+
+  const errors = [];
+  for (const p of providers) {
+    try {
+      const text = await p.fn();
+      if (text && text.trim()) {
+        console.log(`[stt] ${p.name} ✅ (${text.length} chars, lang=${lang || 'auto'})`);
+        return res.json({ text: text.trim(), provider: p.name });
+      }
+    } catch (e) {
+      console.warn(`[stt] ${p.name} failed:`, e.message);
+      errors.push(`${p.name}: ${e.message}`);
     }
-
-    const r = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
-      body: fd
-    });
-    if (!r.ok) {
-      const t = await r.text().catch(() => '');
-      console.warn('[stt] Groq error:', r.status, t.slice(0, 200));
-      if (r.status === 429) return res.status(429).json({ error: 'Too many voice requests — please wait a moment' });
-      return res.status(500).json({ error: 'Transcription failed' });
-    }
-    const data = await r.json();
-    res.json({ text: data.text || '' });
-  } catch (e) {
-    console.warn('[stt] error:', e.message);
-    res.status(500).json({ error: 'Transcription failed' });
   }
+
+  console.warn('[stt] all providers failed:', errors.join(' | '));
+  res.status(500).json({ error: 'Transcription failed. Please try again.' });
 });
 
 // ============ JWT ============
