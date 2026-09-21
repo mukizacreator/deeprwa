@@ -123,6 +123,120 @@ const sttLimiter = rateLimit({
 
 // ============ SPEECH-TO-TEXT PROVIDERS ============
 
+// 1) Groq Whisper — fastest, 99 languages, returns detected language
+async function transcribeWithGroq(buffer, mime) {
+  const key = process.env.GROQ_API_KEY;
+  if (!key) throw new Error('Groq not configured');
+  const type = (mime || 'audio/webm').split(';')[0].trim();
+  const ext = type.includes('mp4') || type.includes('m4a') ? 'm4a'
+    : type.includes('ogg') ? 'ogg'
+    : type.includes('wav') ? 'wav'
+    : type.includes('mpeg') || type.includes('mp3') ? 'mp3'
+    : 'webm';
+  const blob = new Blob([buffer], { type });
+  const fd = new FormData();
+  fd.append('file', blob, `voice.${ext}`);
+  fd.append('model', 'whisper-large-v3-turbo');
+  fd.append('response_format', 'verbose_json');
+  fd.append('temperature', '0');
+  const r = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${key}` },
+    body: fd
+  });
+  if (!r.ok) {
+    const t = await r.text().catch(() => '');
+    const e = new Error(`Groq ${r.status}: ${t.slice(0, 120)}`);
+    e.status = r.status;
+    throw e;
+  }
+  const data = await r.json();
+  return { text: data.text || '', language: data.language || '' };
+}
+
+// 2) Cloudflare Workers AI Whisper — free, no card, already configured
+async function transcribeWithCloudflare(buffer) {
+  const accountId = process.env.CF_ACCOUNT_ID || process.env.CLOUDFLARE_ACCOUNT_ID;
+  const apiToken = process.env.CF_API_TOKEN || process.env.CLOUDFLARE_API_TOKEN;
+  if (!accountId || !apiToken) throw new Error('Cloudflare not configured');
+  const audioArray = Array.from(new Uint8Array(buffer));
+  const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/openai/whisper-large-v3-turbo`;
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ audio: audioArray })
+  });
+  if (!r.ok) { const t = await r.text().catch(() => ''); const e = new Error(`CF ${r.status}: ${t.slice(0, 120)}`); e.status = r.status; throw e; }
+  const data = await r.json();
+  if (data.success === false) throw new Error('CF: ' + (data.errors?.[0]?.message || 'failed'));
+  return { text: data.result?.text || '', language: data.result?.language || '' };
+}
+
+// 3) Hugging Face Inference API — free, no card. Kinyarwanda + 1,162 langs via MMS.
+async function transcribeWithHuggingFace(buffer, mime) {
+  const hfToken = process.env.HF_TOKEN;
+  if (!hfToken) throw new Error('Hugging Face not configured');
+  const models = ['mbazaNLP/Whisper-Small-Kinyarwanda', 'facebook/mms-1b-all'];
+  let lastErr = null;
+  for (const model of models) {
+    try {
+      const url = `https://api-inference.huggingface.co/models/${model}`;
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${hfToken}`,
+          'Content-Type': mime || 'audio/webm'
+        },
+        body: buffer
+      });
+      if (!r.ok) { const t = await r.text().catch(() => ''); throw new Error(`HF ${r.status}: ${t.slice(0, 120)}`); }
+      const data = await r.json();
+      const text = Array.isArray(data) ? (data[0]?.text || '') : (data.text || '');
+      if (text.trim()) return { text, language: '' };
+      throw new Error('HF empty');
+    } catch (e) { lastErr = e; console.warn(`[stt] HF ${model}:`, e.message); }
+  }
+  throw lastErr || new Error('HF failed');
+}
+
+app.post('/api/stt', sttLimiter, async (req, res) => {
+  const { audio, mime } = req.body || {};
+  if (!audio || typeof audio !== 'string') return res.status(400).json({ error: 'audio (base64) required' });
+
+  let buffer;
+  try { buffer = Buffer.from(audio, 'base64'); }
+  catch { return res.status(400).json({ error: 'Invalid audio data' }); }
+
+  if (!buffer.length) return res.status(400).json({ error: 'Empty audio' });
+  if (buffer.length > 25 * 1024 * 1024) return res.status(413).json({ error: 'Audio too large (max 25 MB)' });
+
+  // Groq auto-detects; HF MMS as fallback.
+  const providers = [
+    { name: 'Groq',        fn: () => transcribeWithGroq(buffer, mime) },
+    { name: 'Cloudflare',  fn: () => transcribeWithCloudflare(buffer) },
+    { name: 'HuggingFace', fn: () => transcribeWithHuggingFace(buffer, mime) }
+  ];
+
+  const errors = [];
+  for (const p of providers) {
+    try {
+      const result = await p.fn();
+      if (result && result.text && result.text.trim()) {
+        console.log(`[stt] ${p.name} ✅ (${result.text.length} chars, lang=${result.language || 'auto'})`);
+        return res.json({ text: result.text.trim(), language: result.language || '', provider: p.name });
+      }
+    } catch (e) {
+      console.warn(`[stt] ${p.name} failed:`, e.message);
+      errors.push(`${p.name}: ${e.message}`);
+    }
+  }
+
+  console.warn('[stt] all providers failed:', errors.join(' | '));
+  res.status(500).json({ error: 'Transcription failed. Please try again.' });
+});
+
+// ============ SPEECH-TO-TEXT PROVIDERS ============
+
 // 1) Groq Whisper — fastest, 99 languages (no Kinyarwanda)
 async function transcribeWithGroq(buffer, mime, lang) {
   const key = process.env.GROQ_API_KEY;
