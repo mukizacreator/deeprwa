@@ -1,4 +1,4 @@
-// DeepRWA — Complete backend (rev.3.4.0)
+// DeepRWA — Complete backend (rev.3.5.0)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -178,12 +178,10 @@ async function trackSession(userId, req) {
       const { data: ex } = await supabase.from('sessions').select('id, revoked').eq('user_id', userId).eq('client_id', clientId).maybeSingle();
       if (ex) {
         await supabase.from('sessions').update({ device: ua.substring(0, 120), ip, user_agent: ua, last_active: new Date().toISOString(), revoked: false }).eq('id', ex.id);
-        console.log(`📌 Session updated for ${userId.slice(0,8)}`);
         return;
       }
     }
     await supabase.from('sessions').insert({ user_id: userId, client_id: clientId, device: ua.substring(0, 120), user_agent: ua, ip, revoked: false });
-    console.log(`📌 Session created for ${userId.slice(0,8)}`);
   } catch (e) { console.warn('session track failed', e.message); }
 }
 
@@ -192,7 +190,7 @@ app.get('/av.png', (req, res) => res.sendFile(path.join(__dirname, 'av.png')));
 
 // ============ HEALTH CHECK ============
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', service: 'DeepRWA', version: '3.4.0', time: new Date().toISOString() });
+  res.json({ status: 'ok', service: 'DeepRWA', version: '3.5.0', time: new Date().toISOString() });
 });
 
 // ============ SYSTEM PROMPT ============
@@ -409,7 +407,7 @@ async function classifyImageIntent(userText) {
 
 // ============ SPEECH-TO-TEXT ============
 
-// Whisper's full supported language list (99 languages)
+// Whisper-supported languages
 const WHISPER_LANGS = new Set([
   'af','am','ar','as','az','ba','be','bg','bn','bo','br','bs','ca','cs','cy','da','de','el','en',
   'es','et','eu','fa','fi','fo','fr','gl','gu','ha','haw','he','hi','hr','ht','hu','hy','id','is',
@@ -419,13 +417,11 @@ const WHISPER_LANGS = new Set([
   'vi','yi','yo','zh','yue'
 ]);
 
-// Languages Whisper genuinely does NOT support (only a handful of Bantu/other langs)
 function whisperSupports(lang) {
-  if (!lang) return true; // assume auto-detect is fine
+  if (!lang) return true;
   return WHISPER_LANGS.has(String(lang).toLowerCase());
 }
 
-// Context bias for Whisper — dramatically improves proper-noun accuracy
 const WHISPER_CONTEXT_PROMPT = 'DeepRWA, a question about Rwanda, Kigali, Rwamagana, Musanze, Kinyarwanda, Umuganda, Akagera, Nyungwe, Volcanoes National Park, image, photo, map, history, culture, tourism.';
 
 function normalizeHint(hint) {
@@ -433,25 +429,101 @@ function normalizeHint(hint) {
   return hint.split(/[-_]/)[0].toLowerCase().trim();
 }
 
-// Reject transcriptions that are obviously wrong: script mismatch with hint,
-// or absurdly short/long for the audio size.
-function isSuspicious(text, hint, audioBytes) {
-  if (!text) return true;
-  const t = text.trim();
-  if (t.length < 2) return true;
-  // Rough duration estimate: ~12 KB per second of Opus at 96 kbps
-  const approxSeconds = Math.max(1, audioBytes / 12000);
-  // Whisper hallucinates long text on very short clips
-  if (approxSeconds < 2 && t.length > 60) return true;
+// ---- Whisper hallucination filter ----
+// Whisper was trained on subtitled YouTube videos and reliably hallucinates
+// these exact phrases on silence / near-silence. Reject them categorically.
+const WHISPER_HALLUCINATIONS = new Set([
+  'thank you for watching',
+  'thanks for watching',
+  'thank you for watching.',
+  'thanks for watching.',
+  'please subscribe',
+  'subscribe',
+  'the end',
+  'a film by',
+  'film by',
+  'subtitles by',
+  'amara org',
+  'amara.org',
+  'you',
+  'the',
+  'a',
+  'an',
+  'ok',
+  'okay',
+  'yeah',
+  'yes',
+  'no',
+  'bye',
+  'hi',
+  'hello',
+  'hmm',
+  'mm hmm',
+  'uh',
+  'um',
+  'oh',
+  'ah',
+  'eh',
+  'wow',
+  'right',
+  'really',
+  'so',
+  'and',
+  'but',
+  'or',
+  'or.',
+  'blank audio',
+  'music',
+  'silence',
+  'applause',
+  'laughter',
+  '♪',
+  '♪♪',
+  'ご視聴ありがとうございました',
+  'おやすみなさい',
+  'チャンネル登録お願いします',
+  '字幕由amara.org社区提供',
+  '字幕志愿者 李宗盛',
+  '请不吝点赞 订阅 转发 打赏支持明镜与点点栏目',
+  'untertitel von stephanie geiges',
+]);
 
-  // Script check: if hint is Latin, reject Cyrillic/CJK/Arabic/Hebrew output
+function looksLikeHallucination(text) {
+  if (!text) return true;
+  const t = String(text).trim();
+  if (t.length < 2) return true;
+  // Strip trailing punctuation and lowercase for comparison
+  const lower = t.toLowerCase().replace(/[.,!?;:。、！？…♪"'"'`~]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!lower) return true;
+  if (WHISPER_HALLUCINATIONS.has(lower)) return true;
+  // Single very short word
+  const words = lower.split(/\s+/);
+  if (words.length === 1 && lower.length <= 3) return true;
+  // Bracketed markers like [Music] [BLANK_AUDIO] (silence)
+  if (/^[\[\(][^\]\)]{0,40}[\]\)]$/.test(t)) return true;
+  // Pure punctuation/symbols
+  if (!/[\p{L}\p{N}]/u.test(t)) return true;
+  return false;
+}
+
+// Reject transcripts that suggest wrong-script output for the given hint
+function isScriptMismatch(text, hint) {
+  if (!text || !hint) return false;
   const latinHints = new Set(['en','fr','es','pt','de','it','nl','sv','da','no','fi','pl','cs','sk','hu','ro','tr','id','ms','sw','vi','tl','hr','sl','et','lv','lt','is','ga','cy','sq','af','ha','yo','ig','zu','xh','st','tn','rw','kin','lg','ny','sn','so']);
-  if (latinHints.has(hint)) {
-    if (/[\u0400-\u04FF]/.test(t)) return true;   // Cyrillic
-    if (/[\u0600-\u06FF]/.test(t)) return true;   // Arabic
-    if (/[\u0590-\u05FF]/.test(t)) return true;   // Hebrew
-    if (/[\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7AF]/.test(t)) return true; // CJK
-  }
+  if (!latinHints.has(hint)) return false;
+  const t = String(text);
+  if (/[\u0400-\u04FF]/.test(t)) return true;
+  if (/[\u0600-\u06FF]/.test(t)) return true;
+  if (/[\u0590-\u05FF]/.test(t)) return true;
+  if (/[\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7AF]/.test(t)) return true;
+  return false;
+}
+
+function isSuspicious(text, hint, audioBytes) {
+  if (looksLikeHallucination(text)) return true;
+  if (isScriptMismatch(text, hint)) return true;
+  const approxSeconds = Math.max(1, audioBytes / 12000);
+  if (approxSeconds < 2 && text.length > 90) return true;
   return false;
 }
 
@@ -472,7 +544,6 @@ async function transcribeWithGroq(buffer, mime, hint) {
   fd.append('response_format', 'verbose_json');
   fd.append('temperature', '0');
   fd.append('prompt', WHISPER_CONTEXT_PROMPT);
-  // Only send language when it's a Whisper-supported lang — otherwise let it auto-detect.
   if (hint && whisperSupports(hint)) fd.append('language', hint);
 
   const ctrl = new AbortController();
@@ -502,7 +573,6 @@ async function transcribeWithCloudflare(buffer, hint) {
   if (!accountId || !apiToken) throw new Error('Cloudflare not configured');
 
   const base64 = buffer.toString('base64');
-
   const models = ['@cf/openai/whisper-large-v3-turbo', '@cf/openai/whisper'];
 
   let lastErr = null;
@@ -539,14 +609,12 @@ async function transcribeWithCloudflare(buffer, hint) {
 }
 
 // ---------- 3) Hugging Face ----------
-// Tries: mbazaNLP (Kinyarwanda fine-tune) → whisper-large-v3 (multi-lang) → mms-1b-all (1,162 langs)
 async function transcribeWithHuggingFace(buffer, mime, hint) {
   const hfToken = process.env.HF_TOKEN;
   if (!hfToken) throw new Error('Hugging Face not configured');
 
   const models = [];
   if (hint === 'rw' || hint === 'kin') {
-    // Kinyarwanda: prefer the dedicated model
     models.push('mbazaNLP/Whisper-Small-Kinyarwanda');
     models.push('openai/whisper-large-v3');
     models.push('facebook/mms-1b-all');
@@ -605,13 +673,12 @@ app.post('/api/stt', sttLimiter, async (req, res) => {
   const langHint = normalizeHint(hint);
   console.log(`[stt] request: ${buffer.length} bytes, hint="${langHint || 'none'}"`);
 
-  // Kinyarwanda / unsupported-by-Whisper languages → straight to Hugging Face
   const needsHF = (langHint === 'rw' || langHint === 'kin') || (langHint && !whisperSupports(langHint));
 
   const providers = needsHF
     ? [
         { name: 'HuggingFace', fn: () => transcribeWithHuggingFace(buffer, mime, langHint) },
-        { name: 'Groq',        fn: () => transcribeWithGroq(buffer, mime, '') }, // auto-detect
+        { name: 'Groq',        fn: () => transcribeWithGroq(buffer, mime, '') },
         { name: 'Cloudflare',  fn: () => transcribeWithCloudflare(buffer, '') }
       ]
     : [
@@ -626,6 +693,11 @@ app.post('/api/stt', sttLimiter, async (req, res) => {
       const result = await p.fn();
       const text = (result?.text || '').trim();
       if (!text) { console.warn(`[stt] ${p.name} empty`); continue; }
+      if (looksLikeHallucination(text)) {
+        console.warn(`[stt] ${p.name} hallucination rejected: "${text.slice(0, 60)}"`);
+        errors.push(`${p.name}: hallucination`);
+        continue;
+      }
       if (isSuspicious(text, langHint, buffer.length)) {
         console.warn(`[stt] ${p.name} suspicious: "${text.slice(0, 60)}" — trying next`);
         errors.push(`${p.name}: suspicious`);
@@ -640,6 +712,9 @@ app.post('/api/stt', sttLimiter, async (req, res) => {
   }
 
   console.warn('[stt] all providers failed:', errors.join(' | '));
+  // Silent audio => 200 with empty text so the client doesn't show an error toast
+  const allSilent = errors.every(e => /hallucination|suspicious/.test(e));
+  if (allSilent) return res.json({ text: '', language: '', provider: 'silence' });
   res.status(500).json({ error: 'Transcription failed. Please try again.' });
 });
 
@@ -1030,7 +1105,7 @@ async function generateChatTitle(firstMessage) {
 }
 
 // ============ ROUTES ============
-app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '3.4.0', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
+app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '3.5.0', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
 app.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nSitemap: https://deeprwa.agentdomains.co/sitemap.xml\n`));
 app.get('/sitemap.xml', (req, res) => res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>https://deeprwa.agentdomains.co/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>\n</urlset>`));
 
@@ -1056,7 +1131,7 @@ app.get('/api/debug/stt-providers', (req, res) => {
   if (process.env.GROQ_API_KEY) providers.push({ id: 'groq', enabled: true, languages: '99 (Whisper-large-v3)', supports_kinyarwanda: false, context_prompt: true });
   if ((process.env.CF_ACCOUNT_ID || process.env.CLOUDFLARE_ACCOUNT_ID) && (process.env.CF_API_TOKEN || process.env.CLOUDFLARE_API_TOKEN)) providers.push({ id: 'cloudflare', enabled: true, languages: '99 (Whisper-large-v3)', supports_kinyarwanda: false });
   if (process.env.HF_TOKEN) providers.push({ id: 'huggingface', enabled: true, models: ['mbazaNLP/Whisper-Small-Kinyarwanda', 'openai/whisper-large-v3', 'facebook/mms-1b-all'], languages: '1,162 via MMS', supports_kinyarwanda: true });
-  res.json({ providers, hf_token_present: !!process.env.HF_TOKEN, whisper_lang_count: WHISPER_LANGS.size });
+  res.json({ providers, hf_token_present: !!process.env.HF_TOKEN, whisper_lang_count: WHISPER_LANGS.size, hallucination_filter: WHISPER_HALLUCINATIONS.size });
 });
 
 // AUTH: Signup
@@ -1397,7 +1472,6 @@ app.get('/api/files-with-ids', requireAuth, async (req, res) => {
         });
       }
     }
-    console.log(`[files-with-ids] ${all.length} files for user ${req.userId.slice(0,8)}`);
     res.json({ files: all });
   } catch (e) { res.status(500).json({ error: e.message, files: [] }); }
 });
@@ -1442,7 +1516,7 @@ app.post('/api/chat', requireAuth, async (req, res) => {
     const { data: conv, error } = await supabase.from('conversations').insert({ user_id: req.userId, title }).select().single();
     if (error) return res.status(500).json({ error: error.message });
     convId = conv.id;
-    console.log(`[chat] new conv created for user ${req.userId.slice(0,8)}: "${title}"`);
+    console.log(`[chat] new conv created: "${title}"`);
   }
   const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
   if (lastUserMsg) {
@@ -1454,9 +1528,6 @@ app.post('/api/chat', requireAuth, async (req, res) => {
       files: filesArray
     });
     if (insErr) console.warn(`[chat] failed to save user msg:`, insErr.message);
-    else console.log(`[chat] user msg saved (${filesArray.length} files)`);
-  } else {
-    console.warn(`[chat] no user message found in payload`);
   }
   res.setHeader('X-Conversation-Id', convId);
   await streamChatResponse(messages, res, convId, attachments || []);
@@ -1476,12 +1547,10 @@ async function streamChatResponse(messages, res, conversationId, attachments) {
 
   if ((!attachments || !attachments.length)) {
     if (isIdentityQuestion(userText)) {
-      console.log(`[identity-fast] matched: "${userText.slice(0, 80)}"`);
       send({ text: IDENTITY_REPLY });
       return done();
     }
     if (isGreeting(userText) && messages.length <= 2) {
-      console.log(`[greeting-fast] matched: "${userText.slice(0, 80)}"`);
       send({ text: buildGreetingReply(userText) });
       return done();
     }
@@ -1490,7 +1559,6 @@ async function streamChatResponse(messages, res, conversationId, attachments) {
       try {
         const intent = await classifyImageIntent(userText);
         if (intent.action === 'generate' && intent.prompt) {
-          console.log(`[image-gen] "${intent.prompt}"`);
           let result;
           try { result = await generateImage(intent.prompt); }
           catch (e) {
@@ -1516,12 +1584,10 @@ async function streamChatResponse(messages, res, conversationId, attachments) {
               });
             } catch (e) { console.warn('save image msg failed:', e.message); }
           }
-          console.log(`[image-gen] ✅ done via ${result.provider}`);
           return done();
         }
         if (intent.action === 'off_topic') {
           const refusal = "I'm DeepRWA, specialised in Rwanda. I can create images related to Rwanda — landscapes, cities, cultural scenes, wildlife, notable places, and similar — but not unrelated subjects. If you'd like a Rwanda-related image, just describe what you need — for example, \"a maize field in Rwanda at sunrise\" or \"a mountain gorilla in Volcanoes National Park\".";
-          console.log(`[image-refuse] off-topic image request`);
           send({ text: refusal });
           if (conversationId && supabase) {
             try { await supabase.from('messages').insert({ conversation_id: conversationId, role: 'assistant', content: refusal }); } catch {}
@@ -1529,7 +1595,7 @@ async function streamChatResponse(messages, res, conversationId, attachments) {
           return done();
         }
       } catch (e) {
-        console.warn('[image] flow error (falling through):', e.message);
+        console.warn('[image] flow error:', e.message);
       }
     }
   }
