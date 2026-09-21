@@ -1,4 +1,4 @@
-// DeepRWA — Complete frontend logic (rev.4.0.0)
+// DeepRWA — Complete frontend logic (rev.4.1.0)
 
 // ============ CLIENT ID ============
 function getOrCreateClientId() {
@@ -64,7 +64,8 @@ const state = {
   _onStreamDone: null,
   _streamingTTS: false,
   _inlineDictationActive: false,
-  _inlineRecorder: null
+  _inlineRecorder: null,
+  _voiceModeStreaming: false
 };
 
 // ============ DOM ============
@@ -305,7 +306,7 @@ function getAudioContext() {
   return _sharedAudioCtx;
 }
 
-// ============ AUDIO RECORDER (VAD, Whisper fallback path) ============
+// ============ AUDIO RECORDER (Whisper fallback path) ============
 function pickAudioMime() {
   if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return '';
   const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
@@ -316,9 +317,9 @@ function pickAudioMime() {
 function createRecorder(opts = {}) {
   const {
     maxMs = 60000,
-    silenceMs = 3000,
+    silenceMs = 2500,
     minSpeechMs = 500,
-    minPeakRms = 0.022,
+    minPeakRms = 0.020,
     vadThreshold = 0.014,
     vadMultiplier = 2.2,
     autoStopOnSilence = true
@@ -441,6 +442,31 @@ function pickRecognitionLang() {
   return navigator.language || 'en-US';
 }
 
+// ============ SEMANTIC ENDPOINTING (ChatGPT-style smart turn detection) ============
+// ChatGPT's Advanced Voice Mode uses a turn-detection model that estimates
+// whether the user has actually finished thinking — not just whether the
+// audio went quiet. We approximate that with a heuristic on the interim
+// transcript: if it ends mid-clause, we extend the silence window.
+
+const INCOMPLETE_TAIL = /\b(and|or|but|because|so|the|a|an|of|to|for|with|about|in|on|at|is|are|was|were|my|your|his|her|its|their|our|this|that|these|those|if|when|while|though|although|um|uh|like|well|then|also|plus|such as|as|than|by|from|into|over|under|between|before|after|during|without|within|along|across|behind|beyond|upon|via|per|versus|vs)\s*$/i;
+const QUESTION_TAIL = /\b(what|where|when|why|who|how|which|whose|whom)\s*$/i;
+const INTRO_TAIL = /^(so|now|okay|ok|well|alright|right|hmm|um|uh|let me|i want to|i need to|can you|could you|please|tell me|explain|describe|show me|give me|help me|i was|i have|i'd like)\b/i;
+
+// Returns a dynamic silence threshold in ms.
+//   - If the interim transcript clearly trails off mid-clause → LONG wait.
+//   - If it looks like a finished thought (ends with . ! ? or punctuation) → SHORT wait.
+//   - Otherwise → MEDIUM wait.
+function computeDynamicSilenceMs(interim) {
+  const text = (interim || '').trim();
+  if (!text) return 1500;              // nothing transcribed yet — be patient
+  if (INCOMPLETE_TAIL.test(text)) return 3000;   // "…and the", "…because", "…my"
+  if (QUESTION_TAIL.test(text)) return 3000;     // "…what", "…where", "…how"
+  if (INTRO_TAIL.test(text) && text.length < 40) return 2800; // "so I want to ask about…"
+  if (/[.!?]\s*$/.test(text)) return 1000;       // clearly complete
+  if (text.length < 12) return 2500;             // very short fragment — wait
+  return 1500;                                    // default
+}
+
 // ============ TTS VOICE PICKER ============
 function pickTtsVoice(lang) {
   if (!window.speechSynthesis) return null;
@@ -463,7 +489,6 @@ if (window.speechSynthesis) {
 }
 
 // ============ STREAMING TTS ============
-// Speaks sentences as they arrive from the SSE stream — the AI talks while writing.
 const StreamingTTS = {
   active: false,
   buffer: '',
@@ -514,7 +539,6 @@ const StreamingTTS = {
       const c = s[i];
       if (c === '\n') return i;
       if ((c === '.' || c === '!' || c === '?') && !(c === '.' && /\d/.test(s[i + 1] || ''))) {
-        // avoid ellipses
         if (c === '.' && s[i + 1] === '.') continue;
         return i;
       }
@@ -651,40 +675,69 @@ function speakMessage(text, btn) {
 
 window.addEventListener('beforeunload', () => { stopSpeaking(); StreamingTTS.stop(); });
 
-// ============ VOICE SESSION (hands-free conversation) ============
+// ============ VOICE SESSION (hands-free conversation, ChatGPT-style) ============
+// Architecture:
+//   1. A single continuous SpeechRecognition instance with interimResults.
+//   2. A "thinking timer" that recomputes on every interim result. If the
+//      transcript ends mid-clause, it extends. If it looks complete, it fires.
+//   3. Full-duplex barge-in: while the AI is speaking, an analyser monitors
+//      mic energy; the moment the user's voice crosses the threshold,
+//      speechSynthesis.cancel() fires and the AI stops mid-sentence.
+//   4. After a turn, we keep the recognition running (so a follow-up "and…"
+//      is caught instantly) but we clear the transcript buffer.
 const VoiceSession = {
   active: false,
   phase: 'idle',
-  recorder: null,
   _recognition: null,
+  _analyser: null,
+  _audioCtx: null,
+  _micStream: null,
+  _bargeInTimer: null,
+  _turnBuffer: '',
+  _interimBuffer: '',
   _noSpeechCount: 0,
-  useWhisper: false,
+  _thinkingTimer: null,
+  _hardCapTimer: null,
+  _lastSpeechTime: 0,
   _warnedNoTts: false,
+  _busy: false,
+  _bargeInThreshold: 0.025,
+  _bargeInHits: 0,
 
   async enter() {
     if (this.active) return;
-    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+    if (!navigator.mediaDevices?.getUserMedia) {
       toast('Voice conversations are not supported on this device', 'error');
       return;
     }
     if (state.isGenerating) { toast('Please wait for the current response to finish', 'info'); return; }
     getAudioContext();
+
     this.active = true;
-    this.useWhisper = false;
     this._noSpeechCount = 0;
+    this._busy = false;
+    this._turnBuffer = '';
+    this._interimBuffer = '';
     document.body.classList.add('voice-mode');
     voiceStatus.classList.remove('hidden');
     inputEl.disabled = true;
     updateSendButton();
+
     try {
-      const s = await navigator.mediaDevices.getUserMedia({ audio: true });
-      s.getTracks().forEach(t => t.stop());
+      this._micStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+      });
     } catch (e) {
       this.exit('Microphone access is required for voice mode.');
       return;
     }
+
+    // Start the barge-in monitor. It watches mic energy continuously
+    // so a user can interrupt the AI mid-sentence.
+    this._startBargeInMonitor();
+
     this.setPhase('listening', 'Listening…');
-    this._loop();
+    this._startRecognition();
   },
 
   exit(reason) {
@@ -696,9 +749,13 @@ const VoiceSession = {
     voiceStatus.classList.add('hidden');
     inputEl.disabled = false;
     if (this._recognition) { try { this._recognition.abort(); } catch {} this._recognition = null; }
-    if (this.recorder) { try { this.recorder.abort('exit'); } catch {} this.recorder = null; }
+    if (this._thinkingTimer) { clearTimeout(this._thinkingTimer); this._thinkingTimer = null; }
+    if (this._hardCapTimer) { clearTimeout(this._hardCapTimer); this._hardCapTimer = null; }
+    if (this._bargeInTimer) { clearInterval(this._bargeInTimer); this._bargeInTimer = null; }
+    if (this._micStream) { try { this._micStream.getTracks().forEach(t => t.stop()); } catch {} this._micStream = null; }
     StreamingTTS.stop();
     stopSpeaking();
+    this._busy = false;
     updateSendButton();
     if (reason) toast(reason, 'info', 3000);
   },
@@ -711,154 +768,214 @@ const VoiceSession = {
   },
 
   bargeIn() {
+    // Manual tap on the mic button during voice mode = immediate interrupt.
     if (this.phase === 'speaking') {
       StreamingTTS.stop();
       stopSpeaking();
-      if (this._recognition) { try { this._recognition.abort(); } catch {} this._recognition = null; }
-    } else if (this.phase === 'listening') {
-      if (this._recognition) { try { this._recognition.stop(); } catch {} }
-      if (this.recorder) { try { this.recorder.stop(); } catch {} }
-    }
-  },
-
-  async _loop() {
-    if (!this.active) return;
-    if (state.isGenerating) {
-      await new Promise(r => setTimeout(r, 200));
-      return this._loop();
-    }
-    // Small tail gap so the AI's own voice doesn't fire the mic
-    await new Promise(r => setTimeout(r, 400));
-    if (!this.active) return;
-
-    try {
       this.setPhase('listening', 'Listening…');
-      const text = await this._listenOnce();
-      if (!this.active) return;
-      if (!text) return this._loop();
-
-      this.setPhase('thinking', 'Thinking…');
-      await this._sendAndWait(text);
-      if (!this.active) return;
-      this._loop();
-    } catch (e) {
-      console.warn('[voice] loop error:', e);
-      if (this.active) setTimeout(() => this._loop(), 500);
     }
   },
 
-  async _listenOnce() {
-    if (this.useWhisper) return this._listenOnceWhisper();
-    const SR = getSpeechRecognition();
-    if (!SR) { this.useWhisper = true; return this._listenOnceWhisper(); }
-
-    return new Promise((resolve) => {
-      let finalText = '';
-      let done = false;
-      const rec = new SR();
-      rec.continuous = false;
-      rec.interimResults = true;
-      rec.lang = pickRecognitionLang();
-      rec.maxAlternatives = 1;
-
-      const cleanup = () => {
-        if (done) return;
-        done = true;
-        clearTimeout(timeout);
-        this._recognition = null;
-        try { rec.abort(); } catch {}
-      };
-
-      const finish = (text) => {
-        if (done) return;
-        cleanup();
-        resolve((text || '').trim());
-      };
-
-      const timeout = setTimeout(() => {
-        if (!done && this.active) { try { rec.stop(); } catch {} }
-      }, 15000);
-
-      this._recognition = rec;
-
-      rec.onresult = (e) => {
-        if (!this.active) return finish('');
-        let interim = '';
-        for (let i = e.resultIndex; i < e.results.length; i++) {
-          const t = e.results[i][0].transcript;
-          if (e.results[i].isFinal) finalText += t;
-          else interim += t;
-        }
-        const live = (finalText + ' ' + interim).trim();
-        if (live) this.setPhase('listening', live.slice(-60));
-      };
-
-      rec.onerror = (e) => {
-        if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-          toast('Microphone access denied', 'error');
-          this.exit();
-          return finish('');
-        }
-        if (e.error === 'language-not-supported' || e.error === 'bad-grammar') {
-          console.log('[voice] lang unsupported → Whisper');
-          this.useWhisper = true;
-          return finish('');
-        }
-        if (e.error === 'no-speech') {
-          this._noSpeechCount++;
-          if (this._noSpeechCount >= 3 && !this.useWhisper) {
-            console.log('[voice] switching to Whisper after 3 no-speech events');
-            this.useWhisper = true;
-          }
-          return finish('');
-        }
-        if (e.error === 'aborted') return;
-        console.warn('[voice] rec error:', e.error);
-        finish('');
-      };
-
-      rec.onend = () => {
-        this._noSpeechCount = finalText ? 0 : this._noSpeechCount;
-        if (this.active && !done) finish(finalText);
-      };
-
-      try { rec.start(); }
-      catch (e) {
-        console.warn('[voice] rec start failed:', e);
-        this.useWhisper = true;
-        finish('');
-      }
-    });
-  },
-
-  async _listenOnceWhisper() {
+  // ----- Barge-in monitor (full-duplex listening) -----
+  _startBargeInMonitor() {
+    if (!this._micStream) return;
     try {
-      const rec = createRecorder({
-        maxMs: 20000,
-        silenceMs: 1500,
-        minSpeechMs: 400,
-        minPeakRms: 0.015,
-        vadThreshold: 0.010,
-        vadMultiplier: 2.0,
-        autoStopOnSilence: true
-      });
-      this.recorder = rec;
-      const blob = await rec.promise;
-      this.recorder = null;
-      if (!blob || blob.size < 1400) return '';
-      const base64 = arrayBufferToBase64(await blob.arrayBuffer());
-      const res = await fetch('/api/stt', {
-        method: 'POST',
-        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ audio: base64, mime: blob.type || 'audio/webm', hint: pickRecognitionLang() })
-      });
-      if (!res.ok) return '';
-      const data = await res.json();
-      return (data.text || '').trim();
+      this._audioCtx = getAudioContext() || new (window.AudioContext || window.webkitAudioContext)();
+      if (this._audioCtx.state === 'suspended') this._audioCtx.resume().catch(() => {});
+      const source = this._audioCtx.createMediaStreamSource(this._micStream);
+      this._analyser = this._audioCtx.createAnalyser();
+      this._analyser.fftSize = 512;
+      this._analyser.smoothingTimeConstant = 0.5;
+      source.connect(this._analyser);
+      const data = new Uint8Array(this._analyser.frequencyBinCount);
+      let noiseFloor = 0.012;
+
+      this._bargeInTimer = setInterval(() => {
+        if (!this.active || !this._analyser) return;
+        this._analyser.getByteTimeDomainData(data);
+        let sum = 0;
+        for (let i = 0; i < data.length; i++) {
+          const v = (data[i] - 128) / 128;
+          sum += v * v;
+        }
+        const rms = Math.sqrt(sum / data.length);
+        // Only track noise floor when the AI is NOT speaking
+        if (this.phase !== 'speaking') {
+          noiseFloor = noiseFloor * 0.95 + rms * 0.05;
+        }
+        // Barge-in: user speaks while AI is speaking
+        if (this.phase === 'speaking' && rms > Math.max(this._bargeInThreshold, noiseFloor * 3)) {
+          this._bargeInHits++;
+          if (this._bargeInHits >= 3) {
+            console.log('[voice] barge-in detected');
+            StreamingTTS.stop();
+            stopSpeaking();
+            this._bargeInHits = 0;
+            this.setPhase('listening', 'Listening…');
+          }
+        } else if (this.phase !== 'speaking') {
+          this._bargeInHits = 0;
+        }
+      }, 80);
     } catch (e) {
-      if (e.message !== 'aborted' && e.message !== 'exit') console.warn('[voice-whisper]', e);
-      return '';
+      console.warn('[voice] barge-in monitor failed:', e.message);
     }
+  },
+
+  // ----- Continuous recognition -----
+  _startRecognition() {
+    const SR = getSpeechRecognition();
+    if (!SR) {
+      toast('Speech recognition is not available on this browser', 'error');
+      this.exit();
+      return;
+    }
+    const rec = new SR();
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.lang = pickRecognitionLang();
+    rec.maxAlternatives = 1;
+    this._recognition = rec;
+
+    rec.onstart = () => {
+      // Recognition restarted — reset turn buffers so a new utterance is clean.
+      if (this.phase === 'listening' || this.phase === 'idle') {
+        this._turnBuffer = '';
+        this._interimBuffer = '';
+      }
+    };
+
+    rec.onresult = (e) => {
+      if (!this.active) return;
+      // If AI is currently speaking or thinking, ignore results — the user
+      // is likely just making a noise or the mic is picking up the TTS.
+      if (this.phase === 'speaking' || this.phase === 'thinking' || this._busy) return;
+
+      let finalText = '';
+      let interimText = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const t = e.results[i][0].transcript;
+        if (e.results[i].isFinal) finalText += t;
+        else interimText += t;
+      }
+
+      if (finalText) this._turnBuffer += finalText;
+      this._interimBuffer = interimText;
+      const combined = (this._turnBuffer + ' ' + this._interimBuffer).trim();
+
+      this._lastSpeechTime = Date.now();
+
+      // Live feedback in the status pill
+      if (combined) this.setPhase('listening', combined.slice(-70));
+
+      // Recompute the dynamic silence window based on what we've heard.
+      this._scheduleTurnEnd(combined);
+    };
+
+    rec.onerror = (e) => {
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        toast('Microphone access denied', 'error');
+        this.exit();
+        return;
+      }
+      if (e.error === 'no-speech') {
+        this._noSpeechCount++;
+        // Soft reset so recognition doesn't get stuck
+        if (this._noSpeechCount > 5) {
+          this._noSpeechCount = 0;
+          try { rec.abort(); } catch {}
+        }
+        return;
+      }
+      if (e.error === 'aborted') return;
+      console.warn('[voice] rec error:', e.error);
+    };
+
+    rec.onend = () => {
+      if (!this.active) return;
+      // Continuous mode: auto-restart. Keep the turn buffer intact —
+      // Chrome sometimes fires onend mid-turn during long pauses.
+      try { rec.start(); } catch (e) {
+        if (!/already started/i.test(e?.message || '')) {
+          setTimeout(() => { if (this.active) this._startRecognition(); }, 250);
+        }
+      }
+    };
+
+    try { rec.start(); }
+    catch (e) {
+      console.warn('[voice] rec start failed:', e);
+      setTimeout(() => { if (this.active) this._startRecognition(); }, 500);
+    }
+  },
+
+  // ----- Dynamic endpointing -----
+  _scheduleTurnEnd(interim) {
+    if (this._thinkingTimer) { clearTimeout(this._thinkingTimer); this._thinkingTimer = null; }
+    if (this._hardCapTimer) { clearTimeout(this._hardCapTimer); this._hardCapTimer = null; }
+
+    if (!interim || !interim.trim()) {
+      // No transcript yet. Give the user a long first-gesture window.
+      this._thinkingTimer = setTimeout(() => this._onTurnEnd('silent'), 15000);
+      return;
+    }
+
+    const dynamicMs = computeDynamicSilenceMs(interim);
+    console.log(`[voice] endpoint window: ${dynamicMs}ms for "${interim.slice(-50)}"`);
+
+    this._thinkingTimer = setTimeout(() => {
+      this._onTurnEnd('silence');
+    }, dynamicMs);
+
+    // Hard cap: if the user has said *something* but the timer keeps
+    // getting pushed, force a turn after 8 s of no new audio.
+    this._hardCapTimer = setTimeout(() => {
+      const sinceSpeech = Date.now() - (this._lastSpeechTime || Date.now());
+      if (sinceSpeech >= 7000) this._onTurnEnd('hard-cap');
+    }, 8000);
+  },
+
+  async _onTurnEnd(reason) {
+    if (!this.active || this._busy) return;
+    if (this.phase === 'speaking' || this.phase === 'thinking') return;
+
+    const text = (this._turnBuffer + ' ' + this._interimBuffer).trim();
+    this._turnBuffer = '';
+    this._interimBuffer = '';
+    if (this._thinkingTimer) { clearTimeout(this._thinkingTimer); this._thinkingTimer = null; }
+    if (this._hardCapTimer) { clearTimeout(this._hardCapTimer); this._hardCapTimer = null; }
+
+    if (!text) {
+      // Nothing said — just go back to listening.
+      this.setPhase('listening', 'Listening…');
+      return;
+    }
+
+    // Final safety: reject obvious Whisper-style hallucinations
+    if (looksLikePhantom(text)) {
+      console.log(`[voice] rejected phantom: "${text}"`);
+      this.setPhase('listening', 'Listening…');
+      return;
+    }
+
+    this._busy = true;
+    this.setPhase('thinking', 'Thinking…');
+
+    // Stop recognition while we generate the reply, then restart.
+    if (this._recognition) { try { this._recognition.abort(); } catch {} }
+
+    try {
+      await this._sendAndWait(text);
+    } catch (e) {
+      console.warn('[voice] send failed:', e);
+    }
+
+    this._busy = false;
+    if (!this.active) return;
+
+    this.setPhase('listening', 'Listening…');
+    // Restart recognition for the next turn.
+    setTimeout(() => { if (this.active) this._startRecognition(); }, 200);
   },
 
   async _sendAndWait(text) {
@@ -873,33 +990,47 @@ const VoiceSession = {
   }
 };
 
+// Small list of confirmed Whisper hallucinations — reject even from Web Speech.
+const PHANTOM_PHRASES = new Set([
+  'thank you for watching','thanks for watching','please subscribe','subscribe',
+  'the end','a film by','film by','subtitles by','amara.org','amara org',
+  'blank audio','music','silence','applause','laughter',
+  'you','the','a','an','ok','okay','yeah','yes','no','bye','hi','hello',
+  'hmm','mm hmm','uh','um','oh','ah','eh','wow','right','really','so','and','but','or'
+]);
+function looksLikePhantom(text) {
+  if (!text) return true;
+  const t = String(text).trim();
+  if (t.length < 2) return true;
+  const lower = t.toLowerCase().replace(/[.,!?;:。、！？…♪"'"'`~]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (PHANTOM_PHRASES.has(lower)) return true;
+  const words = lower.split(/\s+/);
+  if (words.length === 1 && lower.length <= 3) return true;
+  if (/^[\[\(][^\]\)]{0,40}[\]\)]$/.test(t)) return true;
+  if (!/[\p{L}\p{N}]/u.test(t)) return true;
+  return false;
+}
+
 // ============ INLINE DICTATION (mic button — live transcription) ============
 let _inlineRecognition = null;
 let _inlineDictationActive = false;
 let _inlineBaseText = '';
-let _inlineUseWhisper = false;
 let _inlineNoSpeechCount = 0;
 
 function startInlineDictation() {
   if (_inlineDictationActive) { stopInlineDictation(); return; }
-  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+  if (!navigator.mediaDevices?.getUserMedia) {
     toast('Voice input is not supported on this device', 'error');
     return;
   }
   getAudioContext();
+  const SR = getSpeechRecognition();
+  if (!SR) { toast('Speech recognition is not available on this browser', 'error'); return; }
+
   _inlineDictationActive = true;
   _inlineBaseText = inputEl.value || '';
   micBtn.classList.add('listening');
 
-  const SR = getSpeechRecognition();
-  if (SR && !_inlineUseWhisper) {
-    startInlineWebSpeech(SR);
-  } else {
-    startInlineWhisperFallback();
-  }
-}
-
-function startInlineWebSpeech(SR) {
   const rec = new SR();
   rec.continuous = true;
   rec.interimResults = true;
@@ -928,23 +1059,15 @@ function startInlineWebSpeech(SR) {
     if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
       toast('Microphone access denied', 'error');
       stopInlineDictation();
-    } else if (e.error === 'language-not-supported' || e.error === 'bad-grammar') {
-      console.log('[inline] lang unsupported → Whisper');
-      _inlineUseWhisper = true;
-      stopInlineDictation();
-      startInlineDictation();
     } else if (e.error === 'no-speech') {
       _inlineNoSpeechCount++;
-      if (_inlineNoSpeechCount >= 4) {
-        console.log('[inline] switching to Whisper');
-        _inlineUseWhisper = true;
-        stopInlineDictation();
-      }
+      if (_inlineNoSpeechCount > 8) stopInlineDictation();
     }
   };
 
   rec.onend = () => {
     if (!_inlineDictationActive) { micBtn.classList.remove('listening'); return; }
+    // Commit what we've heard and restart
     _inlineBaseText = inputEl.value;
     try { rec.start(); } catch (e) {
       if (!/already started/i.test(e?.message || '')) stopInlineDictation();
@@ -952,63 +1075,12 @@ function startInlineWebSpeech(SR) {
   };
 
   try { rec.start(); }
-  catch (e) {
-    console.warn('[inline] start failed:', e);
-    _inlineUseWhisper = true;
-    startInlineWhisperFallback();
-  }
-}
-
-async function startInlineWhisperFallback() {
-  try {
-    const rec = createRecorder({
-      maxMs: 60000,
-      silenceMs: 1500,
-      minSpeechMs: 400,
-      minPeakRms: 0.015,
-      vadThreshold: 0.010,
-      vadMultiplier: 2.0,
-      autoStopOnSilence: true
-    });
-    state._inlineRecorder = rec;
-    const blob = await rec.promise;
-    state._inlineRecorder = null;
-    if (!_inlineDictationActive) return;
-    micBtn.classList.remove('listening');
-    _inlineDictationActive = false;
-    if (!blob) { toast('No speech detected', 'info', 2000); return; }
-    if (blob.size < 1400) { toast('Recording too short', 'info', 1800); return; }
-    const base64 = arrayBufferToBase64(await blob.arrayBuffer());
-    const res = await fetch('/api/stt', {
-      method: 'POST',
-      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ audio: base64, mime: blob.type || 'audio/webm', hint: pickRecognitionLang() })
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      toast(err.error || 'Transcription failed', 'error');
-      return;
-    }
-    const data = await res.json();
-    const text = (data.text || '').trim();
-    if (!text) { toast('No speech detected', 'info'); return; }
-    const existing = inputEl.value.trim();
-    inputEl.value = existing ? (existing + ' ' + text) : text;
-    autoGrow();
-    updateSendButton();
-    inputEl.focus();
-  } catch (e) {
-    state._inlineRecorder = null;
-    _inlineDictationActive = false;
-    micBtn.classList.remove('listening');
-    if (e.message !== 'aborted') console.warn('[dictate]', e);
-  }
+  catch (e) { console.warn('[inline] start failed:', e); stopInlineDictation(); }
 }
 
 function stopInlineDictation() {
   _inlineDictationActive = false;
   if (_inlineRecognition) { try { _inlineRecognition.abort(); } catch {} _inlineRecognition = null; }
-  if (state._inlineRecorder) { try { state._inlineRecorder.stop(); } catch {} state._inlineRecorder = null; }
   micBtn.classList.remove('listening');
 }
 
@@ -2101,7 +2173,6 @@ formEl.addEventListener('submit', async (e) => {
   if (!VoiceSession.active) inputEl.disabled = true;
   updateSendButton();
 
-  // Kick off streaming TTS if voice mode is driving this send
   const useTTS = state._streamingTTS === true;
   if (useTTS) StreamingTTS.start();
 
@@ -2186,7 +2257,6 @@ formEl.addEventListener('submit', async (e) => {
             const el = chatEl.querySelector(`.msg-assistant[data-id="${assistantMsg.id}"] .assistant-text`);
             if (el) el.innerHTML = renderMarkdown(fullText);
             scrollBottom();
-            // Feed into streaming TTS so the AI speaks while writing
             if (useTTS) StreamingTTS.feed(j.text);
           }
           if (j.image) {
@@ -2236,7 +2306,6 @@ formEl.addEventListener('submit', async (e) => {
       inputEl.focus();
     }
     updateSendButton();
-    // Drain the TTS queue before notifying voice session that the turn is done
     if (useTTS) {
       try { await StreamingTTS.end(); } catch (e) { console.warn('[tts]', e); }
       state._streamingTTS = false;
