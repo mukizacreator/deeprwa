@@ -115,6 +115,58 @@ const apiLimiter = rateLimit({
   message: { error: 'Too many requests, please slow down.' }
 });
 app.use('/api/', apiLimiter);
+const sttLimiter = rateLimit({
+  windowMs: 60 * 1000, max: 20,
+  standardHeaders: true, legacyHeaders: false,
+  message: { error: 'Too many voice requests, please slow down.' }
+});
+
+// ============ SPEECH-TO-TEXT (Whisper via Groq — supports Kinyarwanda) ============
+app.post('/api/stt', sttLimiter, async (req, res) => {
+  const { audio, mime, lang } = req.body || {};
+  if (!audio || typeof audio !== 'string') return res.status(400).json({ error: 'audio (base64) required' });
+  if (!process.env.GROQ_API_KEY) return res.status(503).json({ error: 'Speech recognition not configured' });
+  try {
+    const buffer = Buffer.from(audio, 'base64');
+    if (!buffer.length) return res.status(400).json({ error: 'Empty audio' });
+    if (buffer.length > 25 * 1024 * 1024) return res.status(413).json({ error: 'Audio too large (max 25 MB)' });
+
+    const type = (mime || 'audio/webm').split(';')[0].trim();
+    const ext = type.includes('mp4') || type.includes('m4a') ? 'm4a'
+      : type.includes('ogg') ? 'ogg'
+      : type.includes('wav') ? 'wav'
+      : type.includes('mpeg') || type.includes('mp3') ? 'mp3'
+      : 'webm';
+
+    const blob = new Blob([buffer], { type });
+    const fd = new FormData();
+    fd.append('file', blob, `voice.${ext}`);
+    fd.append('model', 'whisper-large-v3-turbo');
+    fd.append('response_format', 'json');
+    fd.append('temperature', '0');
+    if (lang && typeof lang === 'string') {
+      const base = lang.split('-')[0].toLowerCase();
+      if (/^[a-z]{2}$/.test(base)) fd.append('language', base);
+    }
+
+    const r = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
+      body: fd
+    });
+    if (!r.ok) {
+      const t = await r.text().catch(() => '');
+      console.warn('[stt] Groq error:', r.status, t.slice(0, 200));
+      if (r.status === 429) return res.status(429).json({ error: 'Too many voice requests — please wait a moment' });
+      return res.status(500).json({ error: 'Transcription failed' });
+    }
+    const data = await r.json();
+    res.json({ text: data.text || '' });
+  } catch (e) {
+    console.warn('[stt] error:', e.message);
+    res.status(500).json({ error: 'Transcription failed' });
+  }
+});
 
 // ============ JWT ============
 const JWT_SECRET = process.env.JWT_SECRET;
