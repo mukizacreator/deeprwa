@@ -1275,7 +1275,64 @@ async function downloadGeneratedImage(url, filename) {
 function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
   if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') return;
-  navigator.serviceWorker.register('/sw.js').catch((e) => { console.warn('[sw]', e.message); });
+
+  navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' })
+    .then((reg) => {
+      // If a new SW is waiting, activate it right away.
+      if (reg.waiting) {
+        try { reg.waiting.postMessage('SKIP_WAITING'); } catch {}
+      }
+      reg.addEventListener('updatefound', () => {
+        const newSW = reg.installing;
+        if (!newSW) return;
+        newSW.addEventListener('statechange', () => {
+          if (newSW.state === 'installed' && navigator.serviceWorker.controller) {
+            try { newSW.postMessage('SKIP_WAITING'); } catch {}
+          }
+        });
+      });
+    })
+    .catch((e) => { console.warn('[sw]', e.message); });
+
+  // When the SW tells us it updated, reload once.
+  let refreshed = false;
+  navigator.serviceWorker.addEventListener('message', (event) => {
+    if (event.data?.type === 'SW_UPDATED' && !refreshed) {
+      refreshed = true;
+      console.log('[sw] updated — reloading page');
+      location.reload();
+    }
+  });
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!refreshed) {
+      refreshed = true;
+      location.reload();
+    }
+  });
+}
+
+// Force-clear all caches and unregister SWs. Visit ?clearcache=1 to use.
+async function forceClearCache() {
+  const params = new URLSearchParams(location.search);
+  if (!params.has('clearcache')) return;
+  try {
+    if ('serviceWorker' in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      for (const reg of regs) {
+        try { await reg.unregister(); } catch {}
+      }
+    }
+    if ('caches' in window) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map(k => caches.delete(k)));
+    }
+    try { localStorage.removeItem('deeprwa_token'); } catch {}
+    try { sessionStorage.clear(); } catch {}
+  } catch {}
+  // Reload once, clean.
+  const url = new URL(location.href);
+  url.searchParams.delete('clearcache');
+  location.replace(url.toString());
 }
 
 // ============ INIT ============
@@ -3455,5 +3512,7 @@ function maybeShowDiagnosticPanel() {
 }
 
 // ============ BOOT ============
-init();
-maybeShowDiagnosticPanel();
+forceClearCache().then(() => {
+  init();
+  maybeShowDiagnosticPanel();
+});
