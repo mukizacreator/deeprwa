@@ -1,4 +1,4 @@
-// DeepRWA — Complete frontend logic (rev.4.2.0)
+// DeepRWA — Complete frontend logic (rev.4.6.0)
 
 // ============ CLIENT ID ============
 function getOrCreateClientId() {
@@ -315,6 +315,12 @@ function speechRecognitionAvailable() {
 }
 function pickRecognitionLang() {
   return navigator.language || 'en-US';
+}
+// NEW: detect mobile devices — Android Chrome duplicates interim results
+// when continuous = true, so we use single-shot mode there.
+function isMobileDevice() {
+  const ua = navigator.userAgent || '';
+  return /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
 }
 
 // ============ SEMANTIC ENDPOINTING ============
@@ -693,7 +699,7 @@ const VoiceSession = {
   _currentRecognition: null,
   recorder: null,
 
-    async enter() {
+  async enter() {
     if (this.active) return;
     getAudioContext();
 
@@ -713,8 +719,6 @@ const VoiceSession = {
     inputEl.disabled = true;
     updateSendButton();
 
-    // Pre-flight permission request. On Android Chrome, getUserMedia
-    // may be absent until the first grant — this forces the prompt.
     try {
       this._micStream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
@@ -862,35 +866,50 @@ const VoiceSession = {
     return this._listenWebSpeech();
   },
 
+  // ============================================================
+  // ANDROID FIX: The mobile Web Speech API duplicates interim
+  // results when continuous=true. Solution:
+  //   1. Use continuous=false on mobile (each utterance is a session)
+  //   2. Rebuild text from e.results every time — never accumulate
+  //   3. Commit each session's final text to `committedFinal` on end
+  //   4. Start a fresh session — the accumulator survives
+  // ============================================================
   async _listenWebSpeech() {
     return new Promise((resolve) => {
       const SR = getSpeechRecognition();
       if (!SR) { resolve(''); return; }
 
-      let finalText = '';
-      let interimText = '';
-      let lastSpeechTime = 0;
+      const mobile = isMobileDevice();
+      let resolved = false;
+      let activeRec = null;
+      let committedFinal = '';       // accumulated from previous sessions
+      let currentSessionFinal = '';  // THIS session's final text
+      let currentSessionInterim = ''; // THIS session's interim
       let silenceTimer = null;
       let hardCapTimer = null;
-      let resolved = false;
+      let lastSpeechTime = 0;
       let noSpeechCount = 0;
-      let hasSaid = false;
+
+      const cleanupRec = (r) => {
+        if (!r) return;
+        try { r.onend = null; r.onresult = null; r.onerror = null; } catch {}
+        try { r.abort(); } catch {}
+      };
 
       const finish = (text) => {
         if (resolved) return;
         resolved = true;
-        if (silenceTimer) clearTimeout(silenceTimer);
-        if (hardCapTimer) clearTimeout(hardCapTimer);
-        if (this._currentRecognition === rec) this._currentRecognition = null;
-        try { rec.onend = null; rec.onresult = null; rec.onerror = null; } catch {}
-        try { rec.abort(); } catch {}
+        if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+        if (hardCapTimer) { clearTimeout(hardCapTimer); hardCapTimer = null; }
+        if (activeRec) { cleanupRec(activeRec); activeRec = null; }
+        this._currentRecognition = null;
         resolve((text || '').trim());
       };
 
       const scheduleEnd = () => {
-        if (silenceTimer) clearTimeout(silenceTimer);
-        if (hardCapTimer) clearTimeout(hardCapTimer);
-        const combined = (finalText + ' ' + interimText).trim();
+        if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+        if (hardCapTimer) { clearTimeout(hardCapTimer); hardCapTimer = null; }
+        const combined = (committedFinal + ' ' + currentSessionFinal + ' ' + currentSessionInterim).replace(/\s+/g, ' ').trim();
         if (!combined) {
           silenceTimer = setTimeout(() => finish(''), 15000);
           return;
@@ -904,63 +923,90 @@ const VoiceSession = {
         }, 6000);
       };
 
-      const rec = new SR();
-      rec.continuous = true;
-      rec.interimResults = true;
-      rec.lang = pickRecognitionLang();
-      rec.maxAlternatives = 1;
-      this._currentRecognition = rec;
+      const startSession = () => {
+        if (resolved || !this.active) return;
+        const r = new SR();
+        // ANDROID FIX: continuous=false on mobile prevents result duplication.
+        r.continuous = !mobile;
+        r.interimResults = true;
+        r.lang = pickRecognitionLang();
+        r.maxAlternatives = 1;
+        activeRec = r;
+        this._currentRecognition = r;
+        currentSessionFinal = '';
+        currentSessionInterim = '';
 
-      rec.onresult = (e) => {
-        if (!this.active || resolved) return;
-        let f = '', i = '';
-        for (let k = e.resultIndex; k < e.results.length; k++) {
-          const t = e.results[k][0].transcript;
-          if (e.results[k].isFinal) f += t; else i += t;
+        r.onresult = (e) => {
+          if (!this.active || resolved || activeRec !== r) return;
+          // ANDROID FIX: rebuild from e.results — never concatenate
+          // across events. This eliminates the duplicate-words bug.
+          let sf = '';
+          let si = '';
+          for (let k = 0; k < e.results.length; k++) {
+            const t = e.results[k][0].transcript;
+            if (e.results[k].isFinal) sf += t;
+            else si += t;
+          }
+          currentSessionFinal = sf;
+          currentSessionInterim = si;
+          lastSpeechTime = Date.now();
+          const combined = (committedFinal + ' ' + currentSessionFinal + ' ' + currentSessionInterim).replace(/\s+/g, ' ').trim();
+          if (combined) this.setPhase('listening', combined.slice(-70));
+          scheduleEnd();
+        };
+
+        r.onerror = (e) => {
+          if (!this.active || resolved) return;
+          if (e.error === 'no-speech') {
+            noSpeechCount++;
+            if (committedFinal || currentSessionFinal) return;
+            if (noSpeechCount >= 3) finish('');
+            return;
+          }
+          if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+            toast('Microphone access denied', 'error');
+            this.exit();
+            finish('');
+            return;
+          }
+          if (e.error === 'language-not-supported' || e.error === 'bad-grammar') {
+            console.log('[voice] lang unsupported → Whisper');
+            this._useWhisper = true;
+            finish('');
+            return;
+          }
+          if (e.error === 'aborted') return;
+          console.warn('[voice] rec error:', e.error);
+        };
+
+        r.onend = () => {
+          if (resolved || activeRec !== r) return;
+          // ANDROID FIX: commit this session's final text to the accumulator
+          // before starting the next session. The accumulator survives
+          // restarts, but each session's raw e.results does not.
+          if (currentSessionFinal) {
+            committedFinal = (committedFinal + ' ' + currentSessionFinal).replace(/\s+/g, ' ').trim();
+          }
+          currentSessionFinal = '';
+          currentSessionInterim = '';
+          if (this.active && !resolved) {
+            setTimeout(() => { if (!resolved && this.active) startSession(); }, 120);
+          }
+        };
+
+        try { r.start(); }
+        catch (e) {
+          console.warn('[voice] rec start failed:', e);
+          activeRec = null;
+          if (this.active && !resolved) {
+            setTimeout(() => { if (!resolved && this.active) startSession(); }, 300);
+          } else {
+            finish(committedFinal);
+          }
         }
-        if (f) { finalText = (finalText ? finalText.replace(/\s+$/, '') + ' ' : '') + f.replace(/^\s+/, ''); hasSaid = true; }
-        interimText = i;
-        lastSpeechTime = Date.now();
-        const combined = (finalText + ' ' + interimText).trim();
-        if (combined) this.setPhase('listening', combined.slice(-70));
-        scheduleEnd();
       };
 
-      rec.onerror = (e) => {
-        if (e.error === 'no-speech') {
-          noSpeechCount++;
-          if (hasSaid || noSpeechCount >= 3) { finish((finalText + ' ' + interimText).trim()); return; }
-          return;
-        }
-        if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-          toast('Microphone access denied', 'error');
-          this.exit();
-          finish('');
-          return;
-        }
-        if (e.error === 'language-not-supported' || e.error === 'bad-grammar') {
-          console.log('[voice] lang unsupported → Whisper');
-          this._useWhisper = true;
-          finish('');
-          return;
-        }
-        if (e.error === 'aborted') return;
-        console.warn('[voice] rec error:', e.error);
-      };
-
-      rec.onend = () => {
-        if (resolved) return;
-        const combined = (finalText + ' ' + interimText).trim();
-        if (combined) { finish(combined); return; }
-        try { rec.start(); } catch (e) { finish(''); }
-      };
-
-      try { rec.start(); }
-      catch (e) {
-        console.warn('[voice] rec start failed:', e);
-        this._currentRecognition = null;
-        finish('');
-      }
+      startSession();
     });
   },
 
@@ -1023,9 +1069,9 @@ function looksLikePhantom(text) {
 // ============ INLINE DICTATION (mic button) ============
 let _inlineRecognition = null;
 let _inlineDictationActive = false;
-let _inlineBaseText = '';
-let _inlineFinalText = '';
-let _inlineInterimText = '';
+let _inlineBaseText = '';       // text present before mic click + committed finals
+let _inlineFinalText = '';      // current session's finalized text
+let _inlineInterimText = '';    // current session's interim
 let _inlineNoSpeechCount = 0;
 let _inlineUseWhisper = false;
 
@@ -1055,13 +1101,18 @@ function startInlineDictation() {
 function _renderInlineInput() {
   const parts = [];
   if (_inlineBaseText) parts.push(_inlineBaseText.replace(/\s+$/, ''));
-  if (_inlineFinalText) parts.push(_inlineFinalText.replace(/\s+$/, ''));
+  if (_inlineFinalText) parts.push(_inlineFinalText.replace(/^\s+|\s+$/g, ''));
   if (_inlineInterimText) parts.push(_inlineInterimText.replace(/^\s+/, ''));
   inputEl.value = parts.join(' ').replace(/\s+/g, ' ').trim();
   autoGrow();
   updateSendButton();
 }
 
+// ============================================================
+// ANDROID FIX (inline dictation): Same pattern as VoiceSession —
+// continuous=false on mobile, rebuild from e.results each event,
+// commit on session end, restart fresh.
+// ============================================================
 function _startInlineWebSpeech() {
   if (!_inlineDictationActive) return;
 
@@ -1075,25 +1126,30 @@ function _startInlineWebSpeech() {
   const SR = getSpeechRecognition();
   if (!SR) { _startInlineWhisper(); return; }
 
+  const mobile = isMobileDevice();
   const rec = new SR();
-  rec.continuous = true;
+  // ANDROID FIX: continuous=false on mobile prevents duplicated words.
+  rec.continuous = !mobile;
   rec.interimResults = true;
   rec.lang = pickRecognitionLang();
   rec.maxAlternatives = 1;
   _inlineRecognition = rec;
 
+  let sessionFinal = '';
+
   rec.onresult = (e) => {
     if (!_inlineDictationActive || _inlineRecognition !== rec) return;
-    let finalNow = '', interim = '';
-    for (let i = e.resultIndex; i < e.results.length; i++) {
-      const t = e.results[i][0].transcript;
-      if (e.results[i].isFinal) finalNow += t;
-      else interim += t;
+    // ANDROID FIX: rebuild from e.results — never accumulate across events.
+    let sf = '';
+    let si = '';
+    for (let k = 0; k < e.results.length; k++) {
+      const t = e.results[k][0].transcript;
+      if (e.results[k].isFinal) sf += t;
+      else si += t;
     }
-    if (finalNow) {
-      _inlineFinalText = (_inlineFinalText ? _inlineFinalText.replace(/\s+$/, '') + ' ' : '') + finalNow.replace(/^\s+/, '');
-    }
-    _inlineInterimText = interim;
+    sessionFinal = sf;
+    _inlineFinalText = sf;
+    _inlineInterimText = si;
     _renderInlineInput();
   };
 
@@ -1115,12 +1171,16 @@ function _startInlineWebSpeech() {
   rec.onend = () => {
     if (_inlineRecognition !== rec) return;
     if (!_inlineDictationActive) return;
-    if (_inlineInterimText) {
-      const t = _inlineInterimText.replace(/^\s+/, '');
-      _inlineFinalText = (_inlineFinalText ? _inlineFinalText.replace(/\s+$/, '') + ' ' : '') + t;
-      _inlineInterimText = '';
-      _renderInlineInput();
+    // ANDROID FIX: commit this session's final to the base before restart.
+    if (sessionFinal) {
+      const parts = [];
+      if (_inlineBaseText) parts.push(_inlineBaseText.replace(/\s+$/, ''));
+      parts.push(sessionFinal.replace(/^\s+|\s+$/g, ''));
+      _inlineBaseText = parts.join(' ').replace(/\s+/g, ' ').trim();
     }
+    _inlineFinalText = '';
+    _inlineInterimText = '';
+    _renderInlineInput();
     _inlineRecognition = null;
     setTimeout(() => { if (_inlineDictationActive) _startInlineWebSpeech(); }, 120);
   };
@@ -1199,19 +1259,13 @@ function setupVoiceControls() {
     startInlineDictation();
   });
 
-      sendBtn.addEventListener('click', async () => {
+  sendBtn.addEventListener('click', async () => {
     if (VoiceSession.active) { VoiceSession.exit('Voice session ended.'); return; }
     if (state.isGenerating) { stopGeneration(); return; }
 
     const hasText = inputEl.value.trim().length > 0;
     const hasFiles = state.attachments.length > 0;
     if (hasText || hasFiles) { formEl.requestSubmit(); return; }
-
-    // Voice entry tapped. Diagnose capability in the console for debugging.
-    console.log('[voice-tap] mediaDevices:', typeof navigator.mediaDevices,
-                'getUserMedia:', typeof navigator.mediaDevices?.getUserMedia,
-                'isSecureContext:', window.isSecureContext,
-                'userAgent:', navigator.userAgent);
 
     if (!window.isSecureContext) {
       toast('Voice requires a secure (HTTPS) connection.', 'error', 5000);
@@ -1220,10 +1274,6 @@ function setupVoiceControls() {
     if (!navigator.mediaDevices) {
       toast('Voice conversations are not supported in this browser. Try opening DeepRWA in Chrome or Safari directly.', 'error', 6000);
       return;
-    }
-    if (typeof navigator.mediaDevices.getUserMedia !== 'function') {
-      // Some Android builds hide getUserMedia until you ask for it once.
-      toast('Requesting microphone access…', 'info', 3000);
     }
     VoiceSession.enter();
   });
@@ -1278,7 +1328,6 @@ function registerServiceWorker() {
 
   navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' })
     .then((reg) => {
-      // If a new SW is waiting, activate it right away.
       if (reg.waiting) {
         try { reg.waiting.postMessage('SKIP_WAITING'); } catch {}
       }
@@ -1294,7 +1343,6 @@ function registerServiceWorker() {
     })
     .catch((e) => { console.warn('[sw]', e.message); });
 
-  // When the SW tells us it updated, reload once.
   let refreshed = false;
   navigator.serviceWorker.addEventListener('message', (event) => {
     if (event.data?.type === 'SW_UPDATED' && !refreshed) {
@@ -1311,7 +1359,6 @@ function registerServiceWorker() {
   });
 }
 
-// Force-clear all caches and unregister SWs. Visit ?clearcache=1 to use.
 async function forceClearCache() {
   const params = new URLSearchParams(location.search);
   if (!params.has('clearcache')) return;
@@ -1329,7 +1376,6 @@ async function forceClearCache() {
     try { localStorage.removeItem('deeprwa_token'); } catch {}
     try { sessionStorage.clear(); } catch {}
   } catch {}
-  // Reload once, clean.
   const url = new URL(location.href);
   url.searchParams.delete('clearcache');
   location.replace(url.toString());
@@ -1981,7 +2027,6 @@ function updateSendButton() {
   const iconVoice = sendBtn.querySelector('.icon-voice');
   const iconExit = sendBtn.querySelector('.icon-exit');
   if (!iconSend || !iconStop || !iconVoice || !iconExit) {
-    // Icons not yet rendered — try again next tick
     setTimeout(() => { try { updateSendButton(); } catch {} }, 100);
     return;
   }
@@ -2008,8 +2053,6 @@ function updateSendButton() {
     sendBtn.setAttribute('aria-label', 'Send');
     return;
   }
-  // Empty input — ALWAYS show the voice entry button.
-  // Unsupported devices get a helpful toast when they tap it.
   iconVoice.classList.remove('hidden');
   sendBtn.classList.add('voice-entry');
   sendBtn.setAttribute('aria-label', 'Start voice conversation');
@@ -3380,8 +3423,6 @@ function closeAllModals() {
 }
 
 // ============ DIAGNOSTIC PANEL ============
-// Visit https://deeprwa.agentdomains.co/?diag=1 on any device to see
-// a full capability report. Screenshot it and share for debugging.
 function renderDiagnosticPanel() {
   const ua = navigator.userAgent || 'unknown';
   const md = navigator.mediaDevices;
@@ -3412,6 +3453,7 @@ function renderDiagnosticPanel() {
   const rows = [
     ['Device type', deviceType],
     ['Browser (UA)', browser],
+    ['Mobile device (our check)', isMobileDevice() ? 'yes' : 'no'],
     ['In-app browser?', isInApp ? '⚠ YES (blocks mic access)' : 'no'],
     ['Page URL', location.href],
     ['Protocol', location.protocol],
@@ -3506,7 +3548,6 @@ function renderDiagnosticPanel() {
 function maybeShowDiagnosticPanel() {
   const params = new URLSearchParams(location.search);
   if (params.has('diag') || params.has('debug')) {
-    // Wait until DOM is fully ready
     setTimeout(renderDiagnosticPanel, 300);
   }
 }
