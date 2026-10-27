@@ -10,6 +10,7 @@ const { createClient } = require('@supabase/supabase-js');
 const { authenticator } = require('otplib');
 const QRCode = require('qrcode');
 const brevo = require('@getbrevo/brevo');
+const ws = require('ws');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -23,8 +24,12 @@ const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
 const supabaseAnon = process.env.SUPABASE_ANON_KEY;
 if (!supabaseUrl || !supabaseKey) console.warn('⚠️  Supabase credentials not set.');
 const supabase = (supabaseUrl && supabaseKey)
-  ? createClient(supabaseUrl, supabaseKey, { auth: { autoRefreshToken: false, persistSession: false } })
+  ? createClient(supabaseUrl, supabaseKey, { 
+      auth: { autoRefreshToken: false, persistSession: false },
+      realtime: { transport: ws } // <--- ADD THIS LINE
+    })
   : null;
+
 const supabaseConfigured = !!supabase;
 
 // ============ BREVO ============
