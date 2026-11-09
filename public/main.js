@@ -1,4 +1,52 @@
-// DeepRWA — Complete frontend logic (rev.4.6.0)
+// DeepRWA — Complete frontend logic (rev.4.7.0)
+
+// ============ PWA INSTALL LOGIC ============
+let deferredPrompt = null;
+const installBanner = document.getElementById('installBanner');
+const installBtn = document.getElementById('installBtn');
+const closeInstallBtn = document.getElementById('closeInstallBtn');
+
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredPrompt = e;
+  if (installBanner && sessionStorage.getItem('deeprwa_install_dismissed') !== '1') {
+    installBanner.classList.remove('hidden');
+  }
+});
+
+if (installBtn) {
+  installBtn.addEventListener('click', async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    deferredPrompt = null;
+    if (installBanner) installBanner.classList.add('hidden');
+  });
+}
+
+if (closeInstallBtn) {
+  closeInstallBtn.addEventListener('click', () => {
+    if (installBanner) installBanner.classList.add('hidden');
+    sessionStorage.setItem('deeprwa_install_dismissed', '1');
+  });
+}
+
+window.addEventListener('appinstalled', () => {
+  if (installBanner) installBanner.classList.add('hidden');
+  deferredPrompt = null;
+});
+
+const isIos = () => /iphone|ipad|ipod/.test(window.navigator.userAgent.toLowerCase());
+const isInStandaloneMode = () => ('standalone' in window.navigator) && (window.navigator.standalone);
+
+if (isIos() && !isInStandaloneMode() && sessionStorage.getItem('deeprwa_install_dismissed') !== '1') {
+  if (installBanner) {
+    const bannerText = document.getElementById('installBannerText');
+    if (bannerText) bannerText.innerHTML = 'Install DeepRWA: Tap <b>Share</b> <i data-lucide="share"></i> then <b>Add to Home Screen</b>.';
+    if (installBtn) installBtn.style.display = 'none';
+    installBanner.classList.remove('hidden');
+  }
+}
 
 // ============ CLIENT ID ============
 function getOrCreateClientId() {
@@ -316,8 +364,6 @@ function speechRecognitionAvailable() {
 function pickRecognitionLang() {
   return navigator.language || 'en-US';
 }
-// NEW: detect mobile devices — Android Chrome duplicates interim results
-// when continuous = true, so we use single-shot mode there.
 function isMobileDevice() {
   const ua = navigator.userAgent || '';
   return /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
@@ -867,12 +913,9 @@ const VoiceSession = {
   },
 
   // ============================================================
-  // ANDROID FIX: The mobile Web Speech API duplicates interim
-  // results when continuous=true. Solution:
-  //   1. Use continuous=false on mobile (each utterance is a session)
-  //   2. Rebuild text from e.results every time — never accumulate
-  //   3. Commit each session's final text to `committedFinal` on end
-  //   4. Start a fresh session — the accumulator survives
+  // MOBILE VOICE FIX: The Web Speech API often fails silently on
+  // mobile devices. If an error occurs, we now immediately switch
+  // to the Whisper backend fallback instead of just hanging.
   // ============================================================
   async _listenWebSpeech() {
     return new Promise((resolve) => {
@@ -882,9 +925,9 @@ const VoiceSession = {
       const mobile = isMobileDevice();
       let resolved = false;
       let activeRec = null;
-      let committedFinal = '';       // accumulated from previous sessions
-      let currentSessionFinal = '';  // THIS session's final text
-      let currentSessionInterim = ''; // THIS session's interim
+      let committedFinal = '';
+      let currentSessionFinal = '';
+      let currentSessionInterim = '';
       let silenceTimer = null;
       let hardCapTimer = null;
       let lastSpeechTime = 0;
@@ -911,11 +954,10 @@ const VoiceSession = {
         if (hardCapTimer) { clearTimeout(hardCapTimer); hardCapTimer = null; }
         const combined = (committedFinal + ' ' + currentSessionFinal + ' ' + currentSessionInterim).replace(/\s+/g, ' ').trim();
         if (!combined) {
-          silenceTimer = setTimeout(() => finish(''), 15000);
+          silenceTimer = setTimeout(() => finish(''), 10000);
           return;
         }
         const dynamicMs = computeDynamicSilenceMs(combined);
-        console.log(`[voice] endpoint window: ${dynamicMs}ms for "${combined.slice(-50)}"`);
         silenceTimer = setTimeout(() => finish(combined), dynamicMs);
         hardCapTimer = setTimeout(() => {
           const sinceSpeech = Date.now() - (lastSpeechTime || Date.now());
@@ -926,7 +968,6 @@ const VoiceSession = {
       const startSession = () => {
         if (resolved || !this.active) return;
         const r = new SR();
-        // ANDROID FIX: continuous=false on mobile prevents result duplication.
         r.continuous = !mobile;
         r.interimResults = true;
         r.lang = pickRecognitionLang();
@@ -938,11 +979,8 @@ const VoiceSession = {
 
         r.onresult = (e) => {
           if (!this.active || resolved || activeRec !== r) return;
-          // ANDROID FIX: rebuild from e.results — never concatenate
-          // across events. This eliminates the duplicate-words bug.
-          let sf = '';
-          let si = '';
-          for (let k = 0; k < e.results.length; k++) {
+          let sf = '', si = '';
+          for (let k = e.resultIndex; k < e.results.length; k++) {
             const t = e.results[k][0].transcript;
             if (e.results[k].isFinal) sf += t;
             else si += t;
@@ -969,21 +1007,14 @@ const VoiceSession = {
             finish('');
             return;
           }
-          if (e.error === 'language-not-supported' || e.error === 'bad-grammar') {
-            console.log('[voice] lang unsupported → Whisper');
-            this._useWhisper = true;
-            finish('');
-            return;
-          }
-          if (e.error === 'aborted') return;
-          console.warn('[voice] rec error:', e.error);
+          // 🛠️ CRITICAL FIX: If WebSpeech fails on mobile, switch to Whisper!
+          console.log('[voice] WebSpeech error, switching to Whisper:', e.error);
+          this._useWhisper = true;
+          finish('');
         };
 
         r.onend = () => {
           if (resolved || activeRec !== r) return;
-          // ANDROID FIX: commit this session's final text to the accumulator
-          // before starting the next session. The accumulator survives
-          // restarts, but each session's raw e.results does not.
           if (currentSessionFinal) {
             committedFinal = (committedFinal + ' ' + currentSessionFinal).replace(/\s+/g, ' ').trim();
           }
@@ -996,13 +1027,9 @@ const VoiceSession = {
 
         try { r.start(); }
         catch (e) {
-          console.warn('[voice] rec start failed:', e);
           activeRec = null;
-          if (this.active && !resolved) {
-            setTimeout(() => { if (!resolved && this.active) startSession(); }, 300);
-          } else {
-            finish(committedFinal);
-          }
+          if (this.active && !resolved) setTimeout(() => { if (!resolved && this.active) startSession(); }, 300);
+          else finish(committedFinal);
         }
       };
 
@@ -1069,9 +1096,9 @@ function looksLikePhantom(text) {
 // ============ INLINE DICTATION (mic button) ============
 let _inlineRecognition = null;
 let _inlineDictationActive = false;
-let _inlineBaseText = '';       // text present before mic click + committed finals
-let _inlineFinalText = '';      // current session's finalized text
-let _inlineInterimText = '';    // current session's interim
+let _inlineBaseText = '';
+let _inlineFinalText = '';
+let _inlineInterimText = '';
 let _inlineNoSpeechCount = 0;
 let _inlineUseWhisper = false;
 
@@ -1108,11 +1135,6 @@ function _renderInlineInput() {
   updateSendButton();
 }
 
-// ============================================================
-// ANDROID FIX (inline dictation): Same pattern as VoiceSession —
-// continuous=false on mobile, rebuild from e.results each event,
-// commit on session end, restart fresh.
-// ============================================================
 function _startInlineWebSpeech() {
   if (!_inlineDictationActive) return;
 
@@ -1128,7 +1150,6 @@ function _startInlineWebSpeech() {
 
   const mobile = isMobileDevice();
   const rec = new SR();
-  // ANDROID FIX: continuous=false on mobile prevents duplicated words.
   rec.continuous = !mobile;
   rec.interimResults = true;
   rec.lang = pickRecognitionLang();
@@ -1139,10 +1160,8 @@ function _startInlineWebSpeech() {
 
   rec.onresult = (e) => {
     if (!_inlineDictationActive || _inlineRecognition !== rec) return;
-    // ANDROID FIX: rebuild from e.results — never accumulate across events.
-    let sf = '';
-    let si = '';
-    for (let k = 0; k < e.results.length; k++) {
+    let sf = '', si = '';
+    for (let k = e.resultIndex; k < e.results.length; k++) {
       const t = e.results[k][0].transcript;
       if (e.results[k].isFinal) sf += t;
       else si += t;
@@ -1165,13 +1184,17 @@ function _startInlineWebSpeech() {
     } else if (e.error === 'no-speech') {
       _inlineNoSpeechCount++;
       if (_inlineNoSpeechCount > 8) stopInlineDictation();
+    } else {
+       console.log('[inline] WebSpeech error, switching to Whisper:', e.error);
+       _inlineUseWhisper = true;
+       stopInlineDictation();
+       startInlineDictation();
     }
   };
 
   rec.onend = () => {
     if (_inlineRecognition !== rec) return;
     if (!_inlineDictationActive) return;
-    // ANDROID FIX: commit this session's final to the base before restart.
     if (sessionFinal) {
       const parts = [];
       if (_inlineBaseText) parts.push(_inlineBaseText.replace(/\s+$/, ''));
