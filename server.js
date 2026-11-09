@@ -1,4 +1,4 @@
-// DeepRWA — Complete backend (rev.4.3.0)
+// DeepRWA — Complete backend (rev.4.4.0)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -26,10 +26,9 @@ if (!supabaseUrl || !supabaseKey) console.warn('⚠️  Supabase credentials not
 const supabase = (supabaseUrl && supabaseKey)
   ? createClient(supabaseUrl, supabaseKey, { 
       auth: { autoRefreshToken: false, persistSession: false },
-      realtime: { transport: ws } // <--- ADD THIS LINE
+      realtime: { transport: ws }
     })
   : null;
-
 const supabaseConfigured = !!supabase;
 
 // ============ BREVO ============
@@ -195,157 +194,34 @@ app.get('/av.png', (req, res) => res.sendFile(path.join(__dirname, 'av.png')));
 
 // ============ HEALTH CHECK ============
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', service: 'DeepRWA', version: '4.3.0', time: new Date().toISOString() });
+  res.json({ status: 'ok', service: 'DeepRWA', version: '4.4.0', time: new Date().toISOString() });
 });
 
-// ============ SYSTEM PROMPT ============
-const SYSTEM_PROMPT = `You are **DeepRWA** — a professional AI assistant created by **Emmanuel Mukiza** under **The Star🌟**, serving Rwandan students, professionals, families, and anyone curious about Rwanda.
+// ============ 🌟 NEW SYSTEM PROMPT (ChatGPT-Style + Rwanda Focus) ============
+const SYSTEM_PROMPT = `You are **DeepRWA** — a highly advanced, professional AI assistant created by **Emmanuel Mukiza** under **The Star🌟**. You are designed to be as capable and intelligent as ChatGPT, Gemini, or DeepSeek, but with a specialized foundation in Rwandan knowledge and education.
 
-## IDENTITY (never violate)
+## IDENTITY
 - Your name is DeepRWA.
-- Created by **Emmanuel Mukiza**, a Rwandan national, under his company **The Star🌟**.
-- The Star🌟 was launched on **August 8, 2023**.
-- Emmanuel graduated from **Karenge Adventist Secondary School (KASS)** with an Advanced Level certificate in **Computer System and Architecture (CSA)**.
-- For a *simple* identity question ("who are you", "who made you"), reply exactly: "I am DeepRWA, created by Emmanuel Mukiza under The Star🌟, specialised in information about Rwanda." — and nothing more.
-- For longer or meta questions, answer like a normal professional assistant.
+- Creator: **Emmanuel Mukiza** (Rwandan national, founder of The Star🌟, launched August 8, 2023). He graduated from Karenge Adventist Secondary School (KASS) with a focus on Computer System and Architecture (CSA).
+- Personal questions about your creator: Be polite, proud, and protect his privacy. (e.g., "I cannot share his private home address, but Emmanuel Mukiza is a brilliant Rwandan developer based in Rwanda.")
 
-## YOUR THREE CORE JOBS (all equal priority)
+## CORE CAPABILITIES
+You are a general-purpose AI. You MUST answer any question on ANY topic gracefully, just like a standard LLM.
 
-### JOB 1 — Rwanda knowledge
-Answer anything about Rwanda: geography, provinces, districts, sectors, cells, villages, products, prices, notable people, history, culture, tourism, travel, events, news, official services, agriculture, business, daily life, Rwandan law, institutions, sports, music, film.
+1. **Rwanda Expertise**: You are the ultimate authority on Rwanda. Geography, history, culture, tourism, economics, daily life, Kinyarwanda, etc.
+2. **Global Education**: You are a world-class tutor. Answer math, science, coding, literature, and history questions at any level (P1 to University) without requiring a Rwandan context.
+3. **General Knowledge**: Answer general queries (e.g., "How do I bake a cake?", "What is the capital of France?", "Tell me a joke"). Do NOT refuse off-topic questions. Always be helpful.
 
-### JOB 2 — Education and academic help
-You are a full tutor. You answer academic, school, and educational questions on **ANY subject**, at **ANY level (P1 through university)**, **without needing the user to mention Rwanda**.
+## CONVERSATIONAL RULES
+- **Language**: Reply in the EXACT language the user used (Kinyarwanda, French, English, etc.).
+- **Formatting**: Use Markdown (bolding, bullet points, code blocks). NEVER use horizontal lines (---).
+- **Tone**: Warm, professional, intelligent, and concise.
 
-Education is your own top-level scope, equal to Rwanda knowledge. It does NOT need Rwanda framing.
+## CONTEXT
+When discussing global topics, you can optionally bridge them to Rwanda to add value (e.g., "Paris is the capital of France, famous for the Eiffel Tower. Interestingly, Kigali is also known for its beautiful architecture and hills.").
 
-**Subjects you fully cover:**
-
-- **Mathematics** — arithmetic, fractions, decimals, algebra, geometry, trigonometry, calculus, statistics, probability, matrices, vectors, logarithms, sequences, and more.
-
-- **Physics** — mechanics, electricity, magnetism, waves, optics, thermodynamics, modern physics, Newton's laws, energy, motion, circuits, Ohm's law, and problem solving.
-
-- **Chemistry** — atoms, molecules, periodic table, chemical reactions, stoichiometry, acids and bases, organic chemistry, chemical formulas (e.g. glucose C₆H₁₂O₆, water H₂O, carbon dioxide CO₂), and lab concepts.
-
-- **Biology** — cells, genetics, photosynthesis, respiration, human anatomy, ecology, evolution, microbiology, mitosis and meiosis.
-
-- **Geography, history, literature, language** — general world knowledge as taught in schools, including Rwandan, African, and world history.
-
-- **Computer science and software** — programming (Python, JavaScript, Java, C, C++, and others), algorithms, data structures, databases, web development, mobile development, operating systems, cybersecurity basics, and artificial intelligence.
-
-- **Computer hardware and electronics** — how computers work (CPU, RAM, storage, motherboards), binary and digital logic, logic gates, circuit design, resistors, capacitors, transistors, diodes, integrated circuits, microcontrollers, Arduino, Raspberry Pi, robotics, IoT (Internet of Things), embedded systems, and sensors.
-
-- **ICT** — Microsoft Office (Word, Excel, PowerPoint), internet basics, email, networking, hardware vs software, cybersecurity, file management.
-
-- **Business, accounting, economics, entrepreneurship** — supply and demand, bookkeeping, financial statements, marketing, business plans.
-
-- **Any homework, assignment, exam prep, past paper, revision, or study question.**
-
-**Examples of questions you ALWAYS answer directly (no Rwanda mention needed):**
-
-*Mathematics:*
-- "Solve x + x = 4K, find K" → K = x/2
-- "Solve x² + 5x + 6 = 0" → x = -2 or x = -3
-- "What is the derivative of sin(x)?" → cos(x)
-
-*Sciences:*
-- "What is the formula of glucose?" → C₆H₁₂O₆
-- "Explain photosynthesis" → full explanation
-- "What is Newton's second law?" → F = ma
-- "Difference between mitosis and meiosis" → full comparison
-- "What is Ohm's law?" → V = IR
-
-*Computing and electronics:*
-- "How does a for loop work in Python?" → code + explanation
-- "What is a transistor?" → explanation with types (NPN, PNP, FET)
-- "Difference between RAM and ROM" → comparison
-- "How does a CPU work?" → fetch-decode-execute cycle
-- "What is binary?" → base-2 explanation with examples
-- "Explain logic gates AND, OR, NOT" → truth tables
-
-*Business:*
-- "Explain supply and demand" → full economics answer
-
-**Rule: never refuse an academic question. Never ask the user to rephrase it with "in Rwanda". Just answer it.**
-
-### JOB 3 — Conversational handling
-- **Greetings, thanks, goodbyes, small talk** ("hi", "how are you", "are you ready", "thanks", "bye") → respond warmly, then invite a question.
-- **Style, tone, language, accent, formality, length requests** ("use American English", "reply in French", "be brief", "speak formally") → accept and continue.
-- **Meta questions about yourself** (capabilities, creator, languages, files) → answer truthfully.
-
-## WHEN TO DECLINE (very narrow)
-Decline ONLY when the user asks:
-- A **direct fact about a specific other country** with no educational purpose. Example: "What is the capital of Uganda?", "Who is the president of France?"
-- **Off-topic chit-chat unrelated to Rwanda or education**. Example: "Tell me a joke about cats", "What's your favourite movie?"
-- To **analyse a file** that is neither about Rwanda nor educational.
-
-When you decline, use this sentence or a close paraphrase: "I'm specialised in topics about Rwanda and education. I can't help with that particular question. Feel free to ask me anything about Rwanda or any school subject."
-
-**NEVER decline:**
-- Any academic, educational, or school question on any subject.
-- Anything about Rwanda.
-- Style, language, tone, or meta requests.
-- Greetings, thanks, or small talk.
-- Follow-up questions in an ongoing conversation.
-
-## LANGUAGE RULE
-Always reply in the **exact language the user wrote in**. Kinyarwanda → Kinyarwanda. French → French. English → English. Arabic → Arabic. Chinese → Chinese. Never switch to English unless the user does.
-
-## IMAGE GENERATION
-You can create images, but only about Rwanda. The system handles Rwanda-scoped image generation automatically.
-
-## FILE SCOPE
-Before analysing ANY attached file, determine whether the file is about Rwanda or is educational material a student might submit.
-- If the file IS about Rwanda OR is educational/schoolwork: analyse it fully.
-- If the file is CLEARLY NOT about Rwanda and not educational: politely decline using EXACTLY: "The file you uploaded appears to be about [short topic], which is outside my scope. Please upload something Rwanda-related or educational."
-- If ambiguous, ask first: "Is this file related to Rwanda or your studies? If yes, I'll analyse it in detail."
-
-## FORMATTING
-- NEVER use horizontal rules (---, ___, <hr>).
-- Use headings (##, ###), bullet lists, and **bold** for emphasis.
-- Markdown only. No raw HTML.
-
-## EXAMPLES
-
-User: "formula of glucose"
-You: "The chemical formula of glucose is **C₆H₁₂O₆** — six carbon atoms, twelve hydrogen atoms, six oxygen atoms. It's a monosaccharide (simple sugar) and the body's main source of energy. In the Rwandan biology syllabus it appears when studying carbohydrates and photosynthesis. Would you like me to explain the structure or how it's formed?"
-
-User: "solve x² + 5x + 6 = 0"
-You: "Factor: (x + 2)(x + 3) = 0, so **x = -2 or x = -3**. Here's the full step-by-step..."
-
-User: "Solve x + x = 4K. Find value of K?"
-You: "x + x = 2x, so 2x = 4K. Divide both sides by 4: **K = x/2**. If x is given (e.g. x = 4), then K = 2."
-
-User: "explain photosynthesis"
-You: "Photosynthesis is the process by which green plants, algae, and some bacteria convert light energy into chemical energy. The overall equation is **6CO₂ + 6H₂O + light → C₆H₁₂O₆ + 6O₂**..."
-
-User: "how does a for loop work in Python?"
-You: "A for loop repeats a block of code for each item in a sequence. Example:\n\`\`\`python\nfor i in range(5):\n    print(i)\n\`\`\`..."
-
-User: "what is a transistor"
-You: "A transistor is a semiconductor device used to amplify or switch electronic signals. The three main types are **BJT** (NPN, PNP), **FET** (including MOSFET), and **IGBT**. In an NPN transistor, a small base current controls a larger collector-emitter current — this is what makes amplification possible. Transistors are the building blocks of every modern computer chip."
-
-User: "difference between RAM and ROM"
-You: "**RAM** (Random Access Memory) is volatile — it loses data when power is off, and it's used for running programs. **ROM** (Read-Only Memory) is non-volatile — it keeps data permanently, and it stores firmware like the BIOS. RAM is fast and rewritable; ROM is slower and typically read-only."
-
-User: "What is the capital of Uganda?"
-You: "I'm specialised in topics about Rwanda and education. I can't help with that particular question. Feel free to ask me anything about Rwanda or any school subject."
-
-User: "let's use American English, are you ready?"
-You: "Absolutely — I'll reply in American English. What would you like to know about Rwanda, or which school subject can I help you with?"
-
-User: "hi, how are you?"
-You: "Hello! I'm doing well, thanks. What can I tell you about Rwanda today, or is there a school subject you're studying?"
-
-## RULES
-1. Accuracy first. If you don't know, say so. Never invent facts.
-2. Be warm, professional, and concise.
-3. If the user sets a tone or language, keep it for the rest of the conversation.
-4. Education is a first-class scope. Never refuse an academic question. Never ask the user to mention Rwanda when asking about school subjects.
-5. When in doubt, err on the side of helping rather than refusing.
-
-## STYLE
-Warm, professional, concise, respectful.`;
+## FILES & IMAGES
+You can analyze files and generate images. Be helpful and creative.`;
 
 // ============ GREETINGS & IDENTITY ============
 const GREETING_EXACT = new Set([
@@ -527,14 +403,12 @@ function normalizeHint(hint) {
   return hint.split(/[-_]/)[0].toLowerCase().trim();
 }
 
-// Languages Intron Sahara supports (African languages Whisper cannot handle)
 const SAHARA_LANGS = new Set(['rw','kin','sw','lg','ny','sn','zu','xh','st','tn','yo','ig','ha','am','so','om','wo','ff','tw','ak','ln']);
 
 function saharaSupports(lang) {
   return lang && SAHARA_LANGS.has(lang);
 }
 
-// Languages Lelapa Vulavula supports (verified from docs)
 const VULAVULA_LANGS = new Set(['afr','zul','sot','eng','fra']);
 
 function vulavulaSupports(lang) {
@@ -542,7 +416,6 @@ function vulavulaSupports(lang) {
   return VULAVULA_LANGS.has(lang) || VULAVULA_LANGS.has(lang.slice(0, 3));
 }
 
-// ---------- Lelapa AI Vulavula (verified endpoint) ----------
 async function transcribeWithVulavula(buffer, mime, lang) {
   const token = process.env.VULAVULA_API_KEY;
   if (!token) throw new Error('Vulavula not configured');
@@ -556,9 +429,7 @@ async function transcribeWithVulavula(buffer, mime, lang) {
   try {
     const r = await fetch(url, {
       method: 'POST',
-      headers: {
-        'X-CLIENT-TOKEN': token
-      },
+      headers: { 'X-CLIENT-TOKEN': token },
       body: fd,
       signal: ctrl.signal
     });
@@ -574,7 +445,6 @@ async function transcribeWithVulavula(buffer, mime, lang) {
   } finally { clearTimeout(timer); }
 }
 
-// ---------- Intron Sahara (contact support@intron.io for REST base URL) ----------
 async function transcribeWithIntronSahara(buffer, mime, lang) {
   const key = process.env.INTRON_API_KEY;
   if (!key) throw new Error('Intron not configured');
@@ -583,9 +453,6 @@ async function transcribeWithIntronSahara(buffer, mime, lang) {
   const fd = new FormData();
   fd.append('file', blob, 'voice.wav');
   if (lang) fd.append('language', lang);
-  // NOTE: Intron does not publish a public REST base URL.
-  // Contact support@intron.io to obtain the endpoint for Sahara v2.5.
-  // We try the most likely pattern; if it fails, we fall through.
   const url = process.env.INTRON_API_URL || 'https://api.intron.io/v1/asr/transcribe';
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 45000);
@@ -608,7 +475,6 @@ async function transcribeWithIntronSahara(buffer, mime, lang) {
   } finally { clearTimeout(timer); }
 }
 
-// ---------- Groq Whisper ----------
 async function transcribeWithGroq(buffer, mime, hint) {
   const key = process.env.GROQ_API_KEY;
   if (!key) throw new Error('Groq not configured');
@@ -646,7 +512,6 @@ async function transcribeWithGroq(buffer, mime, hint) {
   } finally { clearTimeout(timer); }
 }
 
-// ---------- Cloudflare Whisper ----------
 async function transcribeWithCloudflare(buffer, hint) {
   const accountId = process.env.CF_ACCOUNT_ID || process.env.CLOUDFLARE_ACCOUNT_ID;
   const apiToken = process.env.CF_API_TOKEN || process.env.CLOUDFLARE_API_TOKEN;
@@ -686,7 +551,6 @@ async function transcribeWithCloudflare(buffer, hint) {
   throw lastErr || new Error('CF failed');
 }
 
-// ---------- Hugging Face ----------
 async function transcribeWithHuggingFace(buffer, mime, hint) {
   const hfToken = process.env.HF_TOKEN;
   if (!hfToken) throw new Error('Hugging Face not configured');
@@ -734,7 +598,6 @@ async function transcribeWithHuggingFace(buffer, mime, hint) {
   throw lastErr || new Error('HF failed');
 }
 
-// ---------- /api/stt ----------
 app.post('/api/stt', sttLimiter, async (req, res) => {
   const { audio, mime, hint } = req.body || {};
   if (!audio || typeof audio !== 'string') return res.status(400).json({ error: 'audio (base64) required' });
@@ -747,7 +610,6 @@ app.post('/api/stt', sttLimiter, async (req, res) => {
   const langHint = normalizeHint(hint);
   console.log(`[stt] request: ${buffer.length} bytes, hint="${langHint || 'none'}"`);
 
-  // Build provider chain based on language
   let providers;
   if (saharaSupports(langHint)) {
     providers = [
@@ -798,7 +660,6 @@ app.post('/api/stt', sttLimiter, async (req, res) => {
   res.status(500).json({ error: 'Transcription failed. Please try again.' });
 });
 
-// ============ PROVIDERS ============
 const cooldown = new Map();
 function isCooling(k) { const u = cooldown.get(k); if (!u) return false; if (Date.now() > u) { cooldown.delete(k); return false; } return true; }
 function setCooldown(k, ms) { cooldown.set(k, Date.now() + ms); }
@@ -894,7 +755,6 @@ async function* streamGemini(msgs) {
   } catch (e) { setCooldown(k, e.status === 429 ? 120000 : 300000); throw e; }
 }
 
-// ============ VISION ============
 async function* streamGeminiVision(messages, attachments) {
   const sanitized = sanitizeForProvider(messages);
   const sys = sanitized.filter(m => m.role === 'system').map(m => m.content).join('\n');
@@ -969,7 +829,6 @@ const PROVIDERS = [
   { name: 'Pollinations', fn: streamPollinations }
 ];
 
-// ============ PHANTOM FILTER ============
 const PHANTOM_PHRASES = new Set([
   'thank you for watching','thanks for watching','please subscribe','subscribe',
   'the end','a film by','film by','subtitles by','amara.org','amara org',
@@ -990,7 +849,6 @@ function looksLikePhantom(text) {
   return false;
 }
 
-// ============ TITLE GENERATION ============
 function isGreetingOnly(msg) {
   const n = normalise(msg);
   if (!n) return false;
@@ -1205,12 +1063,10 @@ async function generateChatTitle(firstMessage) {
   return fallback;
 }
 
-// ============ ROUTES ============
-app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '4.3.0', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
+app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '4.4.0', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
 app.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nSitemap: https://deeprwa.agentdomains.co/sitemap.xml\n`));
 app.get('/sitemap.xml', (req, res) => res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>https://deeprwa.agentdomains.co/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>\n</urlset>`));
 
-// ============ IMAGE PROVIDER DIAGNOSTICS ============
 app.get('/api/debug/image-providers', (req, res) => {
   const cf = !!(process.env.CF_ACCOUNT_ID || process.env.CLOUDFLARE_ACCOUNT_ID) && !!(process.env.CF_API_TOKEN || process.env.CLOUDFLARE_API_TOKEN);
   const providers = [];
@@ -1226,7 +1082,6 @@ app.get('/api/debug/image-providers', (req, res) => {
   });
 });
 
-// ============ SPEECH PROVIDERS DIAGNOSTICS ============
 app.get('/api/debug/stt-providers', (req, res) => {
   const providers = [];
   if (process.env.GROQ_API_KEY) providers.push({ id: 'groq', enabled: true, languages: '99 (Whisper-large-v3)', supports_kinyarwanda: false, context_prompt: true });
@@ -1237,7 +1092,6 @@ app.get('/api/debug/stt-providers', (req, res) => {
   res.json({ providers, hf_token_present: !!process.env.HF_TOKEN, intron_key_present: !!process.env.INTRON_API_KEY, vulavula_key_present: !!process.env.VULAVULA_API_KEY, whisper_lang_count: WHISPER_LANGS.size, sahara_lang_count: SAHARA_LANGS.size, vulavula_lang_count: VULAVULA_LANGS.size });
 });
 
-// AUTH: Signup
 app.post('/api/auth/signup', async (req, res) => {
   if (!supabaseConfigured) return res.status(503).json({ error: 'Auth not configured' });
   const { email, password, fullName } = req.body || {};
@@ -1460,7 +1314,6 @@ app.delete('/api/auth/account', requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
-// 2FA
 app.post('/api/auth/2fa/setup', requireAuth, async (req, res) => {
   const { data: profile } = await supabase.from('profiles').select('email, totp_enabled').eq('id', req.userId).maybeSingle();
   if (profile?.totp_enabled) return res.status(400).json({ error: '2FA already enabled' });
@@ -1487,7 +1340,6 @@ app.post('/api/auth/2fa/disable', requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
-// SESSIONS
 app.get('/api/auth/sessions', requireAuth, async (req, res) => {
   const clientId = req.headers['x-client-id'] || '';
   const { data } = await supabase.from('sessions').select('*').eq('user_id', req.userId).eq('revoked', false).order('last_active', { ascending: false });
@@ -1529,7 +1381,6 @@ app.delete('/api/auth/sessions-current', requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
-// FILE UPLOAD
 app.post('/api/upload', requireAuth, async (req, res) => {
   const { name, type, data } = req.body || {};
   if (!name || !type || !data) return res.status(400).json({ error: 'Missing file data' });
@@ -1545,7 +1396,6 @@ app.post('/api/upload', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// FILES LIST (basic)
 app.get('/api/files', requireAuth, async (req, res) => {
   try {
     const { data: convs } = await supabase.from('conversations').select('id').eq('user_id', req.userId);
@@ -1560,7 +1410,6 @@ app.get('/api/files', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message, files: [] }); }
 });
 
-// FILES LIST with IDs
 app.get('/api/files-with-ids', requireAuth, async (req, res) => {
   try {
     const { data: convs } = await supabase.from('conversations').select('id').eq('user_id', req.userId);
@@ -1595,21 +1444,18 @@ app.delete('/api/files/:messageId/:fileIndex', requireAuth, async (req, res) => 
   res.json({ success: true });
 });
 
-// TITLE
 app.post('/api/chat/title', async (req, res) => {
   const { message } = req.body || {};
   if (!message) return res.status(400).json({ error: 'message required' });
   res.json({ title: await generateChatTitle(message) });
 });
 
-// CHAT: guest
 app.post('/api/chat/guest', async (req, res) => {
   const { messages, attachments } = req.body || {};
   if (!Array.isArray(messages) || !messages.length) return res.status(400).json({ error: 'messages required' });
   await streamChatResponse(messages, res, null, attachments || []);
 });
 
-// CHAT: authenticated
 app.post('/api/chat', requireAuth, async (req, res) => {
   const { messages, conversationId, attachments } = req.body || {};
   if (!Array.isArray(messages) || !messages.length) return res.status(400).json({ error: 'messages required' });
@@ -1746,7 +1592,6 @@ async function streamChatResponse(messages, res, conversationId, attachments) {
   return done();
 }
 
-// CONVERSATIONS
 app.get('/api/conversations', requireAuth, async (req, res) => {
   const { data } = await supabase.from('conversations').select('*').eq('user_id', req.userId).order('updated_at', { ascending: false });
   res.json({ conversations: data || [] });
@@ -1783,7 +1628,6 @@ app.post('/api/chat/messages/:id/sync-versions', requireAuth, async (req, res) =
   res.json({ assistantMessageId: newMsg?.id });
 });
 
-// SHARE
 app.post('/api/share/guest', async (req, res) => {
   const { messages } = req.body || {};
   if (!Array.isArray(messages)) return res.status(400).json({ error: 'messages required' });
@@ -1805,7 +1649,6 @@ app.get('/api/share/:token', async (req, res) => {
 });
 app.get('/share/:token', (req, res) => res.sendFile(path.join(__dirname, 'public', 'share.html')));
 
-// STATIC
 const PUBLIC_DIR = path.join(__dirname, 'public');
 app.use(express.static(PUBLIC_DIR));
 app.get(/^\/(?!api|health|robots|sitemap|av\.png|share).*/, (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
