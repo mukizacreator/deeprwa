@@ -22,7 +22,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="/style.css?v=4.6.0" />
+<link rel="stylesheet" href="/style.css?v=4.7.0" />
 <script src="https://cdn.jsdelivr.net/npm/marked@13.0.3/marked.min.js"></script>
 <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
 <script type="application/ld+json">
@@ -32,6 +32,19 @@
   <script type='module' src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "c8eeae1ef6054a2986245b860dd69dd8"}'></script><!-- End Cloudflare Web Analytics -->
 </head>
 <body>
+
+<!-- PWA INSTALL BANNER -->
+<div id="installBanner" class="install-banner hidden">
+  <div class="install-banner-content">
+    <img src="/av.png" alt="DeepRWA" class="install-icon" />
+    <span id="installBannerText">Install DeepRWA for a faster, app-like experience.</span>
+  </div>
+  <div class="install-banner-actions">
+    <button class="btn-primary" id="installBtn" style="width:auto; padding: 0 16px; height:36px; font-size:13px;">Install</button>
+    <button class="icon-btn" id="closeInstallBtn" aria-label="Close"><i data-lucide="x"></i></button>
+  </div>
+</div>
+
 <div class="app" id="app">
 
   <aside class="sidebar" id="sidebar">
@@ -216,6 +229,6 @@
 
 <div class="toast-container" id="toastContainer"></div>
 
-<script src="/main.js?v=4.6.0"></script>
+<script src="/main.js?v=4.7.0"></script>
 </body>
 </html>
