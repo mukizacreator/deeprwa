@@ -9,10 +9,10 @@
 <meta name="apple-mobile-web-app-title" content="DeepRWA" />
 <meta name="format-detection" content="telephone=no" />
 <title>DeepRWA — Your AI Guide to Rwanda</title>
-<meta name="description" content="DeepRWA is an AI assistant specialised in everything about Rwanda." />
+<meta name="description" content="DeepRWA is a smart AI assistant for everything — made in Rwanda and an expert on Rwanda. Chat, write, learn and talk by voice in any language." />
 <meta name="theme-color" content="#000000" />
 <meta property="og:title" content="DeepRWA — Your AI Guide to Rwanda" />
-<meta property="og:description" content="Ask anything about Rwanda. Get professional answers in your language." />
+<meta property="og:description" content="Ask anything. Get expert answers — with deep knowledge of Rwanda — in your language." />
 <meta property="og:url" content="https://deeprwa.agentdomains.co/" />
 <meta property="og:image" content="https://deeprwa.agentdomains.co/av.png" />
 <meta name="google-site-verification" content="8a-0N0anTCOQ8HMxXMIDzlHWXTWovfcCjmYbaIKLR5c" />
@@ -32,19 +32,6 @@
   <script type='module' src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "c8eeae1ef6054a2986245b860dd69dd8"}'></script><!-- End Cloudflare Web Analytics -->
 </head>
 <body>
-
-<!-- PWA INSTALL BANNER -->
-<div id="installBanner" class="install-banner hidden">
-  <div class="install-banner-content">
-    <img src="/av.png" alt="DeepRWA" class="install-icon" />
-    <span id="installBannerText">Install DeepRWA for a faster, app-like experience.</span>
-  </div>
-  <div class="install-banner-actions">
-    <button class="btn-primary" id="installBtn" style="width:auto; padding: 0 16px; height:36px; font-size:13px;">Install</button>
-    <button class="icon-btn" id="closeInstallBtn" aria-label="Close"><i data-lucide="x"></i></button>
-  </div>
-</div>
-
 <div class="app" id="app">
 
   <aside class="sidebar" id="sidebar">
@@ -113,6 +100,7 @@
         <img src="/av.png" alt="DeepRWA" class="topbar-logo" />
         <span class="brand-name"><span class="b-deep">Deep</span><span class="b-r">R</span><span class="b-w">W</span><span class="b-a">A</span></span>
       </div>
+      <button class="topbar-getapp" id="topGetAppBtn" aria-label="Get the app" title="Get the app"><i data-lucide="download"></i><span>Get app</span></button>
     </header>
 
     <div id="chat" class="chat" aria-live="polite"></div>
@@ -122,7 +110,7 @@
       <form class="composer-inner" id="composer">
         <button type="button" class="attach-btn" id="attachBtn" aria-label="Attach"><i data-lucide="paperclip"></i></button>
         <input type="file" id="fileInput" multiple hidden accept="image/*,application/pdf,text/*,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.md,.csv,.json" />
-        <textarea id="input" rows="1" placeholder="Ask anything about Rwanda…" autocomplete="off" autocorrect="off" autocapitalize="sentences" spellcheck="false" enterkeyhint="send"></textarea>
+        <textarea id="input" rows="1" placeholder="Ask DeepRWA anything…" autocomplete="off" autocorrect="off" autocapitalize="sentences" spellcheck="false" enterkeyhint="send"></textarea>
         <div class="voice-status hidden" id="voiceStatus" aria-live="polite">
           <span class="voice-indicator"><span class="voice-dot"></span><span class="voice-dot"></span><span class="voice-dot"></span></span>
           <span class="voice-label" id="voiceLabel">Listening…</span>
@@ -178,6 +166,7 @@
 <div class="dropdown hidden" id="accountDropdown">
   <button data-action="profile"><i data-lucide="user"></i><span>Profile</span></button>
   <button data-action="settings"><i data-lucide="settings"></i><span>Settings</span></button>
+  <button data-action="getapp"><i data-lucide="download"></i><span>Get app</span></button>
   <div class="dropdown-divider"></div>
   <button data-action="logout" class="danger"><i data-lucide="log-out"></i><span>Log out</span></button>
 </div>
