@@ -1,53 +1,5 @@
 // DeepRWA — Complete frontend logic (rev.4.7.0)
 
-// ============ PWA INSTALL LOGIC ============
-let deferredPrompt = null;
-const installBanner = document.getElementById('installBanner');
-const installBtn = document.getElementById('installBtn');
-const closeInstallBtn = document.getElementById('closeInstallBtn');
-
-window.addEventListener('beforeinstallprompt', (e) => {
-  e.preventDefault();
-  deferredPrompt = e;
-  if (installBanner && sessionStorage.getItem('deeprwa_install_dismissed') !== '1') {
-    installBanner.classList.remove('hidden');
-  }
-});
-
-if (installBtn) {
-  installBtn.addEventListener('click', async () => {
-    if (!deferredPrompt) return;
-    deferredPrompt.prompt();
-    const { outcome } = await deferredPrompt.userChoice;
-    deferredPrompt = null;
-    if (installBanner) installBanner.classList.add('hidden');
-  });
-}
-
-if (closeInstallBtn) {
-  closeInstallBtn.addEventListener('click', () => {
-    if (installBanner) installBanner.classList.add('hidden');
-    sessionStorage.setItem('deeprwa_install_dismissed', '1');
-  });
-}
-
-window.addEventListener('appinstalled', () => {
-  if (installBanner) installBanner.classList.add('hidden');
-  deferredPrompt = null;
-});
-
-const isIos = () => /iphone|ipad|ipod/.test(window.navigator.userAgent.toLowerCase());
-const isInStandaloneMode = () => ('standalone' in window.navigator) && (window.navigator.standalone);
-
-if (isIos() && !isInStandaloneMode() && sessionStorage.getItem('deeprwa_install_dismissed') !== '1') {
-  if (installBanner) {
-    const bannerText = document.getElementById('installBannerText');
-    if (bannerText) bannerText.innerHTML = 'Install DeepRWA: Tap <b>Share</b> <i data-lucide="share"></i> then <b>Add to Home Screen</b>.';
-    if (installBtn) installBtn.style.display = 'none';
-    installBanner.classList.remove('hidden');
-  }
-}
-
 // ============ CLIENT ID ============
 function getOrCreateClientId() {
   const key = 'deeprwa_client_id';
@@ -61,6 +13,64 @@ function getOrCreateClientId() {
   return id;
 }
 const CLIENT_ID = getOrCreateClientId();
+
+// ============ COMPATIBILITY ============
+// Older iPhones (iOS < 16) don't have form.requestSubmit(), which voice mode
+// and the suggestion chips rely on.
+if (typeof HTMLFormElement !== 'undefined' && !HTMLFormElement.prototype.requestSubmit) {
+  HTMLFormElement.prototype.requestSubmit = function () {
+    this.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+  };
+}
+
+// ============ PLATFORM DETECTION ============
+const PLATFORM = (() => {
+  const ua = navigator.userAgent || '';
+  const isIPadOS = /Macintosh/.test(ua) && (navigator.maxTouchPoints || 0) > 1;
+  const isIOS = /iPhone|iPad|iPod/i.test(ua) || isIPadOS;
+  const isAndroid = /Android/i.test(ua);
+  const isChromeOS = /CrOS/.test(ua);
+  const isWindows = /Windows/i.test(ua);
+  const isMac = /Macintosh|Mac OS X/i.test(ua) && !isIOS;
+  const isLinux = /Linux/i.test(ua) && !isAndroid && !isChromeOS;
+  const isSamsung = /SamsungBrowser/i.test(ua);
+  const isEdge = /Edg(A|iOS)?\//i.test(ua);
+  const isOpera = /OPR\/|OPT\/|Opera/i.test(ua);
+  const isFirefox = /Firefox\/|FxiOS/i.test(ua);
+  const isInApp = /FBAN|FBAV|FB_IAB|Instagram|Line\/|WhatsApp|MicroMessenger|TikTok|musical_ly|Snapchat|Twitter|LinkedInApp|GSA\//i.test(ua) || (isAndroid && /; wv\)/.test(ua));
+  const isChrome = /Chrome\/|CriOS/i.test(ua) && !isEdge && !isOpera && !isSamsung;
+  const isSafari = /Safari\//i.test(ua) && !/Chrome|Chromium|CriOS|FxiOS|EdgiOS|OPiOS|Android/i.test(ua);
+  const isMobile = isIOS || isAndroid || /Mobile|Tablet/i.test(ua);
+  const os = isIOS ? (isIPadOS || /iPad/.test(ua) ? 'iPadOS' : 'iOS') : isAndroid ? 'Android' : isChromeOS ? 'ChromeOS'
+    : isWindows ? 'Windows' : isMac ? 'macOS' : isLinux ? 'Linux' : 'your device';
+  const browser = isInApp ? 'in-app browser' : isSamsung ? 'Samsung Internet' : isEdge ? 'Edge' : isOpera ? 'Opera'
+    : isFirefox ? 'Firefox' : isChrome ? 'Chrome' : isSafari ? 'Safari' : 'browser';
+  return { ua, isIOS, isIPadOS, isAndroid, isChromeOS, isWindows, isMac, isLinux, isSamsung, isEdge, isOpera, isFirefox, isInApp, isChrome, isSafari, isMobile, os, browser };
+})();
+
+function isStandaloneApp() {
+  try {
+    if (['standalone', 'fullscreen', 'minimal-ui', 'window-controls-overlay'].some(m => window.matchMedia(`(display-mode: ${m})`).matches)) return true;
+  } catch {}
+  return window.navigator.standalone === true;
+}
+
+// ============ EARLY INSTALL-PROMPT CAPTURE ============
+let _deferredInstallPrompt = null;
+let _onInstallPromptReady = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  _deferredInstallPrompt = e;
+  if (document.body) document.body.classList.add('can-install');
+  if (typeof _onInstallPromptReady === 'function') { const f = _onInstallPromptReady; _onInstallPromptReady = null; f(); }
+});
+window.addEventListener('appinstalled', () => {
+  _deferredInstallPrompt = null;
+  try { localStorage.setItem('deeprwa_installed', '1'); } catch {}
+  if (document.body) document.body.classList.remove('can-install');
+  hideInstallBanner();
+  toast('DeepRWA installed! Open it from your home screen or app list.', 'success', 5000);
+});
 
 // ============ AUTH MODAL STATE PERSISTENCE ============
 const AUTH_MODAL_KEY = 'deeprwa_auth_modal_v1';
@@ -353,21 +363,52 @@ function getAudioContext() {
   }
   return _sharedAudioCtx;
 }
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-// ============ WEB SPEECH HELPERS ============
+// ============ SPEECH ENGINE SELECTION ============
+// Two ways to turn speech into text:
+//  • 'webspeech' – the browser's built-in recogniser (live captions). Only
+//    reliable in desktop Chrome / Edge / Opera / Brave.
+//  • 'whisper'   – record audio with MediaRecorder and transcribe on our
+//    server (/api/stt). Works on Android (any browser), iPhone/iPad, Samsung
+//    Internet, Firefox, Safari and installed apps.
+// Phones use 'whisper' because on Android the built-in recogniser cannot
+// share the microphone with the barge-in monitor, and on iOS / Samsung it is
+// unreliable or missing — that is why voice did nothing on phones before.
 function getSpeechRecognition() {
   return window.SpeechRecognition || window.webkitSpeechRecognition || null;
 }
 function speechRecognitionAvailable() {
   return !!getSpeechRecognition();
 }
+const VOICE_ENGINE_KEY = 'deeprwa_voice_engine';
+let _forceWhisper = false;
+function preferredVoiceEngine() {
+  let override = null;
+  try { override = localStorage.getItem(VOICE_ENGINE_KEY); } catch {}
+  if (override === 'whisper') return 'whisper';
+  if (override === 'webspeech' && speechRecognitionAvailable()) return 'webspeech';
+  if (_forceWhisper || !speechRecognitionAvailable()) return 'whisper';
+  if (PLATFORM.isMobile || PLATFORM.isInApp || PLATFORM.isSamsung || PLATFORM.isFirefox || PLATFORM.isSafari) return 'whisper';
+  return 'webspeech';
+}
+function recorderSupported() {
+  return typeof window.MediaRecorder === 'function' && !!navigator.mediaDevices?.getUserMedia;
+}
 function pickRecognitionLang() {
   return navigator.language || 'en-US';
 }
-function isMobileDevice() {
-  const ua = navigator.userAgent || '';
-  return /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
+// Language hint for server transcription. Empty = auto-detect, which lets
+// people speak English, French, Kiswahili… regardless of the phone setting.
+function sttHint() {
+  let pref = null;
+  try { pref = localStorage.getItem('deeprwa_voice_lang'); } catch {}
+  if (pref) return pref;
+  const l = (navigator.language || '').toLowerCase();
+  if (l.startsWith('rw') || l.startsWith('kin')) return 'rw';
+  return '';
 }
+function isMobileDevice() { return PLATFORM.isMobile; }
 
 // ============ SEMANTIC ENDPOINTING ============
 const INCOMPLETE_TAIL = /\b(and|or|but|because|so|the|a|an|of|to|for|with|about|in|on|at|is|are|was|were|my|your|his|her|its|their|our|this|that|these|those|if|when|while|though|although|um|uh|like|well|then|also|plus|such as|as|than|by|from|into|over|under|between|before|after|during|without|within|along|across|behind|beyond|upon|via|per|versus|vs)\s*$/i;
@@ -385,25 +426,51 @@ function computeDynamicSilenceMs(interim) {
   return 1500;
 }
 
-// ============ TTS VOICE PICKER ============
+// ============ TEXT-TO-SPEECH ============
+let _ttsUnlocked = false;
+// iOS / Safari only allow speech after a user tap. Call this inside a click.
+function unlockTTS() {
+  if (_ttsUnlocked || !window.speechSynthesis || !window.SpeechSynthesisUtterance) return;
+  try {
+    const u = new SpeechSynthesisUtterance(' ');
+    u.volume = 0;
+    window.speechSynthesis.speak(u);
+    _ttsUnlocked = true;
+  } catch {}
+}
+
+function guessTextLang(text) {
+  const t = ' ' + String(text || '').toLowerCase().slice(0, 600) + ' ';
+  const count = (re) => (t.match(re) || []).length;
+  const fr = count(/\s(le|la|les|des|est|et|vous|je|une|du|pour|avec|dans|que|qui|pas|sur|au|aux|c'est|ce)\s/g);
+  const sw = count(/\s(na|ya|wa|kwa|ni|za|katika|hii|hiyo|sana|habari|ndiyo|lakini)\s/g);
+  const en = count(/\s(the|and|is|are|you|to|of|in|for|with|that|this|it|on)\s/g);
+  if (fr > en && fr >= 3) return 'fr';
+  if (sw > en && sw >= 3) return 'sw';
+  return null;
+}
+
 function pickTtsVoice(lang) {
   if (!window.speechSynthesis) return null;
   const voices = window.speechSynthesis.getVoices();
   if (!voices.length) return null;
-  if (!lang) return voices[0];
+  if (!lang) return null;
   const norm = String(lang).toLowerCase().replace('_', '-');
   const base = norm.split('-')[0];
-  let v = voices.find(v => v.lang.toLowerCase().replace('_', '-') === norm);
-  if (v) return v;
-  v = voices.find(v => v.lang.toLowerCase().replace('_', '-').startsWith(base + '-'));
-  if (v) return v;
-  v = voices.find(v => v.lang.toLowerCase().replace('_', '-') === base);
-  if (v) return v;
-  return null;
+  const sameLang = (v) => v.lang.toLowerCase().replace('_', '-');
+  const ranked = (list) => list.sort((a, b) => (b.localService === true) - (a.localService === true));
+  let list = voices.filter(v => sameLang(v) === norm);
+  if (!list.length) list = voices.filter(v => sameLang(v).startsWith(base + '-') || sameLang(v) === base);
+  return list.length ? ranked(list)[0] : null;
+}
+function applyVoice(utter, text) {
+  const lang = guessTextLang(text) || pickRecognitionLang();
+  const voice = pickTtsVoice(lang);
+  if (voice) { utter.voice = voice; utter.lang = voice.lang; }
+  else utter.lang = lang;
 }
 if (window.speechSynthesis) {
-  window.speechSynthesis.getVoices();
-  window.speechSynthesis.onvoiceschanged = () => {};
+  try { window.speechSynthesis.getVoices(); window.speechSynthesis.onvoiceschanged = () => {}; } catch {}
 }
 
 function stripMarkdownForSpeech(text) {
@@ -412,6 +479,7 @@ function stripMarkdownForSpeech(text) {
     .replace(/`([^`]+)`/g, '$1')
     .replace(/!\[[^\]]*\]\([^)]+\)/g, '')
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/https?:\/\/\S+/g, ' link ')
     .replace(/^#{1,6}\s+/gm, '')
     .replace(/\*\*([^*]+)\*\*/g, '$1')
     .replace(/\*([^*]+)\*/g, '$1')
@@ -420,12 +488,29 @@ function stripMarkdownForSpeech(text) {
     .replace(/^\s*[-*+]\s+/gm, '')
     .replace(/^\s*\d+\.\s+/gm, '')
     .replace(/^>\s+/gm, '')
+    .replace(/\|/g, ' ')
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '')
     .replace(/\n{2,}/g, '. ')
     .replace(/\s+/g, ' ')
     .trim();
 }
+// Long sentences are cut off by some engines (Chrome ~15 s), so speak in pieces.
+function utteranceTimeoutMs(text) { return Math.max(7000, String(text).length * 120); }
 
-// ============ STREAMING TTS ============
+// Waits until the speech engine has really gone quiet (so the mic doesn't
+// record the end of our own voice on phones, where speech is slower).
+async function waitForSpeechIdle(maxMs = 4000) {
+  if (!window.speechSynthesis) return;
+  const start = Date.now();
+  while (Date.now() - start < maxMs) {
+    let busy = false;
+    try { busy = window.speechSynthesis.speaking || window.speechSynthesis.pending; } catch {}
+    if (!busy) return;
+    await sleep(120);
+  }
+}
+
+// ============ STREAMING TTS (voice conversation) ============
 const StreamingTTS = {
   active: false,
   buffer: '',
@@ -453,12 +538,12 @@ const StreamingTTS = {
   },
 
   end() {
-    if (!this.active && this.queue.length === 0 && !this.speaking) return Promise.resolve();
+    if (!this.active && this.queue.length === 0 && !this.speaking) return waitForSpeechIdle(1500);
     const tail = this.buffer.trim();
     this.buffer = '';
     this.active = false;
     if (tail) this._enqueue(tail);
-    if (!this.speaking && this.queue.length === 0) return Promise.resolve();
+    if (!this.speaking && this.queue.length === 0) return waitForSpeechIdle();
     return new Promise((resolve) => { this.resolveEnd = resolve; });
   },
 
@@ -496,15 +581,19 @@ const StreamingTTS = {
     if (!this.speaking) this._speakNext();
   },
 
+  async _finish() {
+    this.speaking = false;
+    const session = this.session;
+    await waitForSpeechIdle();
+    if (session !== this.session) return;
+    if (this.resolveEnd) { const r = this.resolveEnd; this.resolveEnd = null; r(); }
+  },
+
   _speakNext() {
-    if (this.queue.length === 0) {
-      this.speaking = false;
-      if (this.resolveEnd) { const r = this.resolveEnd; this.resolveEnd = null; r(); }
-      return;
-    }
+    if (this.queue.length === 0) { this._finish(); return; }
     if (!window.speechSynthesis || !window.SpeechSynthesisUtterance) {
-      this.queue = []; this.speaking = false;
-      if (this.resolveEnd) { const r = this.resolveEnd; this.resolveEnd = null; r(); }
+      this.queue = [];
+      this._finish();
       return;
     }
     this.speaking = true;
@@ -512,16 +601,15 @@ const StreamingTTS = {
     const session = this.session;
     if (typeof this.onSpeak === 'function') { try { this.onSpeak(text); } catch {} }
     const utter = new SpeechSynthesisUtterance(text);
-    const voice = pickTtsVoice(pickRecognitionLang());
-    if (voice) { utter.voice = voice; utter.lang = voice.lang; }
-    else utter.lang = pickRecognitionLang();
-    utter.rate = 1.05;
+    applyVoice(utter, text);
+    utter.rate = 1.03;
     utter.pitch = 1.0;
     let advanced = false;
-    const advance = () => { if (advanced) return; advanced = true; if (session === this.session) this._speakNext(); };
+    const advance = () => { if (advanced) return; advanced = true; clearTimeout(guard); if (session === this.session) this._speakNext(); };
     utter.onend = advance;
     utter.onerror = advance;
-    setTimeout(advance, 12000);
+    const guard = setTimeout(advance, utteranceTimeoutMs(text));
+    try { window.speechSynthesis.resume(); } catch {}
     try { window.speechSynthesis.speak(utter); }
     catch { advance(); }
   }
@@ -533,8 +621,10 @@ let _speakChunks = [];
 let _speakIndex = 0;
 let _speakSession = 0;
 
+// Note: no regex look-behind here — it crashed the whole app on iPhones
+// running iOS older than 16.4.
 function chunkTextForSpeech(text, maxLen = 180) {
-  const sentences = String(text || '').split(/(?<=[.!?])\s+/).filter(Boolean);
+  const sentences = (String(text || '').match(/[^.!?]+[.!?]+["')\]]*|[^.!?]+$/g) || []).map(s => s.trim()).filter(Boolean);
   const chunks = [];
   let current = '';
   for (const s of sentences) {
@@ -565,10 +655,10 @@ function stopSpeaking() {
 
 function speakMessage(text, btn) {
   if (!window.speechSynthesis || !window.SpeechSynthesisUtterance) {
-    toast('Voice output is not supported on this browser', 'error');
+    toast('Read-aloud is not supported in this browser', 'error');
     return;
   }
-  if (_currentSpeakBtn === btn && window.speechSynthesis.speaking) { stopSpeaking(); return; }
+  if (_currentSpeakBtn === btn) { stopSpeaking(); return; }
   stopSpeaking();
   const clean = stripMarkdownForSpeech(text);
   if (!clean) { toast('Nothing to read', 'info'); return; }
@@ -584,16 +674,16 @@ function speakMessage(text, btn) {
       btn.classList.remove('speaking');
       return;
     }
-    const utter = new SpeechSynthesisUtterance(_speakChunks[_speakIndex]);
-    const voice = pickTtsVoice(pickRecognitionLang());
-    if (voice) { utter.voice = voice; utter.lang = voice.lang; }
-    else utter.lang = pickRecognitionLang();
+    const chunk = _speakChunks[_speakIndex];
+    const utter = new SpeechSynthesisUtterance(chunk);
+    applyVoice(utter, clean);
     utter.rate = 1.0; utter.pitch = 1.0;
     let advanced = false;
-    const advance = () => { if (advanced) return; advanced = true; if (mySession === _speakSession) { _speakIndex++; speakNext(); } };
+    const advance = () => { if (advanced) return; advanced = true; clearTimeout(guard); if (mySession === _speakSession) { _speakIndex++; speakNext(); } };
     utter.onend = advance;
     utter.onerror = advance;
-    setTimeout(advance, 12000);
+    const guard = setTimeout(advance, utteranceTimeoutMs(chunk));
+    try { window.speechSynthesis.resume(); } catch {}
     try { window.speechSynthesis.speak(utter); } catch { advance(); }
   };
   speakNext();
@@ -601,39 +691,60 @@ function speakMessage(text, btn) {
 
 window.addEventListener('beforeunload', () => { stopSpeaking(); StreamingTTS.stop(); });
 
-// ============ AUDIO RECORDER (Whisper fallback) ============
+// ============ AUDIO RECORDER (server transcription) ============
 function pickAudioMime() {
   if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return '';
-  const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
-  for (const t of candidates) { if (MediaRecorder.isTypeSupported(t)) return t; }
+  const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus', 'audio/aac'];
+  for (const t of candidates) { try { if (MediaRecorder.isTypeSupported(t)) return t; } catch {} }
   return '';
 }
 
+const MIC_CONSTRAINTS = { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } };
+
+function micErrorMessage(e) {
+  const n = e?.name || '';
+  if (n === 'NotAllowedError' || n === 'SecurityError' || n === 'PermissionDeniedError') {
+    return PLATFORM.isIOS
+      ? 'Microphone blocked. Go to Settings › Safari (or your browser) › Microphone and allow it, then try again.'
+      : 'Microphone blocked. Tap the lock/ⓘ icon next to the address bar, allow the microphone, then try again.';
+  }
+  if (n === 'NotFoundError' || n === 'DevicesNotFoundError') return 'No microphone was found on this device.';
+  if (n === 'NotReadableError' || n === 'TrackStartError') return 'The microphone is busy in another app (a call or recorder). Close it and try again.';
+  return 'Could not access the microphone. Please try again.';
+}
+
+// Records one utterance. If `stream` is given it is reused (and not stopped),
+// which avoids a new permission prompt / mic start-up delay on every turn.
 function createRecorder(opts = {}) {
   const {
+    stream: providedStream = null,
     maxMs = 60000,
-    silenceMs = 2500,
-    minSpeechMs = 500,
-    minPeakRms = 0.020,
-    vadThreshold = 0.014,
+    silenceMs = 2000,
+    minSpeechMs = 300,
+    minPeakRms = 0.012,
+    vadThreshold = 0.012,
     vadMultiplier = 2.2,
-    autoStopOnSilence = true
+    autoStopOnSilence = true,
+    noSpeechTimeoutMs = 0,
+    onLevel = null,
+    onSpeechStart = null
   } = opts;
 
-  let recorder = null, stream = null, audioCtx = null, analyser = null;
+  let recorder = null, stream = null, source = null, analyser = null;
   let vadInterval = null, maxTimer = null;
   const chunks = [];
   let stopped = false;
   let resolveFn, rejectFn;
-  let peakRms = 0;
-  let speechMs = 0;
+  let peakRms = 0, speechMs = 0;
+  const startedAt = Date.now();
 
   const promise = new Promise((resolve, reject) => { resolveFn = resolve; rejectFn = reject; });
 
   const teardown = () => {
     if (vadInterval) { clearInterval(vadInterval); vadInterval = null; }
     if (maxTimer) { clearTimeout(maxTimer); maxTimer = null; }
-    try { stream?.getTracks().forEach(t => t.stop()); } catch {}
+    try { source?.disconnect(); } catch {}
+    if (!providedStream) { try { stream?.getTracks().forEach(t => t.stop()); } catch {} }
   };
 
   const finish = () => {
@@ -643,20 +754,18 @@ function createRecorder(opts = {}) {
     if (maxTimer) { clearTimeout(maxTimer); maxTimer = null; }
     const finalize = () => {
       teardown();
-      const tooQuiet = peakRms < minPeakRms;
-      const tooShort = speechMs < minSpeechMs;
-      if (autoStopOnSilence && (tooQuiet || tooShort)) {
-        console.log(`[recorder] discarded silent recording (peakRms=${peakRms.toFixed(4)}, speechMs=${speechMs})`);
+      if (peakRms < minPeakRms || speechMs < minSpeechMs) {
+        console.log(`[recorder] discarded silent recording (peak=${peakRms.toFixed(4)}, speechMs=${speechMs})`);
         resolveFn(null);
         return;
       }
-      const type = recorder?.mimeType || 'audio/webm';
-      console.log(`[recorder] accepted (peakRms=${peakRms.toFixed(4)}, speechMs=${speechMs})`);
+      const type = (recorder && recorder.mimeType) || pickAudioMime() || 'audio/webm';
       resolveFn(new Blob(chunks, { type }));
     };
     try {
       if (recorder && recorder.state !== 'inactive') {
         recorder.onstop = finalize;
+        try { recorder.requestData(); } catch {}
         recorder.stop();
       } else finalize();
     } catch { finalize(); }
@@ -665,134 +774,142 @@ function createRecorder(opts = {}) {
   const abort = (reason) => {
     if (stopped) return;
     stopped = true;
-    if (vadInterval) { clearInterval(vadInterval); vadInterval = null; }
-    if (maxTimer) { clearTimeout(maxTimer); maxTimer = null; }
-    try { if (recorder && recorder.state !== 'inactive') recorder.stop(); } catch {}
+    try { if (recorder && recorder.state !== 'inactive') { recorder.onstop = null; recorder.stop(); } } catch {}
     teardown();
-    rejectFn(new Error(reason || 'aborted'));
+    const err = reason instanceof Error ? reason : new Error(reason || 'aborted');
+    rejectFn(err);
   };
 
   (async () => {
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
-      });
+      stream = providedStream || await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS);
+      if (stopped) { if (!providedStream) stream.getTracks().forEach(t => t.stop()); return; }
       const mime = pickAudioMime();
       recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
       recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
 
-      if (autoStopOnSilence) {
-        audioCtx = getAudioContext() || new (window.AudioContext || window.webkitAudioContext)();
-        if (audioCtx.state === 'suspended') { try { await audioCtx.resume(); } catch {} }
-        const source = audioCtx.createMediaStreamSource(stream);
-        analyser = audioCtx.createAnalyser();
+      const ctx = getAudioContext();
+      if (ctx) {
+        if (ctx.state === 'suspended') { try { await ctx.resume(); } catch {} }
+        source = ctx.createMediaStreamSource(stream);
+        analyser = ctx.createAnalyser();
         analyser.fftSize = 512;
-        analyser.smoothingTimeConstant = 0.5;
+        analyser.smoothingTimeConstant = 0.4;
         source.connect(analyser);
-        const dataArray = new Uint8Array(analyser.frequencyBinCount);
-        const rmsHistory = [];
-        let noiseFloor = 0.012;
+        const data = new Uint8Array(analyser.fftSize);
+        const history = [];
+        let noiseFloor = 0.01;
         let hasSpeech = false;
         let silenceStart = 0;
 
         vadInterval = setInterval(() => {
           if (stopped || !analyser) return;
-          analyser.getByteTimeDomainData(dataArray);
+          analyser.getByteTimeDomainData(data);
           let sum = 0;
-          for (let i = 0; i < dataArray.length; i++) {
-            const v = (dataArray[i] - 128) / 128;
-            sum += v * v;
+          for (let i = 0; i < data.length; i++) { const v = (data[i] - 128) / 128; sum += v * v; }
+          const rms = Math.sqrt(sum / data.length);
+          history.push(rms); if (history.length > 20) history.shift();
+          if (history.length >= 6) {
+            const sorted = [...history].sort((a, b) => a - b);
+            noiseFloor = noiseFloor * 0.7 + (sorted[Math.floor(sorted.length * 0.1)] || sorted[0]) * 0.3;
           }
-          const rms = Math.sqrt(sum / dataArray.length);
-          rmsHistory.push(rms);
-          if (rmsHistory.length > 20) rmsHistory.shift();
-          if (rmsHistory.length >= 6) {
-            const sorted = [...rmsHistory].sort((a, b) => a - b);
-            const p10 = sorted[Math.floor(sorted.length * 0.1)] || sorted[0];
-            noiseFloor = noiseFloor * 0.7 + p10 * 0.3;
-          }
-          const threshold = Math.max(vadThreshold, noiseFloor * vadMultiplier);
-          const speaking = rms > threshold;
           if (rms > peakRms) peakRms = rms;
-          if (speaking) { hasSpeech = true; silenceStart = 0; speechMs += 100; }
-          else if (hasSpeech) {
+          if (typeof onLevel === 'function') { try { onLevel(Math.min(1, rms * 8)); } catch {} }
+          const speaking = rms > Math.max(vadThreshold, noiseFloor * vadMultiplier);
+          if (speaking) {
+            if (!hasSpeech && typeof onSpeechStart === 'function') { try { onSpeechStart(); } catch {} }
+            hasSpeech = true; silenceStart = 0; speechMs += 100;
+          } else if (hasSpeech) {
             if (!silenceStart) silenceStart = Date.now();
-            if (Date.now() - silenceStart > silenceMs) finish();
+            if (autoStopOnSilence && Date.now() - silenceStart > silenceMs) finish();
+          } else if (noSpeechTimeoutMs && Date.now() - startedAt > noSpeechTimeoutMs) {
+            finish();
           }
         }, 100);
+      } else {
+        // No Web Audio: we can't measure loudness, so accept the recording.
+        peakRms = 1; speechMs = 10000;
       }
       maxTimer = setTimeout(() => finish(), maxMs);
-      recorder.start(100);
-    } catch (e) { abort(e.message || 'getUserMedia failed'); }
+      recorder.start(250);
+    } catch (e) { abort(e); }
   })();
 
   return { promise, stop: () => finish(), abort };
 }
 
-// ============ VOICE SESSION (universal: Web Speech OR Whisper) ============
+async function transcribeBlob(blob) {
+  const base64 = arrayBufferToBase64(await blob.arrayBuffer());
+  const res = await fetch('/api/stt', {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ audio: base64, mime: blob.type || 'audio/webm', hint: sttHint() })
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Transcription failed. Please try again.');
+  }
+  const data = await res.json();
+  return (data.text || '').trim();
+}
+
+// ============ VOICE SESSION (hands-free conversation) ============
 const VoiceSession = {
   active: false,
   phase: 'idle',
+  engine: 'whisper',
   _analyser: null,
-  _audioCtx: null,
+  _source: null,
   _micStream: null,
-  _bargeInTimer: null,
-  _warnedNoTts: false,
-  _busy: false,
-  _bargeInHits: 0,
-  _bargeInThreshold: 0.03,
-  _useWhisper: false,
+  _monitorTimer: null,
   _currentRecognition: null,
+  _bargeHits: 0,
+  _speakStart: 0,
+  _echoPeak: 0,
+  _noiseFloor: 0.01,
+  _lastBargeIn: 0,
+  _sttErrors: 0,
   recorder: null,
 
   async enter() {
     if (this.active) return;
-    getAudioContext();
-
     if (state.isGenerating) { toast('Please wait for the current response to finish', 'info'); return; }
-
-    if (!navigator.mediaDevices) {
-      toast('Voice input is not supported in this browser.', 'error', 5000);
+    if (!window.isSecureContext) { toast('Voice requires a secure (HTTPS) connection.', 'error', 5000); return; }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      toast(PLATFORM.isInApp
+        ? 'Voice does not work inside this app\'s built-in browser. Open DeepRWA in Chrome or Safari.'
+        : 'Voice is not supported in this browser. Please update it or use Chrome / Safari.', 'error', 6000);
       return;
     }
+    getAudioContext();
+    unlockTTS();
+    this.engine = preferredVoiceEngine();
+    if (this.engine === 'whisper' && !recorderSupported()) {
+      toast('Voice conversation needs a newer browser on this device.', 'error', 5000);
+      return;
+    }
+    if (!window.speechSynthesis) toast('This browser cannot speak replies aloud — you will see them as text.', 'info', 4000);
 
     this.active = true;
-    this._busy = false;
-    this._useWhisper = !speechRecognitionAvailable();
-    this._bargeInHits = 0;
+    this._sttErrors = 0;
+    this._bargeHits = 0;
     document.body.classList.add('voice-mode');
     voiceStatus.classList.remove('hidden');
     inputEl.disabled = true;
+    this.setPhase('starting', 'Starting microphone…');
     updateSendButton();
 
     try {
-      this._micStream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
-      });
+      this._micStream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS);
     } catch (e) {
-      console.warn('[voice] permission denied:', e?.name, e?.message);
-      this.active = false;
-      this.setPhase('idle', '');
-      document.body.classList.remove('voice-mode');
-      document.body.removeAttribute('data-voice-phase');
-      voiceStatus.classList.add('hidden');
-      inputEl.disabled = false;
-      updateSendButton();
-      if (e?.name === 'NotAllowedError' || e?.name === 'SecurityError') {
-        toast('Microphone permission denied. Allow it in your browser settings and try again.', 'error', 6000);
-      } else if (e?.name === 'NotFoundError') {
-        toast('No microphone found on this device.', 'error', 5000);
-      } else {
-        toast('Could not access the microphone. Please try again.', 'error', 5000);
-      }
+      console.warn('[voice] mic error:', e?.name, e?.message);
+      this.exit();
+      toast(micErrorMessage(e), 'error', 6500);
       return;
     }
+    if (!this.active) { try { this._micStream.getTracks().forEach(t => t.stop()); } catch {} this._micStream = null; return; }
 
-    if (!speechRecognitionAvailable()) {
-      toast('Using Whisper voice mode (Web Speech not available on this device)', 'info', 3000);
-    }
-
-    this._startBargeInMonitor();
+    this._startMonitor();
     this._loop();
   },
 
@@ -811,118 +928,149 @@ const VoiceSession = {
       try { rec.abort(); } catch {}
     }
     if (this.recorder) { try { this.recorder.abort('exit'); } catch {} this.recorder = null; }
-    if (this._bargeInTimer) { clearInterval(this._bargeInTimer); this._bargeInTimer = null; }
+    if (this._monitorTimer) { clearInterval(this._monitorTimer); this._monitorTimer = null; }
+    try { this._source?.disconnect(); } catch {}
+    this._source = null; this._analyser = null;
     if (this._micStream) { try { this._micStream.getTracks().forEach(t => t.stop()); } catch {} this._micStream = null; }
+    if (state.isGenerating && state._streamingTTS) stopGeneration();
     StreamingTTS.stop();
     stopSpeaking();
-    this._busy = false;
+    state._streamingTTS = false;
     updateSendButton();
     if (reason) toast(reason, 'info', 3000);
   },
 
   setPhase(phase, label) {
     this.phase = phase;
-    if (voiceLabel) voiceLabel.textContent = label || phase;
+    if (voiceLabel) voiceLabel.textContent = label || '';
     if (phase === 'idle') document.body.removeAttribute('data-voice-phase');
     else document.body.dataset.voicePhase = phase;
+    if (phase === 'speaking') { this._speakStart = Date.now(); this._echoPeak = 0; this._bargeHits = 0; }
   },
 
+  // Stop talking (and stop the answer) so the user can speak.
   bargeIn() {
-    if (this.phase !== 'speaking') return;
+    if (this.phase !== 'speaking' && this.phase !== 'thinking') return;
+    this._lastBargeIn = Date.now();
     StreamingTTS.stop();
     stopSpeaking();
     if (state.abortController) { try { state.abortController.abort(); } catch {} }
   },
 
-  _startBargeInMonitor() {
-    if (!this._micStream) return;
+  // Watches the mic level while DeepRWA speaks. If the user talks over it,
+  // we interrupt. On phones the speaker's own sound reaches the mic, so we
+  // first learn how loud that echo is and only react to louder speech.
+  _startMonitor() {
+    const ctx = getAudioContext();
+    if (!ctx || !this._micStream) return;
     try {
-      this._audioCtx = getAudioContext() || new (window.AudioContext || window.webkitAudioContext)();
-      if (this._audioCtx.state === 'suspended') this._audioCtx.resume().catch(() => {});
-      const source = this._audioCtx.createMediaStreamSource(this._micStream);
-      this._analyser = this._audioCtx.createAnalyser();
+      this._source = ctx.createMediaStreamSource(this._micStream);
+      this._analyser = ctx.createAnalyser();
       this._analyser.fftSize = 512;
-      this._analyser.smoothingTimeConstant = 0.5;
-      source.connect(this._analyser);
-      const data = new Uint8Array(this._analyser.frequencyBinCount);
-      let noiseFloor = 0.012;
+      this._analyser.smoothingTimeConstant = 0.3;
+      this._source.connect(this._analyser);
+      const data = new Uint8Array(this._analyser.fftSize);
+      const mobile = PLATFORM.isMobile;
 
-      this._bargeInTimer = setInterval(() => {
+      this._monitorTimer = setInterval(() => {
         if (!this.active || !this._analyser) return;
         this._analyser.getByteTimeDomainData(data);
         let sum = 0;
-        for (let i = 0; i < data.length; i++) {
-          const v = (data[i] - 128) / 128;
-          sum += v * v;
-        }
+        for (let i = 0; i < data.length; i++) { const v = (data[i] - 128) / 128; sum += v * v; }
         const rms = Math.sqrt(sum / data.length);
+
         if (this.phase !== 'speaking') {
-          noiseFloor = noiseFloor * 0.95 + rms * 0.05;
+          this._noiseFloor = this._noiseFloor * 0.95 + rms * 0.05;
+          this._bargeHits = 0;
+          return;
         }
-        if (this.phase === 'speaking' && rms > Math.max(this._bargeInThreshold, noiseFloor * 3)) {
-          this._bargeInHits++;
-          if (this._bargeInHits >= 3) {
+        const since = Date.now() - this._speakStart;
+        if (since < 700) { this._echoPeak = Math.max(this._echoPeak, rms); return; }
+        const minThreshold = mobile ? 0.05 : Math.max(0.03, this._noiseFloor * 3);
+        const threshold = Math.max(minThreshold, this._echoPeak * (mobile ? 1.8 : 1.35));
+        if (rms > threshold) {
+          this._bargeHits++;
+          if (this._bargeHits >= (mobile ? 4 : 3)) {
             console.log('[voice] barge-in detected');
-            this._bargeInHits = 0;
+            this._bargeHits = 0;
             this.bargeIn();
           }
-        } else if (this.phase !== 'speaking') {
-          this._bargeInHits = 0;
+        } else {
+          this._bargeHits = Math.max(0, this._bargeHits - 1);
+          this._echoPeak = Math.max(this._echoPeak * 0.985, rms);
         }
       }, 80);
     } catch (e) {
-      console.warn('[voice] barge-in monitor failed:', e.message);
+      console.warn('[voice] monitor failed:', e.message);
     }
   },
 
   async _loop() {
-    if (!this.active) return;
-
-    if (state.isGenerating) {
-      await new Promise(r => setTimeout(r, 200));
-      return this._loop();
-    }
-
-    await new Promise(r => setTimeout(r, 400));
-    if (!this.active) return;
-
-    try {
-      this.setPhase('listening', 'Listening…');
-      const text = await this._listenForTurn();
+    let emptyTurns = 0;
+    while (this.active) {
+      if (state.isGenerating) { await sleep(200); continue; }
+      const afterBargeIn = Date.now() - this._lastBargeIn < 2000;
+      await sleep(afterBargeIn ? 60 : 250);
       if (!this.active) return;
-      if (!text || looksLikePhantom(text)) return this._loop();
 
-      this._busy = true;
+      this.setPhase('listening', afterBargeIn ? 'Go ahead, I\'m listening…' : (emptyTurns >= 2 ? 'Still listening — just start talking' : 'Listening…'));
+      let text = '';
+      try { text = await this._listenForTurn(); }
+      catch (e) { console.warn('[voice] listen error:', e); await sleep(500); }
+      if (!this.active) return;
+      if (!text || looksLikePhantom(text)) { emptyTurns++; continue; }
+      emptyTurns = 0;
+
       this.setPhase('thinking', 'Thinking…');
       await this._sendAndWait(text);
-      this._busy = false;
-      if (!this.active) return;
-      this._loop();
-    } catch (e) {
-      console.warn('[voice] loop error:', e);
-      this._busy = false;
-      if (this.active) setTimeout(() => this._loop(), 500);
     }
   },
 
   async _listenForTurn() {
-    if (this._useWhisper || !speechRecognitionAvailable()) {
-      return this._listenWhisper();
+    if (this.engine === 'webspeech' && speechRecognitionAvailable() && !_forceWhisper) {
+      return this._listenWebSpeech();
     }
-    return this._listenWebSpeech();
+    return this._listenWhisper();
   },
 
-  // ============================================================
-  // MOBILE VOICE FIX: The Web Speech API often fails silently on
-  // mobile devices. If an error occurs, we now immediately switch
-  // to the Whisper backend fallback instead of just hanging.
-  // ============================================================
+  async _listenWhisper() {
+    const rec = createRecorder({
+      stream: this._micStream,
+      maxMs: 30000,
+      silenceMs: 1600,
+      minSpeechMs: 300,
+      minPeakRms: 0.012,
+      vadThreshold: 0.012,
+      vadMultiplier: 2.2,
+      autoStopOnSilence: true,
+      noSpeechTimeoutMs: 25000,
+      onSpeechStart: () => { if (this.active) this.setPhase('listening', 'Listening… (pause when you\'re done)'); }
+    });
+    this.recorder = rec;
+    let blob = null;
+    try { blob = await rec.promise; } catch { blob = null; }
+    this.recorder = null;
+    if (!this.active || !blob || blob.size < 1000) return '';
+    this.setPhase('transcribing', 'Got it…');
+    try {
+      const text = await transcribeBlob(blob);
+      this._sttErrors = 0;
+      if (text) this.setPhase('transcribing', text.slice(-70));
+      return text;
+    } catch (e) {
+      this._sttErrors++;
+      if (this._sttErrors === 1 || this._sttErrors % 3 === 0) toast(e.message || 'Could not understand the audio', 'error', 3000);
+      if (this._sttErrors >= 5) this.exit('Voice paused — the transcription service is not responding.');
+      return '';
+    }
+  },
+
+  // Desktop Chrome / Edge: live recognition with smart end-of-speech timing.
   async _listenWebSpeech() {
     return new Promise((resolve) => {
       const SR = getSpeechRecognition();
       if (!SR) { resolve(''); return; }
 
-      const mobile = isMobileDevice();
       let resolved = false;
       let activeRec = null;
       let committedFinal = '';
@@ -953,22 +1101,17 @@ const VoiceSession = {
         if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
         if (hardCapTimer) { clearTimeout(hardCapTimer); hardCapTimer = null; }
         const combined = (committedFinal + ' ' + currentSessionFinal + ' ' + currentSessionInterim).replace(/\s+/g, ' ').trim();
-        if (!combined) {
-          silenceTimer = setTimeout(() => finish(''), 10000);
-          return;
-        }
-        const dynamicMs = computeDynamicSilenceMs(combined);
-        silenceTimer = setTimeout(() => finish(combined), dynamicMs);
+        if (!combined) { silenceTimer = setTimeout(() => finish(''), 15000); return; }
+        silenceTimer = setTimeout(() => finish(combined), computeDynamicSilenceMs(combined));
         hardCapTimer = setTimeout(() => {
-          const sinceSpeech = Date.now() - (lastSpeechTime || Date.now());
-          if (sinceSpeech >= 5000) finish(combined);
+          if (Date.now() - (lastSpeechTime || Date.now()) >= 5000) finish(combined);
         }, 6000);
       };
 
       const startSession = () => {
         if (resolved || !this.active) return;
         const r = new SR();
-        r.continuous = !mobile;
+        r.continuous = true;
         r.interimResults = true;
         r.lang = pickRecognitionLang();
         r.maxAlternatives = 1;
@@ -980,10 +1123,9 @@ const VoiceSession = {
         r.onresult = (e) => {
           if (!this.active || resolved || activeRec !== r) return;
           let sf = '', si = '';
-          for (let k = e.resultIndex; k < e.results.length; k++) {
+          for (let k = 0; k < e.results.length; k++) {
             const t = e.results[k][0].transcript;
-            if (e.results[k].isFinal) sf += t;
-            else si += t;
+            if (e.results[k].isFinal) sf += t; else si += t;
           }
           currentSessionFinal = sf;
           currentSessionInterim = si;
@@ -1001,32 +1143,34 @@ const VoiceSession = {
             if (noSpeechCount >= 3) finish('');
             return;
           }
-          if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-            toast('Microphone access denied', 'error');
+          if (e.error === 'not-allowed') {
             this.exit();
+            toast('Microphone access denied', 'error');
             finish('');
             return;
           }
-          // 🛠️ CRITICAL FIX: If WebSpeech fails on mobile, switch to Whisper!
-          console.log('[voice] WebSpeech error, switching to Whisper:', e.error);
-          this._useWhisper = true;
-          finish('');
+          if (['service-not-allowed', 'audio-capture', 'network', 'language-not-supported', 'bad-grammar'].includes(e.error)) {
+            console.log(`[voice] web speech error "${e.error}" → switching to server transcription`);
+            _forceWhisper = true;
+            this.engine = 'whisper';
+            finish('');
+            return;
+          }
+          if (e.error === 'aborted') return;
+          console.warn('[voice] rec error:', e.error);
         };
 
         r.onend = () => {
           if (resolved || activeRec !== r) return;
-          if (currentSessionFinal) {
-            committedFinal = (committedFinal + ' ' + currentSessionFinal).replace(/\s+/g, ' ').trim();
-          }
+          if (currentSessionFinal) committedFinal = (committedFinal + ' ' + currentSessionFinal).replace(/\s+/g, ' ').trim();
           currentSessionFinal = '';
           currentSessionInterim = '';
-          if (this.active && !resolved) {
-            setTimeout(() => { if (!resolved && this.active) startSession(); }, 120);
-          }
+          if (this.active && !resolved) setTimeout(() => { if (!resolved && this.active) startSession(); }, 120);
         };
 
         try { r.start(); }
         catch (e) {
+          console.warn('[voice] rec start failed:', e);
           activeRec = null;
           if (this.active && !resolved) setTimeout(() => { if (!resolved && this.active) startSession(); }, 300);
           else finish(committedFinal);
@@ -1037,38 +1181,31 @@ const VoiceSession = {
     });
   },
 
-  async _listenWhisper() {
-    try {
-      const rec = createRecorder({ maxMs: 20000, silenceMs: 1500, minSpeechMs: 400, minPeakRms: 0.015, vadThreshold: 0.010, vadMultiplier: 2.0, autoStopOnSilence: true });
-      this.recorder = rec;
-      const blob = await rec.promise;
-      this.recorder = null;
-      if (!this.active) return '';
-      if (!blob || blob.size < 1400) return '';
-      const base64 = arrayBufferToBase64(await blob.arrayBuffer());
-      const res = await fetch('/api/stt', {
-        method: 'POST',
-        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ audio: base64, mime: blob.type || 'audio/webm', hint: pickRecognitionLang() })
-      });
-      if (!res.ok) return '';
-      const data = await res.json();
-      return (data.text || '').trim();
-    } catch (e) {
-      if (e.message !== 'aborted' && e.message !== 'exit') console.warn('[voice-whisper]', e);
-      return '';
-    }
-  },
-
-  async _sendAndWait(text) {
+  _sendAndWait(text) {
     return new Promise((resolve) => {
+      let settled = false;
+      const settle = () => { if (!settled) { settled = true; resolve(); } };
       inputEl.value = text;
       autoGrow();
       updateSendButton();
       state._streamingTTS = true;
-      state._onStreamDone = () => resolve();
+      state._onStreamDone = settle;
       formEl.requestSubmit();
+      // If the submit did not start for any reason, don't hang the loop.
+      setTimeout(() => {
+        if (!state.isGenerating && state._onStreamDone === settle) {
+          state._onStreamDone = null;
+          state._streamingTTS = false;
+          settle();
+        }
+      }, 500);
     });
+  }
+};
+
+StreamingTTS.onSpeak = () => {
+  if (VoiceSession.active && VoiceSession.phase !== 'speaking') {
+    VoiceSession.setPhase('speaking', 'Speaking… talk or tap to interrupt');
   }
 };
 
@@ -1077,227 +1214,255 @@ const PHANTOM_PHRASES = new Set([
   'thank you for watching','thanks for watching','please subscribe','subscribe',
   'the end','a film by','film by','subtitles by','amara.org','amara org',
   'blank audio','music','silence','applause','laughter',
-  'you','the','a','an','ok','okay','yeah','yes','no','bye','hi','hello',
-  'hmm','mm hmm','uh','um','oh','ah','eh','wow','right','really','so','and','but','or'
+  'you','the','a','an','uh','um','hmm','mm hmm','oh','ah','eh'
 ]);
 function looksLikePhantom(text) {
   if (!text) return true;
   const t = String(text).trim();
   if (t.length < 2) return true;
-  const lower = t.toLowerCase().replace(/[.,!?;:。、！？…♪"'"'`~]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const lower = t.toLowerCase().replace(/[.,!?;:。、！？…♪"'`~]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!lower) return true;
   if (PHANTOM_PHRASES.has(lower)) return true;
-  const words = lower.split(/\s+/);
-  if (words.length === 1 && lower.length <= 3) return true;
   if (/^[\[\(][^\]\)]{0,40}[\]\)]$/.test(t)) return true;
   if (!/[\p{L}\p{N}]/u.test(t)) return true;
   return false;
 }
 
-// ============ INLINE DICTATION (mic button) ============
-let _inlineRecognition = null;
-let _inlineDictationActive = false;
-let _inlineBaseText = '';
-let _inlineFinalText = '';
-let _inlineInterimText = '';
-let _inlineNoSpeechCount = 0;
-let _inlineUseWhisper = false;
-
-function startInlineDictation() {
-  if (_inlineDictationActive) { stopInlineDictation(); return; }
-  if (!navigator.mediaDevices?.getUserMedia) {
-    toast('Voice input is not supported on this device', 'error');
-    return;
-  }
-  getAudioContext();
-
-  _inlineDictationActive = true;
-  _inlineBaseText = inputEl.value || '';
-  _inlineFinalText = '';
-  _inlineInterimText = '';
-  _inlineNoSpeechCount = 0;
-  micBtn.classList.add('listening');
-
-  const SR = getSpeechRecognition();
-  if (SR && !_inlineUseWhisper) {
-    _startInlineWebSpeech();
-  } else {
-    _startInlineWhisper();
-  }
-}
-
-function _renderInlineInput() {
-  const parts = [];
-  if (_inlineBaseText) parts.push(_inlineBaseText.replace(/\s+$/, ''));
-  if (_inlineFinalText) parts.push(_inlineFinalText.replace(/^\s+|\s+$/g, ''));
-  if (_inlineInterimText) parts.push(_inlineInterimText.replace(/^\s+/, ''));
-  inputEl.value = parts.join(' ').replace(/\s+/g, ' ').trim();
+// ============ DICTATION (mic button → text in the box, send manually) ============
+function insertDictatedText(text) {
+  const clean = String(text || '').trim();
+  if (!clean) return;
+  const existing = inputEl.value.replace(/\s+$/, '');
+  inputEl.value = existing ? `${existing} ${clean}` : clean;
   autoGrow();
   updateSendButton();
+  if (!PLATFORM.isMobile) inputEl.focus();
+  else { try { inputEl.scrollTop = inputEl.scrollHeight; } catch {} }
 }
 
-function _startInlineWebSpeech() {
-  if (!_inlineDictationActive) return;
+const Dictation = {
+  state: 'idle',          // idle | recording | transcribing | live
+  recorder: null,
+  timer: null,
+  startedAt: 0,
+  savedPlaceholder: '',
+  // live (Web Speech) mode
+  rec: null,
+  baseText: '',
+  finalText: '',
+  interimText: '',
+  noSpeechCount: 0,
 
-  if (_inlineRecognition) {
-    const old = _inlineRecognition;
-    _inlineRecognition = null;
-    try { old.onend = null; old.onresult = null; old.onerror = null; } catch {}
-    try { old.abort(); } catch {}
-  }
+  toggle() {
+    if (this.state === 'recording') { this.finishRecording(); return; }
+    if (this.state === 'live') { this.stopLive(); return; }
+    if (this.state === 'transcribing') return;
+    if (!window.isSecureContext) { toast('Voice typing requires a secure (HTTPS) connection.', 'error', 5000); return; }
+    getAudioContext();
+    if (preferredVoiceEngine() === 'webspeech') this.startLive();
+    else this.startRecording();
+  },
 
-  const SR = getSpeechRecognition();
-  if (!SR) { _startInlineWhisper(); return; }
+  cancel() {
+    if (this.state === 'recording' && this.recorder) { this.state = 'idle'; try { this.recorder.abort('cancel'); } catch {} }
+    if (this.state === 'live') this.stopLive();
+    this._resetUi();
+  },
 
-  const mobile = isMobileDevice();
-  const rec = new SR();
-  rec.continuous = !mobile;
-  rec.interimResults = true;
-  rec.lang = pickRecognitionLang();
-  rec.maxAlternatives = 1;
-  _inlineRecognition = rec;
+  _setUi(mode) {
+    micBtn.classList.toggle('listening', mode === 'recording' || mode === 'live');
+    micBtn.classList.toggle('transcribing', mode === 'transcribing');
+    micBtn.setAttribute('aria-label', mode === 'recording' || mode === 'live' ? 'Stop dictation' : 'Dictate');
+    micBtn.title = mode === 'recording' || mode === 'live' ? 'Tap to finish' : 'Dictate';
+  },
+  _resetUi() {
+    if (this.timer) { clearInterval(this.timer); this.timer = null; }
+    micBtn.style.removeProperty('--level');
+    this._setUi('idle');
+    if (this.savedPlaceholder) { inputEl.placeholder = this.savedPlaceholder; this.savedPlaceholder = ''; }
+    this.state = 'idle';
+  },
 
-  let sessionFinal = '';
-
-  rec.onresult = (e) => {
-    if (!_inlineDictationActive || _inlineRecognition !== rec) return;
-    let sf = '', si = '';
-    for (let k = e.resultIndex; k < e.results.length; k++) {
-      const t = e.results[k][0].transcript;
-      if (e.results[k].isFinal) sf += t;
-      else si += t;
-    }
-    sessionFinal = sf;
-    _inlineFinalText = sf;
-    _inlineInterimText = si;
-    _renderInlineInput();
-  };
-
-  rec.onerror = (e) => {
-    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-      toast('Microphone access denied', 'error');
-      stopInlineDictation();
-    } else if (e.error === 'language-not-supported' || e.error === 'bad-grammar') {
-      console.log('[inline] lang unsupported → Whisper');
-      _inlineUseWhisper = true;
-      stopInlineDictation();
-      startInlineDictation();
-    } else if (e.error === 'no-speech') {
-      _inlineNoSpeechCount++;
-      if (_inlineNoSpeechCount > 8) stopInlineDictation();
-    } else {
-       console.log('[inline] WebSpeech error, switching to Whisper:', e.error);
-       _inlineUseWhisper = true;
-       stopInlineDictation();
-       startInlineDictation();
-    }
-  };
-
-  rec.onend = () => {
-    if (_inlineRecognition !== rec) return;
-    if (!_inlineDictationActive) return;
-    if (sessionFinal) {
-      const parts = [];
-      if (_inlineBaseText) parts.push(_inlineBaseText.replace(/\s+$/, ''));
-      parts.push(sessionFinal.replace(/^\s+|\s+$/g, ''));
-      _inlineBaseText = parts.join(' ').replace(/\s+/g, ' ').trim();
-    }
-    _inlineFinalText = '';
-    _inlineInterimText = '';
-    _renderInlineInput();
-    _inlineRecognition = null;
-    setTimeout(() => { if (_inlineDictationActive) _startInlineWebSpeech(); }, 120);
-  };
-
-  try { rec.start(); }
-  catch (e) {
-    console.warn('[inline] start failed:', e);
-    _inlineRecognition = null;
-    if (_inlineDictationActive) setTimeout(() => _startInlineWebSpeech(), 300);
-  }
-}
-
-async function _startInlineWhisper() {
-  try {
-    const rec = createRecorder({
-      maxMs: 60000,
-      silenceMs: 1500,
-      minSpeechMs: 400,
-      minPeakRms: 0.015,
-      vadThreshold: 0.010,
-      vadMultiplier: 2.0,
-      autoStopOnSilence: true
-    });
-    state._inlineRecorder = rec;
-    const blob = await rec.promise;
-    state._inlineRecorder = null;
-    if (!_inlineDictationActive) return;
-    stopInlineDictation();
-    if (!blob) { toast('No speech detected', 'info', 2000); return; }
-    if (blob.size < 1400) { toast('Recording too short', 'info', 1800); return; }
-    const base64 = arrayBufferToBase64(await blob.arrayBuffer());
-    const res = await fetch('/api/stt', {
-      method: 'POST',
-      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ audio: base64, mime: blob.type || 'audio/webm', hint: pickRecognitionLang() })
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      toast(err.error || 'Transcription failed', 'error');
+  // ---- Record → transcribe on the server (phones, tablets, Safari, Firefox) ----
+  startRecording() {
+    if (!recorderSupported()) {
+      toast(PLATFORM.isInApp
+        ? 'Voice typing does not work in this app\'s built-in browser. Open DeepRWA in Chrome or Safari.'
+        : 'Voice typing is not supported in this browser. Please update it or use Chrome / Safari.', 'error', 6000);
       return;
     }
-    const data = await res.json();
-    const text = (data.text || '').trim();
-    if (!text) { toast('No speech detected', 'info'); return; }
-    const existing = inputEl.value.trim();
-    inputEl.value = existing ? (existing + ' ' + text) : text;
+    this.state = 'recording';
+    this.savedPlaceholder = inputEl.placeholder;
+    this.startedAt = Date.now();
+    this._setUi('recording');
+    const tick = () => {
+      const s = Math.floor((Date.now() - this.startedAt) / 1000);
+      inputEl.placeholder = `Listening… ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')} — tap the mic when you're done`;
+    };
+    tick();
+    this.timer = setInterval(tick, 500);
+    const rec = createRecorder({
+      maxMs: 120000,
+      silenceMs: 4000,          // long pauses are fine; tap the mic to finish sooner
+      minSpeechMs: 150,
+      minPeakRms: 0.006,
+      vadThreshold: 0.01,
+      vadMultiplier: 2.0,
+      autoStopOnSilence: true,
+      noSpeechTimeoutMs: 15000,
+      onLevel: (l) => micBtn.style.setProperty('--level', l.toFixed(2))
+    });
+    this.recorder = rec;
+    rec.promise
+      .then((blob) => this._onRecorded(blob))
+      .catch((e) => {
+        this.recorder = null;
+        const wasRecording = this.state === 'recording';
+        this._resetUi();
+        if (wasRecording && e && e.message !== 'cancel') toast(micErrorMessage(e), 'error', 6000);
+      });
+  },
+
+  finishRecording() {
+    if (this.recorder) this.recorder.stop();
+  },
+
+  async _onRecorded(blob) {
+    this.recorder = null;
+    if (this.timer) { clearInterval(this.timer); this.timer = null; }
+    micBtn.style.removeProperty('--level');
+    if (this.state !== 'recording') { this._resetUi(); return; }
+    if (!blob || blob.size < 800) {
+      this._resetUi();
+      toast('No speech detected — try again, a little closer to the mic.', 'info', 2800);
+      return;
+    }
+    this.state = 'transcribing';
+    this._setUi('transcribing');
+    inputEl.placeholder = 'Transcribing your voice…';
+    try {
+      const text = await transcribeBlob(blob);
+      if (!text || looksLikePhantom(text)) toast('No speech detected', 'info', 2200);
+      else insertDictatedText(text);
+    } catch (e) {
+      toast(e.message || 'Transcription failed', 'error');
+    } finally {
+      this._resetUi();
+    }
+  },
+
+  // ---- Live captions with the browser recogniser (desktop Chrome / Edge) ----
+  startLive() {
+    const SR = getSpeechRecognition();
+    if (!SR) { this.startRecording(); return; }
+    this.state = 'live';
+    this.baseText = inputEl.value || '';
+    this.finalText = '';
+    this.interimText = '';
+    this.noSpeechCount = 0;
+    this._setUi('live');
+    this._startLiveSession();
+  },
+
+  _render() {
+    const parts = [];
+    if (this.baseText) parts.push(this.baseText.replace(/\s+$/, ''));
+    if (this.finalText) parts.push(this.finalText.trim());
+    if (this.interimText) parts.push(this.interimText.replace(/^\s+/, ''));
+    inputEl.value = parts.join(' ').replace(/\s+/g, ' ').trim();
     autoGrow();
     updateSendButton();
-    inputEl.focus();
-  } catch (e) {
-    state._inlineRecorder = null;
-    if (e.message !== 'aborted' && e.message !== 'exit') console.warn('[dictate]', e);
-    stopInlineDictation();
-  }
-}
+  },
 
-function stopInlineDictation() {
-  _inlineDictationActive = false;
-  if (_inlineRecognition) {
-    const old = _inlineRecognition;
-    _inlineRecognition = null;
-    try { old.onend = null; old.onresult = null; old.onerror = null; } catch {}
-    try { old.abort(); } catch {}
+  _startLiveSession() {
+    if (this.state !== 'live') return;
+    const SR = getSpeechRecognition();
+    if (this.rec) { const old = this.rec; this.rec = null; try { old.onend = old.onresult = old.onerror = null; old.abort(); } catch {} }
+    const rec = new SR();
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.lang = pickRecognitionLang();
+    rec.maxAlternatives = 1;
+    this.rec = rec;
+    let sessionFinal = '';
+
+    rec.onresult = (e) => {
+      if (this.state !== 'live' || this.rec !== rec) return;
+      let sf = '', si = '';
+      for (let k = 0; k < e.results.length; k++) {
+        const t = e.results[k][0].transcript;
+        if (e.results[k].isFinal) sf += t; else si += t;
+      }
+      sessionFinal = sf;
+      this.finalText = sf;
+      this.interimText = si;
+      this._render();
+    };
+    rec.onerror = (e) => {
+      if (e.error === 'not-allowed') { toast('Microphone access denied', 'error'); this.stopLive(); return; }
+      if (['service-not-allowed', 'audio-capture', 'network', 'language-not-supported', 'bad-grammar'].includes(e.error)) {
+        console.log(`[dictation] web speech error "${e.error}" → server transcription`);
+        _forceWhisper = true;
+        this.stopLive();
+        this.startRecording();
+        return;
+      }
+      if (e.error === 'no-speech') { this.noSpeechCount++; if (this.noSpeechCount > 6) this.stopLive(); }
+    };
+    rec.onend = () => {
+      if (this.rec !== rec || this.state !== 'live') return;
+      if (sessionFinal) this.baseText = [this.baseText.replace(/\s+$/, ''), sessionFinal.trim()].filter(Boolean).join(' ');
+      this.finalText = '';
+      this.interimText = '';
+      this._render();
+      this.rec = null;
+      setTimeout(() => { if (this.state === 'live') this._startLiveSession(); }, 120);
+    };
+    try { rec.start(); }
+    catch (e) { console.warn('[dictation] start failed:', e); this.rec = null; setTimeout(() => this._startLiveSession(), 300); }
+  },
+
+  stopLive() {
+    if (this.rec) {
+      const old = this.rec; this.rec = null;
+      try { old.onend = old.onresult = old.onerror = null; old.abort(); } catch {}
+    }
+    if (this.finalText || this.interimText) {
+      this.baseText = [this.baseText.replace(/\s+$/, ''), (this.finalText + ' ' + this.interimText).trim()].filter(Boolean).join(' ');
+      this.finalText = ''; this.interimText = '';
+      this._render();
+    }
+    this._resetUi();
   }
-  if (state._inlineRecorder) {
-    try { state._inlineRecorder.stop(); } catch {}
-    state._inlineRecorder = null;
-  }
-  micBtn.classList.remove('listening');
-}
+};
+
+// Back-compat names used elsewhere in the file.
+function startInlineDictation() { Dictation.toggle(); }
+function stopInlineDictation() { Dictation.cancel(); }
 
 function setupVoiceControls() {
   micBtn.addEventListener('click', () => {
     getAudioContext();
+    unlockTTS();
     if (VoiceSession.active) { VoiceSession.bargeIn(); return; }
-    startInlineDictation();
+    Dictation.toggle();
   });
 
+  // Tapping the voice pill also interrupts DeepRWA while it is speaking.
+  voiceStatus.addEventListener('click', () => { if (VoiceSession.active) VoiceSession.bargeIn(); });
+
   sendBtn.addEventListener('click', async () => {
-    if (VoiceSession.active) { VoiceSession.exit('Voice session ended.'); return; }
+    if (VoiceSession.active) { VoiceSession.exit('Voice conversation ended.'); return; }
     if (state.isGenerating) { stopGeneration(); return; }
+    if (Dictation.state === 'recording') { Dictation.finishRecording(); return; }
+    if (Dictation.state === 'live') Dictation.stopLive();
 
     const hasText = inputEl.value.trim().length > 0;
     const hasFiles = state.attachments.length > 0;
     if (hasText || hasFiles) { formEl.requestSubmit(); return; }
 
-    if (!window.isSecureContext) {
-      toast('Voice requires a secure (HTTPS) connection.', 'error', 5000);
-      return;
-    }
-    if (!navigator.mediaDevices) {
-      toast('Voice conversations are not supported in this browser. Try opening DeepRWA in Chrome or Safari directly.', 'error', 6000);
-      return;
-    }
+    getAudioContext();
+    unlockTTS();
     VoiceSession.enter();
   });
 }
@@ -1366,16 +1531,19 @@ function registerServiceWorker() {
     })
     .catch((e) => { console.warn('[sw]', e.message); });
 
+  // Only reload when an OLD version was controlling the page (a real update),
+  // not on someone's very first visit.
+  const hadController = !!navigator.serviceWorker.controller;
   let refreshed = false;
   navigator.serviceWorker.addEventListener('message', (event) => {
-    if (event.data?.type === 'SW_UPDATED' && !refreshed) {
+    if (event.data?.type === 'SW_UPDATED' && !refreshed && hadController && !state.isGenerating && !VoiceSession.active) {
       refreshed = true;
       console.log('[sw] updated — reloading page');
       location.reload();
     }
   });
   navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (!refreshed) {
+    if (!refreshed && hadController && !state.isGenerating && !VoiceSession.active) {
       refreshed = true;
       location.reload();
     }
@@ -1409,6 +1577,8 @@ async function init() {
   setupVisualViewport();
   setupVoiceControls();
   registerServiceWorker();
+  applyUrlVoiceOverride();
+  setupInstallUI();
   renderUser(); renderChatList(); renderWelcome(); updateSendButton();
   inputEl.focus();
   if (state.token) {
@@ -1432,6 +1602,17 @@ async function init() {
   }
   restoreAuthModalState();
   startSessionCheck();
+}
+
+// ?voice=whisper | webspeech | auto — lets you force a speech engine for testing.
+function applyUrlVoiceOverride() {
+  const v = new URLSearchParams(location.search).get('voice');
+  if (!v) return;
+  try {
+    if (v === 'auto') localStorage.removeItem(VOICE_ENGINE_KEY);
+    else if (v === 'whisper' || v === 'webspeech') localStorage.setItem(VOICE_ENGINE_KEY, v);
+  } catch {}
+  toast(`Voice engine: ${v === 'auto' ? 'automatic' : v}`, 'info', 2500);
 }
 
 // ============ SESSION CHECK ============
@@ -1483,9 +1664,12 @@ function renderUser() {
     refreshIcons();
     $('accountBtn').addEventListener('click', (e) => { e.stopPropagation(); toggleAccountDropdown(e.currentTarget); });
   } else {
-    sidebarFooter.innerHTML = `<button class="auth-btn" id="authBtn"><i data-lucide="log-in"></i><span>Log in</span></button>`;
+    sidebarFooter.innerHTML = `
+      <button class="auth-btn getapp-side-btn" id="guestGetAppBtn"><i data-lucide="download"></i><span>Get app</span></button>
+      <button class="auth-btn" id="authBtn"><i data-lucide="log-in"></i><span>Log in</span></button>`;
     refreshIcons();
     $('authBtn').addEventListener('click', () => openAuthModal('login'));
+    $('guestGetAppBtn').addEventListener('click', () => openGetAppModal());
   }
 }
 
@@ -1512,6 +1696,7 @@ accountDropdown.addEventListener('click', (e) => {
   accountDropdown.classList.add('hidden');
   if (act === 'profile') openProfileModal();
   else if (act === 'settings') openSettingsModal('account');
+  else if (act === 'getapp') openGetAppModal();
   else if (act === 'logout') confirmLogout();
 });
 
@@ -2024,12 +2209,13 @@ function renderWelcome() {
     <div class="welcome">
       <img src="/av.png" alt="DeepRWA" class="welcome-logo" />
       <h1 class="brand-name brand-name-lg"><span class="b-deep">Deep</span><span class="b-r">R</span><span class="b-w">W</span><span class="b-a">A</span></h1>
-      <p>Ask me anything about <strong>Rwanda</strong> — history, culture, tourism, people, news, and more. In any language.</p>
+      <p>Your AI assistant for <strong>anything</strong> — and the expert on <strong>Rwanda</strong>. Ask, write, learn or talk, in any language.</p>
       <div class="chips">
-        <button class="chip" data-q="Tell me about the history of Rwanda">History</button>
-        <button class="chip" data-q="What are the top tourist attractions in Rwanda?">Tourism</button>
-        <button class="chip" data-q="Who are some famous Rwandan people?">People</button>
-        <button class="chip" data-q="Explain Umuganda and its importance">Culture</button>
+        <button class="chip" data-q="Tell me about the history of Rwanda">Rwanda history</button>
+        <button class="chip" data-q="Plan a 3-day trip in Rwanda for a first-time visitor">Plan a trip</button>
+        <button class="chip" data-q="Help me write a professional CV for a job in Kigali">Write my CV</button>
+        <button class="chip" data-q="Explain photosynthesis simply, with an example">Homework help</button>
+        <button class="chip" data-q="How do I register a small business in Rwanda?">Start a business</button>
       </div>
     </div>`;
 }
@@ -2435,8 +2621,9 @@ formEl.addEventListener('submit', async (e) => {
   const useTTS = state._streamingTTS === true;
   if (useTTS) {
     StreamingTTS.start();
-    if (VoiceSession.active) VoiceSession.setPhase('speaking', 'Speaking…');
+    if (VoiceSession.active) VoiceSession.setPhase('thinking', 'Thinking…');
   }
+  if (Dictation.state === 'live') Dictation.stopLive();
 
   try {
     let chat = state.chats.find(c => c.id === state.activeChatId);
@@ -2461,7 +2648,9 @@ formEl.addEventListener('submit', async (e) => {
     state.messages.push(assistantMsg);
     renderMessages();
 
-    if (isFirstMessage && text) {
+    // Guests get an AI title from /api/chat/title; for logged-in users the
+    // server names the chat in the background (see loadConversations below).
+    if (isFirstMessage && text && !state.user) {
       requestTitle(text).then(title => {
         if (!title) return;
         const c = state.chats.find(x => x.id === chat.id) || chat;
@@ -2482,18 +2671,22 @@ formEl.addEventListener('submit', async (e) => {
 
     const endpoint = state.user ? '/api/chat' : '/api/chat/guest';
     const payload = {
-      messages: state.messages.map(m => {
-        const out = { role: m.role, content: m.content };
-        if (m.role === 'user' && Array.isArray(m.files) && m.files.length) out.files = m.files;
-        return out;
-      }),
-      attachments: attachmentsForAI
+      // Skip the empty assistant placeholder and failed/stopped replies.
+      messages: state.messages
+        .filter(m => m !== assistantMsg && (m.role === 'user' || (m.role === 'assistant' && m.content && m.content !== '*Stopped.*')))
+        .map(m => {
+          const out = { role: m.role, content: m.content };
+          if (m.role === 'user' && Array.isArray(m.files) && m.files.length) out.files = m.files;
+          return out;
+        }),
+      attachments: attachmentsForAI,
+      voice: useTTS && VoiceSession.active
     };
     if (state.user) payload.conversationId = isLocalId(chat.id) ? null : chat.id;
 
     let res;
     try { res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload), signal: state.abortController.signal }); }
-    catch (fetchErr) { throw new Error('NETWORK: ' + fetchErr.message); }
+    catch (fetchErr) { if (fetchErr && fetchErr.name === 'AbortError') throw fetchErr; throw new Error('NETWORK: ' + fetchErr.message); }
     if (!res.ok || !res.body) throw new Error('Bad response: ' + res.status);
 
     const serverConvId = res.headers.get('X-Conversation-Id');
@@ -2545,7 +2738,11 @@ formEl.addEventListener('submit', async (e) => {
       if (fullText) assistantMsg.content = fullText;
       const actEl = chatEl.querySelector(`.msg-assistant[data-id="${assistantMsg.id}"] .msg-actions-assistant`);
       if (actEl) actEl.classList.remove('hidden');
-      if (state.user) await loadConversations();
+      if (state.user) {
+        loadConversations();
+        // The server names new chats in the background — pick the title up shortly after.
+        if (isFirstMessage) setTimeout(() => { if (state.user) loadConversations(); }, 4000);
+      }
       if (state.view === 'files') renderFilesList();
       setTimeout(() => { if (state.view === 'files') renderFilesList(); }, 800);
     } else { assistantMsg.content = 'No response received.'; renderMessages(); }
@@ -2617,7 +2814,7 @@ async function saveEditAndSend(newText) {
     const endpoint = state.user ? '/api/chat' : '/api/chat/guest';
     const payload = {
       messages: state.messages
-        .filter(m => m.role === 'user' || (m.role === 'assistant' && m.content))
+        .filter(m => m !== assistantMsg && (m.role === 'user' || (m.role === 'assistant' && m.content && m.content !== '*Stopped.*')))
         .map(m => {
           const out = { role: m.role, content: m.content };
           if (m.role === 'user' && Array.isArray(m.files) && m.files.length) out.files = m.files;
@@ -2627,7 +2824,7 @@ async function saveEditAndSend(newText) {
     if (state.user && chat && !isLocalId(chat.id)) payload.conversationId = chat.id;
     let res;
     try { res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(payload), signal: state.abortController.signal }); }
-    catch (fetchErr) { throw new Error('NETWORK: ' + fetchErr.message); }
+    catch (fetchErr) { if (fetchErr && fetchErr.name === 'AbortError') throw fetchErr; throw new Error('NETWORK: ' + fetchErr.message); }
     if (!res.ok || !res.body) throw new Error('Bad response');
     const reader = res.body.getReader();
     const dec = new TextDecoder();
@@ -2709,7 +2906,12 @@ async function loadConversations() {
   try {
     const res = await fetch('/api/conversations', { headers: authHeaders() });
     const data = await res.json();
-    const serverChats = (data.conversations || []).map(c => ({ id: c.id, title: c.title, pinned: c.pinned, messages: [], createdAt: c.created_at, updatedAt: c.updated_at }));
+    const prev = new Map(state.chats.map(c => [c.id, c]));
+    const serverChats = (data.conversations || []).map(c => {
+      const old = prev.get(c.id);
+      const title = (c.title && c.title !== 'New chat') ? c.title : (old && old.title) || c.title || 'New chat';
+      return { id: c.id, title, pinned: c.pinned, messages: (old && old.messages) || [], createdAt: c.created_at, updatedAt: c.updated_at };
+    });
     state.chats = serverChats;
     renderChatList();
   } catch {}
@@ -3477,6 +3679,9 @@ function renderDiagnosticPanel() {
     ['Device type', deviceType],
     ['Browser (UA)', browser],
     ['Mobile device (our check)', isMobileDevice() ? 'yes' : 'no'],
+    ['Detected OS / browser', `${PLATFORM.os} / ${PLATFORM.browser}`],
+    ['Voice engine in use', preferredVoiceEngine() === 'webspeech' ? 'Browser speech (live captions)' : 'Server transcription (record → Whisper)'],
+    ['One-tap install available', _deferredInstallPrompt ? '✓ yes' : 'no (manual steps shown)'],
     ['In-app browser?', isInApp ? '⚠ YES (blocks mic access)' : 'no'],
     ['Page URL', location.href],
     ['Protocol', location.protocol],
@@ -3572,6 +3777,342 @@ function maybeShowDiagnosticPanel() {
   const params = new URLSearchParams(location.search);
   if (params.has('diag') || params.has('debug')) {
     setTimeout(renderDiagnosticPanel, 300);
+  }
+}
+
+// ============ INSTALL APP (PWA) — banner + "Get app" ============
+// One-tap install exists only where the browser supports it (Chrome, Edge,
+// Opera, Samsung Internet… on Android, Windows, macOS, Linux, ChromeOS).
+// Everywhere else (iPhone/iPad, Safari on Mac, Firefox) the browser does not
+// allow a website to install itself, so we show short, device-specific steps.
+
+// Optional: if you later publish packaged apps (e.g. an Android APK on GitHub
+// Releases or a Microsoft Store listing), put the links here and they will
+// appear in the "Get app" window automatically. Leave empty to hide.
+const APP_DOWNLOADS = {
+  android: '',   // e.g. 'https://github.com/mukizacreator/deeprwa/releases/latest'
+  windows: '',   // e.g. Microsoft Store link
+  other: ''
+};
+
+const INSTALL_SNOOZE_KEY = 'deeprwa_install_snooze_until';
+const INSTALLED_KEY = 'deeprwa_installed';
+const BANNER_VISIBLE_MS = 9000;
+let _installBannerEl = null;
+let _installBannerShownThisPage = false;
+let _bannerHideTimer = null;
+let _bannerRemaining = BANNER_VISIBLE_MS;
+let _bannerShownAt = 0;
+
+function installSnoozed() {
+  try { return Date.now() < (parseInt(localStorage.getItem(INSTALL_SNOOZE_KEY), 10) || 0); } catch { return false; }
+}
+function snoozeInstall(days) {
+  try { localStorage.setItem(INSTALL_SNOOZE_KEY, String(Date.now() + days * 86400000)); } catch {}
+}
+function markInstalled() {
+  try { localStorage.setItem(INSTALLED_KEY, '1'); } catch {}
+}
+function wasInstalledBefore() {
+  try { return localStorage.getItem(INSTALLED_KEY) === '1'; } catch { return false; }
+}
+function isChromiumInstallCapable() {
+  // Browsers that fire `beforeinstallprompt` when the app is installable.
+  return !PLATFORM.isIOS && !PLATFORM.isInApp && !PLATFORM.isFirefox && !PLATFORM.isSafari &&
+    (PLATFORM.isChrome || PLATFORM.isEdge || PLATFORM.isOpera || PLATFORM.isSamsung);
+}
+
+const SHARE_ICON_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:-3px"><path d="M12 3v12"/><path d="m8 7 4-4 4 4"/><rect x="4" y="11" width="16" height="10" rx="2"/></svg>';
+
+// Returns install steps for a given platform/browser combination.
+function installGuideFor(p) {
+  if (p.isInApp) {
+    return {
+      title: 'Open DeepRWA in your browser first',
+      steps: [
+        p.isIOS ? 'Tap the <b>•••</b> or <b>Share</b> menu in this app.' : 'Tap the <b>⋮</b> menu at the top-right of this screen.',
+        p.isIOS ? 'Choose <b>Open in Safari</b> (or Open in browser).' : 'Choose <b>Open in Chrome</b> (or Open in browser).',
+        'Then come back to the <b>Get app</b> button and install.'
+      ],
+      note: 'Apps like WhatsApp, Instagram and Facebook open links in a mini-browser that cannot install apps or use the microphone.'
+    };
+  }
+  if (p.isIOS) {
+    if (p.isSafari) {
+      return {
+        title: `Install on your ${p.os === 'iPadOS' ? 'iPad' : 'iPhone'}`,
+        steps: [
+          `Tap the <b>Share</b> button ${SHARE_ICON_SVG} ${p.os === 'iPadOS' ? 'at the top of Safari' : 'at the bottom of Safari'}.`,
+          'Scroll down and tap <b>Add to Home Screen</b>.',
+          'Keep <b>Open as Web App</b> switched on (if shown), then tap <b>Add</b>.'
+        ],
+        note: 'Apple does not let websites show a one-tap install button, so it takes these 3 taps. DeepRWA then opens full-screen like a normal app.'
+      };
+    }
+    return {
+      title: `Install on your ${p.os === 'iPadOS' ? 'iPad' : 'iPhone'}`,
+      steps: [
+        `Tap the <b>Share</b> button ${SHARE_ICON_SVG} (in the address bar, or inside the <b>•••</b> menu).`,
+        'Tap <b>Add to Home Screen</b>.',
+        'Tap <b>Add</b>.'
+      ],
+      note: `Works in ${p.browser} on iOS 16.4 or newer. On older iOS versions, open this page in <b>Safari</b> to install.`
+    };
+  }
+  if (p.isAndroid) {
+    if (p.isSamsung) {
+      return {
+        title: 'Install on your Samsung / Android phone',
+        steps: [
+          'Tap the <b>install icon</b> (⬇) in the address bar if you see it — or tap the <b>☰ menu</b> at the bottom-right.',
+          'Tap <b>Add page to</b> → <b>Apps screen</b> or <b>Home screen</b>.',
+          'Confirm with <b>Add</b> / <b>Install</b>.'
+        ]
+      };
+    }
+    if (p.isFirefox) {
+      return {
+        title: 'Install on your Android phone',
+        steps: ['Tap the <b>⋮</b> menu.', 'Tap <b>Add app to Home screen</b> (or <b>Install</b>).', 'Confirm with <b>Add</b>.']
+      };
+    }
+    if (p.isEdge) {
+      return {
+        title: 'Install on your Android phone',
+        steps: ['Tap the <b>☰ / •••</b> menu at the bottom.', 'Tap <b>Add to phone</b> (or <b>Install app</b>).', 'Confirm with <b>Install</b>.']
+      };
+    }
+    if (p.isOpera) {
+      return {
+        title: 'Install on your Android phone',
+        steps: ['Tap the <b>⋮</b> menu.', 'Tap <b>Add to</b> → <b>Home screen</b>.', 'Confirm with <b>Add</b>.']
+      };
+    }
+    return {
+      title: 'Install on your Android phone',
+      steps: ['Tap the <b>⋮</b> menu at the top-right of Chrome.', 'Tap <b>Install app</b> (or <b>Add to Home screen</b> → <b>Install</b>).', 'Confirm with <b>Install</b>.']
+    };
+  }
+  if (p.isMac && p.isSafari) {
+    return {
+      title: 'Install on your Mac',
+      steps: ['In Safari\'s menu bar, click <b>File</b>.', 'Click <b>Add to Dock…</b>', 'Click <b>Add</b>. DeepRWA appears in your Dock and Launchpad.'],
+      note: 'Needs macOS Sonoma (14) / Safari 17 or newer. On older versions, use Chrome or Edge to install.'
+    };
+  }
+  if (p.isFirefox) {
+    return {
+      title: `Install on ${p.os}`,
+      steps: ['Desktop Firefox can\'t install web apps.', 'Open <b>deeprwa.agentdomains.co</b> in <b>Chrome</b> or <b>Edge</b>.', 'Click the <b>install icon</b> in the address bar.'],
+      note: 'You can keep using DeepRWA in Firefox normally — only the app install needs Chrome or Edge.'
+    };
+  }
+  if (p.isEdge) {
+    return {
+      title: `Install on ${p.os}`,
+      steps: ['Click the <b>App available</b> icon in the address bar — or the <b>•••</b> menu.', 'Choose <b>Apps</b> → <b>Install DeepRWA</b>.', 'Click <b>Install</b>. It opens in its own window and can be pinned to the taskbar / Start.']
+    };
+  }
+  return {
+    title: `Install on ${p.os}`,
+    steps: ['Click the <b>install icon</b> (a monitor with a down-arrow) on the right side of the address bar.', 'Or open the <b>⋮</b> menu → <b>Cast, save and share</b> → <b>Install page as app…</b>', 'Click <b>Install</b>. It opens in its own window and can be pinned to the taskbar / Dock.']
+  };
+}
+
+const OTHER_DEVICE_GUIDES = [
+  { label: 'Android phone or tablet', p: { isAndroid: true, isChrome: true, os: 'Android' } },
+  { label: 'iPhone / iPad', p: { isIOS: true, isSafari: true, os: 'iOS', browser: 'Safari' } },
+  { label: 'Windows / Linux / ChromeOS (Chrome)', p: { isChrome: true, os: 'your computer' } },
+  { label: 'Windows (Microsoft Edge)', p: { isEdge: true, os: 'Windows' } },
+  { label: 'Mac (Safari)', p: { isMac: true, isSafari: true, os: 'macOS' } }
+];
+
+function renderSteps(guide) {
+  return `<ol class="getapp-steps">${guide.steps.map(s => `<li>${s}</li>`).join('')}</ol>${guide.note ? `<p class="getapp-note">${guide.note}</p>` : ''}`;
+}
+
+function openGetAppModal() {
+  accountDropdown.classList.add('hidden');
+  closeSidebar();
+  let modal = document.getElementById('getAppModal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'getAppModal';
+    modal.className = 'modal-backdrop hidden';
+    modal.innerHTML = `<div class="modal modal-getapp"><button class="modal-close" data-getapp-close aria-label="Close"><i data-lucide="x"></i></button><div class="modal-body" id="getAppBody"></div></div>`;
+    document.body.appendChild(modal);
+    modal.addEventListener('click', async (e) => {
+      if (e.target === modal || e.target.closest('[data-getapp-close]')) { modal.classList.add('hidden'); return; }
+      if (e.target.closest('[data-getapp-install]')) { await triggerNativeInstall(); renderGetAppBody(); return; }
+      if (e.target.closest('[data-getapp-share]')) { await shareAppLink(); return; }
+    });
+  }
+  renderGetAppBody();
+  modal.classList.remove('hidden');
+}
+
+function renderGetAppBody() {
+  const body = document.getElementById('getAppBody');
+  if (!body) return;
+  const standalone = isStandaloneApp();
+  const canNative = !!_deferredInstallPrompt;
+  const guide = installGuideFor(PLATFORM);
+  const downloads = [
+    APP_DOWNLOADS.android && `<a class="btn-secondary getapp-dl" href="${APP_DOWNLOADS.android}" target="_blank" rel="noopener"><i data-lucide="smartphone"></i>Android app (APK)</a>`,
+    APP_DOWNLOADS.windows && `<a class="btn-secondary getapp-dl" href="${APP_DOWNLOADS.windows}" target="_blank" rel="noopener"><i data-lucide="monitor"></i>Windows app</a>`,
+    APP_DOWNLOADS.other && `<a class="btn-secondary getapp-dl" href="${APP_DOWNLOADS.other}" target="_blank" rel="noopener"><i data-lucide="package"></i>Other downloads</a>`
+  ].filter(Boolean).join('');
+
+  let main;
+  if (standalone) {
+    main = `<div class="getapp-installed"><i data-lucide="check-circle"></i><div><b>You're using the DeepRWA app.</b><span>To get it on another device, open <b>deeprwa.agentdomains.co</b> there, or use the steps below.</span></div></div>`;
+  } else if (canNative) {
+    main = `<button class="btn-primary getapp-primary" data-getapp-install><i data-lucide="download"></i>Install DeepRWA on this ${PLATFORM.isMobile ? 'phone' : 'computer'}</button>
+      <p class="getapp-note">Free · no app store needed · about 1 MB · updates automatically.</p>`;
+  } else {
+    main = `<div class="getapp-guide"><h4>${guide.title}</h4>${renderSteps(guide)}</div>`;
+  }
+
+  const others = OTHER_DEVICE_GUIDES.map(o => {
+    const g = installGuideFor({ os: '', browser: '', ...o.p });
+    return `<details class="getapp-other"><summary>${o.label}</summary>${renderSteps(g)}</details>`;
+  }).join('');
+
+  body.innerHTML = `
+    <div class="getapp-head">
+      <img src="/av.png" alt="" class="getapp-logo" />
+      <div>
+        <h3>Get the DeepRWA app</h3>
+        <p class="modal-sub">Detected: <b>${escapeHtml(PLATFORM.os)}</b> · ${escapeHtml(PLATFORM.browser)}</p>
+      </div>
+    </div>
+    ${main}
+    ${downloads ? `<div class="getapp-downloads">${downloads}</div>` : ''}
+    <div class="getapp-section-title">Other devices</div>
+    ${others}
+    <button class="btn-secondary getapp-share" data-getapp-share><i data-lucide="share-2"></i>Send the link to another device</button>`;
+  refreshIcons();
+}
+
+async function triggerNativeInstall() {
+  if (!_deferredInstallPrompt) { openGetAppModal(); return false; }
+  const evt = _deferredInstallPrompt;
+  _deferredInstallPrompt = null;
+  document.body.classList.remove('can-install');
+  try {
+    await evt.prompt();
+    const choice = await evt.userChoice;
+    if (choice && choice.outcome === 'accepted') {
+      markInstalled();
+      hideInstallBanner();
+      toast('Installing DeepRWA…', 'success');
+      return true;
+    }
+    snoozeInstall(3);
+  } catch (e) { console.warn('[install]', e); }
+  return false;
+}
+
+async function shareAppLink() {
+  const url = 'https://deeprwa.agentdomains.co/';
+  if (navigator.share) {
+    try { await navigator.share({ title: 'DeepRWA', text: 'DeepRWA — your AI assistant, made in Rwanda', url }); return; } catch (e) { if (e && e.name === 'AbortError') return; }
+  }
+  try { await navigator.clipboard.writeText(url); toast('Link copied — open it on your other device', 'success'); }
+  catch { toast(url, 'info', 6000); }
+}
+
+// ---- Auto banner: slides in, disappears by itself after a few seconds ----
+function showInstallBanner() {
+  if (_installBannerShownThisPage || isStandaloneApp() || installSnoozed()) return;
+  if (!_deferredInstallPrompt && wasInstalledBefore()) return;
+  _installBannerShownThisPage = true;
+  const native = !!_deferredInstallPrompt;
+  const where = PLATFORM.isMobile ? (PLATFORM.isIOS ? (PLATFORM.os === 'iPadOS' ? 'iPad' : 'iPhone') : 'phone') : 'computer';
+  const el = document.createElement('div');
+  el.className = 'install-banner';
+  el.setAttribute('role', 'dialog');
+  el.setAttribute('aria-label', 'Install DeepRWA');
+  el.innerHTML = `
+    <img src="/av.png" alt="" class="install-banner-icon" />
+    <div class="install-banner-text">
+      <strong>Install DeepRWA</strong>
+      <span>${PLATFORM.isInApp ? 'Open in your browser to install the app' : `Add the app to your ${where} — faster, full-screen, one tap away`}</span>
+    </div>
+    <button type="button" class="install-banner-btn">${native ? 'Install' : 'How?'}</button>
+    <button type="button" class="install-banner-close" aria-label="Close"><i data-lucide="x"></i></button>
+    <div class="install-banner-progress"><span style="animation-duration:${BANNER_VISIBLE_MS}ms"></span></div>`;
+  document.body.appendChild(el);
+  _installBannerEl = el;
+  refreshIcons();
+  requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add('show')));
+
+  el.querySelector('.install-banner-btn').addEventListener('click', async () => {
+    if (_deferredInstallPrompt) await triggerNativeInstall();
+    else { snoozeInstall(7); hideInstallBanner(); openGetAppModal(); }
+  });
+  el.querySelector('.install-banner-close').addEventListener('click', () => { snoozeInstall(7); hideInstallBanner(); });
+
+  // Pause the countdown while the user is touching / hovering the banner.
+  const pause = () => {
+    if (!_bannerHideTimer) return;
+    clearTimeout(_bannerHideTimer); _bannerHideTimer = null;
+    _bannerRemaining = Math.max(1500, _bannerRemaining - (Date.now() - _bannerShownAt));
+    el.classList.add('paused');
+  };
+  const resume = () => {
+    if (_bannerHideTimer || !_installBannerEl) return;
+    el.classList.remove('paused');
+    _bannerShownAt = Date.now();
+    _bannerHideTimer = setTimeout(autoHide, _bannerRemaining);
+  };
+  el.addEventListener('pointerenter', pause);
+  el.addEventListener('pointerleave', resume);
+  el.addEventListener('touchstart', pause, { passive: true });
+  el.addEventListener('touchend', () => setTimeout(resume, 1200), { passive: true });
+
+  const autoHide = () => { snoozeInstall(2); hideInstallBanner(); };
+  _bannerRemaining = BANNER_VISIBLE_MS;
+  _bannerShownAt = Date.now();
+  _bannerHideTimer = setTimeout(autoHide, BANNER_VISIBLE_MS);
+}
+
+function hideInstallBanner() {
+  if (_bannerHideTimer) { clearTimeout(_bannerHideTimer); _bannerHideTimer = null; }
+  const el = _installBannerEl;
+  _installBannerEl = null;
+  if (!el) return;
+  el.classList.remove('show');
+  setTimeout(() => el.remove(), 350);
+}
+
+function updateGetAppVisibility() {
+  document.body.classList.toggle('is-standalone', isStandaloneApp());
+}
+
+function setupInstallUI() {
+  updateGetAppVisibility();
+  try {
+    window.matchMedia('(display-mode: standalone)').addEventListener('change', updateGetAppVisibility);
+  } catch {}
+  const topBtn = $('topGetAppBtn');
+  if (topBtn) topBtn.addEventListener('click', () => { if (_deferredInstallPrompt) triggerNativeInstall(); else openGetAppModal(); });
+  if (new URLSearchParams(location.search).has('getapp')) setTimeout(openGetAppModal, 400);
+  if (isStandaloneApp() || installSnoozed()) return;
+
+  if (isChromiumInstallCapable()) {
+    // Chrome / Edge / Samsung… tell us when the app is installable. If the
+    // event already fired, show now; if it never fires (already installed),
+    // stay quiet.
+    if (_deferredInstallPrompt) setTimeout(showInstallBanner, 2500);
+    else {
+      _onInstallPromptReady = () => setTimeout(showInstallBanner, 2500);
+      // Samsung Internet doesn't always fire the event — fall back to steps.
+      if (PLATFORM.isSamsung) setTimeout(() => { if (!_deferredInstallPrompt) showInstallBanner(); }, 6000);
+    }
+  } else {
+    // iPhone / iPad / Mac Safari / Firefox / in-app browsers: manual steps.
+    setTimeout(showInstallBanner, 3000);
   }
 }
 
