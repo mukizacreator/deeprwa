@@ -1,4 +1,4 @@
-// DeepRWA — Complete backend (rev.4.4.0)
+// DeepRWA — Complete backend (rev.4.7.0)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -26,9 +26,10 @@ if (!supabaseUrl || !supabaseKey) console.warn('⚠️  Supabase credentials not
 const supabase = (supabaseUrl && supabaseKey)
   ? createClient(supabaseUrl, supabaseKey, { 
       auth: { autoRefreshToken: false, persistSession: false },
-      realtime: { transport: ws }
+      realtime: { transport: ws } // <--- ADD THIS LINE
     })
   : null;
+
 const supabaseConfigured = !!supabase;
 
 // ============ BREVO ============
@@ -194,34 +195,86 @@ app.get('/av.png', (req, res) => res.sendFile(path.join(__dirname, 'av.png')));
 
 // ============ HEALTH CHECK ============
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', service: 'DeepRWA', version: '4.4.0', time: new Date().toISOString() });
+  res.json({ status: 'ok', service: 'DeepRWA', version: '4.7.0', time: new Date().toISOString() });
 });
 
-// ============ 🌟 NEW SYSTEM PROMPT (ChatGPT-Style + Rwanda Focus) ============
-const SYSTEM_PROMPT = `You are **DeepRWA** — a highly advanced, professional AI assistant created by **Emmanuel Mukiza** under **The Star🌟**. You are designed to be as capable and intelligent as ChatGPT, Gemini, or DeepSeek, but with a specialized foundation in Rwandan knowledge and education.
+// ============ SYSTEM PROMPT ============
+// DeepRWA behaves like a full general-purpose assistant (ChatGPT / Gemini /
+// DeepSeek style) with deep Rwanda expertise. It no longer refuses questions
+// just because they are not about Rwanda.
+function kigaliNow() {
+  try {
+    return new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Africa/Kigali', weekday: 'long', year: 'numeric', month: 'long',
+      day: 'numeric', hour: '2-digit', minute: '2-digit'
+    }).format(new Date());
+  } catch { return new Date().toUTCString(); }
+}
 
-## IDENTITY
-- Your name is DeepRWA.
-- Creator: **Emmanuel Mukiza** (Rwandan national, founder of The Star🌟, launched August 8, 2023). He graduated from Karenge Adventist Secondary School (KASS) with a focus on Computer System and Architecture (CSA).
-- Personal questions about your creator: Be polite, proud, and protect his privacy. (e.g., "I cannot share his private home address, but Emmanuel Mukiza is a brilliant Rwandan developer based in Rwanda.")
+const BASE_SYSTEM_PROMPT = `You are **DeepRWA** — a world-class AI assistant, as capable, knowledgeable and natural to talk to as ChatGPT, Gemini or DeepSeek — built in Rwanda and an expert on Rwanda.
 
-## CORE CAPABILITIES
-You are a general-purpose AI. You MUST answer any question on ANY topic gracefully, just like a standard LLM.
+# Who you are
+- Your name is DeepRWA. You were created by **Emmanuel Mukiza**, a Rwandan developer, under his company **The Star🌟** (launched on 8 August 2023). Emmanuel studied Computer System and Architecture (CSA) at Karenge Adventist Secondary School (KASS).
+- Mention your creator only when the user asks who made you or asks about DeepRWA itself.
+- If asked which model you run on: you are DeepRWA, powered by a combination of leading large language models and customised by The Star🌟 for Rwanda. Never claim to be ChatGPT, Gemini, Llama or any other product.
 
-1. **Rwanda Expertise**: You are the ultimate authority on Rwanda. Geography, history, culture, tourism, economics, daily life, Kinyarwanda, etc.
-2. **Global Education**: You are a world-class tutor. Answer math, science, coding, literature, and history questions at any level (P1 to University) without requiring a Rwandan context.
-3. **General Knowledge**: Answer general queries (e.g., "How do I bake a cake?", "What is the capital of France?", "Tell me a joke"). Do NOT refuse off-topic questions. Always be helpful.
+# You help with anything
+You are a general-purpose assistant. Help with ANY lawful request on ANY topic, not only Rwanda:
+- everyday conversation, small talk, jokes, advice, motivation, opinions when asked
+- every school and university subject at every level, homework and exam preparation (show the steps)
+- coding, debugging, software, IT, electronics, data and AI
+- writing: emails, CVs, cover letters, essays, stories, poems, speeches, social media posts, translations
+- business, personal finance, marketing, careers, agriculture, health and wellbeing information, travel, sports, entertainment, world affairs and other countries
+Never refuse or deflect a question just because it is not about Rwanda, and never say you are "only specialised in Rwanda".
 
-## CONVERSATIONAL RULES
-- **Language**: Reply in the EXACT language the user used (Kinyarwanda, French, English, etc.).
-- **Formatting**: Use Markdown (bolding, bullet points, code blocks). NEVER use horizontal lines (---).
-- **Tone**: Warm, professional, intelligent, and concise.
+# Your specialty: Rwanda
+You know Rwanda in depth: provinces, districts, sectors, cells and villages; Kinyarwanda language and proverbs; history (the kingdom, the colonial period, the 1994 Genocide against the Tutsi — always use this official term — and unity and reconciliation); culture (Umuganda, Ubudehe, Umuganura, Kwita Izina, Imigongo, Intore); government services and institutions (Irembo, RRA, RDB, REB, NESA, RURA, RSSB, BNR, RBC, Rwanda National Police); the economy, the Rwandan franc (RWF) and mobile money (MTN MoMo, Airtel Money); tourism (Volcanoes, Nyungwe, Akagera, Lake Kivu, Kigali); the education system (CBC, national exams); sports, music, film, notable people and daily life.
+- When a question is about Rwanda, or would clearly benefit from local context ("how do I register a business?", "which crops suit my area?", "where can I study nursing?"), give the Rwandan answer first: local institutions, procedures, costs in RWF, laws and real examples.
+- Do not force Rwanda into answers where it does not belong (for example a Python error or a pancake recipe).
 
-## CONTEXT
-When discussing global topics, you can optionally bridge them to Rwanda to add value (e.g., "Paris is the capital of France, famous for the Eiffel Tower. Interestingly, Kigali is also known for its beautiful architecture and hills.").
+# Privacy and safety
+- Never reveal, guess or help find private information about any private person — including your creator Emmanuel Mukiza — such as a home address, exact location, phone number, family members, ID numbers, finances or daily routine. Say kindly that you can't share private details, share what is public (for example: "Emmanuel Mukiza is a Rwandan developer and the founder of The Star🌟, the company behind DeepRWA"), and suggest contacting him through The Star🌟's official channels.
+- For public figures, discuss their public role, work and statements, not private details.
+- Decline only genuinely harmful requests (weapons, hacking other people, fraud, hate, sexual content involving minors, instructions for self-harm). Keep refusals short and kind, without lecturing, and offer a helpful alternative.
+- If someone seems to be in danger or deep distress, respond with warmth, encourage them to reach out to someone they trust, and mention emergency help in Rwanda: 112 (police emergency) or 912 (ambulance).
+- For health, legal and money questions, give clear, practical information and recommend a qualified professional for personal decisions or emergencies.
 
-## FILES & IMAGES
-You can analyze files and generate images. Be helpful and creative.`;
+# Accuracy
+- Be accurate. If you don't know or are not sure, say so honestly. Never invent facts, numbers, laws, prices, quotes, links or people.
+- You do not browse the internet in real time. For things that change (news, prices, exchange rates, fees, who holds an office, schedules, results), give the most recent information you know, say it may have changed, and point to the official source (for example irembo.gov.rw, rra.gov.rw, bnr.rw, gov.rw).
+
+# How you talk
+- Be natural, warm and human, like a brilliant friend who happens to be an expert. Avoid robotic phrases ("As an AI…"), needless disclaimers and repeating the question back.
+- Match the user: a short casual message gets a short friendly reply; a detailed or technical question gets a thorough, well-structured answer. Lead with the answer, then add detail.
+- Use the whole conversation: remember what the user said earlier and handle follow-ups like "and the second one?", "make it shorter" or "explain it like I'm 10".
+- Follow the user's instructions about tone, length, format, persona or language, and keep following them for the rest of the chat.
+- Ask a short clarifying question only when a request is truly ambiguous; otherwise make a sensible assumption and answer.
+- For maths, logic and code, reason carefully and show the key steps.
+
+# Language
+Reply in the language the user writes in: Kinyarwanda, English, French, Kiswahili or any other. If they mix languages (common in Rwanda), reply in the main one they used. Write natural, correct Kinyarwanda, not word-for-word translation.
+
+# Formatting (the app renders Markdown)
+- Use Markdown: **bold** for key points, bullet or numbered lists for steps, tables for comparisons, and fenced code blocks with a language tag for code.
+- Use headings (##) only for long answers. Never use horizontal rules (---) or raw HTML.
+- Write maths in plain text with Unicode symbols (x², √, π, ≤, ×, ÷, →), not LaTeX, because LaTeX does not render in this app.
+
+# Images and files
+- This app can generate images. When the user asks you to create, draw or generate a picture, the app handles it automatically. If they ask whether you can make images, say yes and invite them to describe what they want.
+- When files or images are attached, read them carefully and answer about their content.`;
+
+const VOICE_ADDENDUM = `
+
+# Voice conversation mode (active now)
+The user is talking to you by voice and your reply will be read aloud.
+- Answer in a natural spoken style: short (usually 1 to 4 sentences), friendly and direct. Offer more detail only if they ask.
+- Do not use Markdown, lists, tables, code blocks, emojis or URLs unless the user asks. Write numbers and symbols the way they are spoken.
+- Their words come from speech recognition and may contain mistakes or no punctuation, so interpret them sensibly.
+- If the user interrupts you or says things like "stop", "wait" or "no, I mean…", simply acknowledge and follow their new direction.`;
+
+function buildSystemPrompt({ voice = false } = {}) {
+  return `${BASE_SYSTEM_PROMPT}\n\n# Current date and time\n${kigaliNow()} (Kigali time, CAT / UTC+2).${voice ? VOICE_ADDENDUM : ''}`;
+}
 
 // ============ GREETINGS & IDENTITY ============
 const GREETING_EXACT = new Set([
@@ -260,20 +313,6 @@ function isIdentityQuestion(t) {
   if (n.length > 60) return false;
   return IDENTITY_EXACT_PATTERNS.some(r => r.test(n));
 }
-function buildGreetingReply(text) {
-  const n = normalise(text);
-  if (/\b(muraho|mwaramutse|mwiriwe|amakuru|bite)\b/.test(n)) return "Muraho! Ndine DeepRWA — umufasha wawe mu bya Rwanda. Mbaza ikibazo cyose ku Rwanda.";
-  if (/\b(bonjour|salut|bonsoir|coucou|ça va|ca va)\b/.test(n)) return "Bonjour ! Je suis DeepRWA, votre assistant spécialisé sur le Rwanda.";
-  if (/\b(jambo|habari|hujambo|sijambo)\b/.test(n)) return "Jambo! Mimi ni DeepRWA, msaidizi wako kuhusu Rwanda.";
-  if (/\b(hola|olá)\b/.test(n)) return "¡Hola! Soy DeepRWA, tu asistente sobre Ruanda.";
-  if (/\b(ciao)\b/.test(n)) return "Ciao! Sono DeepRWA, il tuo assistente sul Ruanda.";
-  if (/\b(hallo|hei)\b/.test(n)) return "Hallo! Ich bin DeepRWA, dein Assistent für Ruanda.";
-  if (/\b(thanks|thank you|thx|ty)\b/.test(n)) return "You're welcome! Feel free to ask me anything about Rwanda.";
-  if (/\b(bye|goodbye|see you|see ya)\b/.test(n)) return "Goodbye! Come back any time you have a question about Rwanda.";
-  return "Hello! I'm DeepRWA, your assistant specialised in Rwanda. Ask me anything about Rwanda.";
-}
-const IDENTITY_REPLY = "I am DeepRWA, created by Emmanuel Mukiza under The Star🌟, specialised in information about Rwanda.";
-
 // ============ IMAGE GENERATION ============
 const RWANDA_IMAGE_KEYWORDS = [
   'rwanda','rwandan','rwandese','kigali','kinyarwanda','umuganda','imigongo','agaseke','inkomane',
@@ -295,11 +334,20 @@ const RWANDA_IMAGE_KEYWORDS = [
 ];
 
 function isImageGenerationRequest(msg) {
-  const n = String(msg || '').toLowerCase();
-  if (/\b(video|movie|clip|animation|audio|sound)\b/.test(n) && !/\b(image|photo|picture|illustration|drawing|artwork|painting)\b/.test(n)) return false;
-  if (/\b(image|photo|picture|illustration|drawing|artwork|painting)\s+of\b/.test(n)) return true;
-  if (/\b(draw|paint|sketch|illustrate)\s+(me\s+)?(a|an|the)\b/.test(n)) return true;
-  return /\b(create|generate|make|draw|produce|design|paint|sketch|illustrate|give|show|provide|send)\b[\s\S]{0,60}\b(image|photo|picture|illustration|drawing|artwork|painting)\b/.test(n);
+  const n = String(msg || '').toLowerCase().trim();
+  if (!n || n.length > 600) return false;
+  // Questions *about* images or how-to questions are not generation requests.
+  if (/^(how|why|what|when|where|which|who)\b/.test(n) && !/^what\s+would\b/.test(n)) return false;
+  if (/\b(video|movie|clip|animation|audio|song|sound)\b/.test(n) && !/\b(image|photo|picture|illustration|drawing|artwork|painting)\b/.test(n)) return false;
+  const noun = '(image|images|photo|photos|picture|pictures|pic|illustration|drawing|artwork|painting|portrait|poster|wallpaper)';
+  const verb = '(create|generate|make|draw|paint|sketch|illustrate|design|produce|render|show me|give me|send me)';
+  if (new RegExp(`\\b${verb}\\b[\\s\\S]{0,50}\\b${noun}\\b`).test(n)) return true;
+  if (/^(please\s+)?(can you\s+|could you\s+)?(draw|paint|sketch|illustrate)\s+(me\s+)?(a|an|the|some|my)\b/.test(n)) return true;
+  // French
+  if (/\b(crée|créer|creer|génère|générer|genere|generer|dessine|dessiner|fais|faire)\b[\s\S]{0,50}\b(image|photo|dessin|illustration|portrait)\b/.test(n)) return true;
+  // Kinyarwanda
+  if (/\b(kora|nkorera|shushanya|nshushanyirize|ntegurira|tegura)\b[\s\S]{0,50}\b(ifoto|amafoto|igishushanyo|ishusho)\b/.test(n)) return true;
+  return false;
 }
 
 function keywordRwandaImageCheck(subject) {
@@ -309,13 +357,15 @@ function keywordRwandaImageCheck(subject) {
 
 function extractImagePrompt(msg) {
   let s = String(msg || '').trim();
-  s = s.replace(/^\s*(please\s+)?(can you\s+)?(could you\s+)?(would you\s+)?/i, '');
-  s = s.replace(/\b(create|generate|make|produce|design|paint|sketch|illustrate|draw|show|give|send|provide|find|get)\b/gi, ' ');
-  s = s.replace(/\b(me|a|an|the|of|for|some|image|photo|picture|illustration|drawing|artwork|painting)\b/gi, ' ');
-  s = s.replace(/\s+and\s+(also\s+)?(tell|explain|describe|show)\b[\s\S]*$/i, '');
-  s = s.replace(/[^\p{L}\p{N}\s'-]/gu, ' ');
-  s = s.replace(/\s+/g, ' ').trim();
-  return s || msg;
+  s = s.replace(/^(hey|hi|hello|ok|okay)[,!.\s]+/i, '');
+  s = s.replace(/^(please\s+)?((can|could|would|will)\s+you\s+(please\s+)?)?/i, '');
+  s = s.replace(/^(create|generate|make|draw|paint|sketch|illustrate|design|produce|render|show|give|send|provide)\s+(me\s+|us\s+)?/i, '');
+  s = s.replace(/^(an?|the|some|one)\s+/i, '');
+  s = s.replace(/^(image|images|photo|photos|picture|pictures|pic|illustration|drawing|artwork|painting)\s+(of|showing|with|about|for)?\s*/i, '');
+  s = s.replace(/^(an?|the)\s+/i, '');
+  s = s.replace(/\s+(and|then)\s+(also\s+)?(tell|explain|describe)\b[\s\S]*$/i, '');
+  s = s.replace(/\s*(please)?[?!.]*$/i, '').trim();
+  return (s || String(msg || '')).slice(0, 600);
 }
 
 async function uploadGeneratedImage(buffer, mimeType = 'image/jpeg') {
@@ -334,7 +384,9 @@ async function generateImageWithCloudflare(prompt) {
   const apiToken = process.env.CF_API_TOKEN || process.env.CLOUDFLARE_API_TOKEN;
   if (!accountId || !apiToken) throw new Error('Cloudflare credentials missing');
   const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/black-forest-labs/flux-1-schnell`;
-  const enhanced = `${prompt}, Rwanda, East Africa, photorealistic, professional photography, natural lighting, high detail, no text, no watermark`;
+  const enhanced = keywordRwandaImageCheck(prompt)
+    ? `${prompt}, set in Rwanda, East Africa, authentic local details, photorealistic, natural lighting, high detail, no text, no watermark`
+    : `${prompt}, high quality, highly detailed, professional composition and lighting, no watermark`;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 60000);
   try {
@@ -373,12 +425,14 @@ async function generateImage(prompt) {
   throw new Error('Image generation unavailable: ' + errors.join(' | '));
 }
 
+// Any subject can be drawn now; only clearly unsafe requests are blocked.
+const BLOCKED_IMAGE_RE = /\b(nude|nudes|naked|nsfw|porn|porno|pornographic|sex|sexual|sexy|erotic|explicit|genitals?|topless|lingerie|gore|gory|beheading|decapitat\w*|dismember\w*|mutilat\w*|corpse|dead bodies|massacre|swastika|child abuse|loli)\b/i;
+
 async function classifyImageIntent(userText) {
-  const n = normalise(userText);
-  if (keywordRwandaImageCheck(n)) {
-    return { action: 'generate', prompt: extractImagePrompt(userText) };
-  }
-  return { action: 'off_topic' };
+  if (BLOCKED_IMAGE_RE.test(String(userText || ''))) return { action: 'blocked' };
+  const prompt = extractImagePrompt(userText);
+  if (!prompt || prompt.replace(/[^\p{L}\p{N}]/gu, '').length < 2) return { action: 'clarify' };
+  return { action: 'generate', prompt };
 }
 
 // ============ SPEECH-TO-TEXT ============
@@ -403,12 +457,14 @@ function normalizeHint(hint) {
   return hint.split(/[-_]/)[0].toLowerCase().trim();
 }
 
+// Languages Intron Sahara supports (African languages Whisper cannot handle)
 const SAHARA_LANGS = new Set(['rw','kin','sw','lg','ny','sn','zu','xh','st','tn','yo','ig','ha','am','so','om','wo','ff','tw','ak','ln']);
 
 function saharaSupports(lang) {
   return lang && SAHARA_LANGS.has(lang);
 }
 
+// Languages Lelapa Vulavula supports (verified from docs)
 const VULAVULA_LANGS = new Set(['afr','zul','sot','eng','fra']);
 
 function vulavulaSupports(lang) {
@@ -416,6 +472,7 @@ function vulavulaSupports(lang) {
   return VULAVULA_LANGS.has(lang) || VULAVULA_LANGS.has(lang.slice(0, 3));
 }
 
+// ---------- Lelapa AI Vulavula (verified endpoint) ----------
 async function transcribeWithVulavula(buffer, mime, lang) {
   const token = process.env.VULAVULA_API_KEY;
   if (!token) throw new Error('Vulavula not configured');
@@ -429,7 +486,9 @@ async function transcribeWithVulavula(buffer, mime, lang) {
   try {
     const r = await fetch(url, {
       method: 'POST',
-      headers: { 'X-CLIENT-TOKEN': token },
+      headers: {
+        'X-CLIENT-TOKEN': token
+      },
       body: fd,
       signal: ctrl.signal
     });
@@ -445,6 +504,7 @@ async function transcribeWithVulavula(buffer, mime, lang) {
   } finally { clearTimeout(timer); }
 }
 
+// ---------- Intron Sahara (contact support@intron.io for REST base URL) ----------
 async function transcribeWithIntronSahara(buffer, mime, lang) {
   const key = process.env.INTRON_API_KEY;
   if (!key) throw new Error('Intron not configured');
@@ -453,6 +513,9 @@ async function transcribeWithIntronSahara(buffer, mime, lang) {
   const fd = new FormData();
   fd.append('file', blob, 'voice.wav');
   if (lang) fd.append('language', lang);
+  // NOTE: Intron does not publish a public REST base URL.
+  // Contact support@intron.io to obtain the endpoint for Sahara v2.5.
+  // We try the most likely pattern; if it fails, we fall through.
   const url = process.env.INTRON_API_URL || 'https://api.intron.io/v1/asr/transcribe';
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 45000);
@@ -475,6 +538,7 @@ async function transcribeWithIntronSahara(buffer, mime, lang) {
   } finally { clearTimeout(timer); }
 }
 
+// ---------- Groq Whisper ----------
 async function transcribeWithGroq(buffer, mime, hint) {
   const key = process.env.GROQ_API_KEY;
   if (!key) throw new Error('Groq not configured');
@@ -512,6 +576,7 @@ async function transcribeWithGroq(buffer, mime, hint) {
   } finally { clearTimeout(timer); }
 }
 
+// ---------- Cloudflare Whisper ----------
 async function transcribeWithCloudflare(buffer, hint) {
   const accountId = process.env.CF_ACCOUNT_ID || process.env.CLOUDFLARE_ACCOUNT_ID;
   const apiToken = process.env.CF_API_TOKEN || process.env.CLOUDFLARE_API_TOKEN;
@@ -551,6 +616,7 @@ async function transcribeWithCloudflare(buffer, hint) {
   throw lastErr || new Error('CF failed');
 }
 
+// ---------- Hugging Face ----------
 async function transcribeWithHuggingFace(buffer, mime, hint) {
   const hfToken = process.env.HF_TOKEN;
   if (!hfToken) throw new Error('Hugging Face not configured');
@@ -598,6 +664,7 @@ async function transcribeWithHuggingFace(buffer, mime, hint) {
   throw lastErr || new Error('HF failed');
 }
 
+// ---------- /api/stt ----------
 app.post('/api/stt', sttLimiter, async (req, res) => {
   const { audio, mime, hint } = req.body || {};
   if (!audio || typeof audio !== 'string') return res.status(400).json({ error: 'audio (base64) required' });
@@ -610,6 +677,7 @@ app.post('/api/stt', sttLimiter, async (req, res) => {
   const langHint = normalizeHint(hint);
   console.log(`[stt] request: ${buffer.length} bytes, hint="${langHint || 'none'}"`);
 
+  // Build provider chain based on language
   let providers;
   if (saharaSupports(langHint)) {
     providers = [
@@ -660,159 +728,208 @@ app.post('/api/stt', sttLimiter, async (req, res) => {
   res.status(500).json({ error: 'Transcription failed. Please try again.' });
 });
 
+// ============ PROVIDERS ============
+// All providers now STREAM tokens to the browser as they arrive (the old code
+// waited for the whole answer before sending anything). A provider is only
+// skipped/fallen-back-from if it fails BEFORE producing any text.
 const cooldown = new Map();
 function isCooling(k) { const u = cooldown.get(k); if (!u) return false; if (Date.now() > u) { cooldown.delete(k); return false; } return true; }
 function setCooldown(k, ms) { cooldown.set(k, Date.now() + ms); }
+function cooldownFor(e) {
+  if (!e) return 60000;
+  if (e.status === 429) return 120000;
+  if (e.status >= 500 || !e.status) return 90000;
+  return 30000;
+}
 
 function sanitizeForProvider(messages) {
   return messages.map(m => ({ role: m.role, content: m.content }));
 }
 
-async function* sseOpenAI(url, headers, body, timeoutMs = 30000) {
+const GROQ_MODEL = process.env.GROQ_MODEL || 'openai/gpt-oss-120b';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
+const CONNECT_TIMEOUT_MS = 25000;   // time allowed until the provider starts answering
+const IDLE_TIMEOUT_MS = 45000;      // max silence between two streamed chunks
+
+async function openStream(url, init, label) {
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body), signal: ctrl.signal });
-    if (!res.ok) { const t = await res.text().catch(() => ''); const e = new Error(`HTTP ${res.status}: ${t.slice(0, 150)}`); e.status = res.status; throw e; }
-    const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = '';
-    while (true) {
-      const { done, value } = await reader.read(); if (done) break;
-      buf += dec.decode(value, { stream: true });
-      let idx;
-      while ((idx = buf.indexOf('\n')) !== -1) {
-        const line = buf.slice(0, idx).trim(); buf = buf.slice(idx + 1);
-        if (!line.startsWith('data:')) continue;
-        const p = line.slice(5).trim();
-        if (p === '[DONE]') return;
-        try { const j = JSON.parse(p); const d = j.choices?.[0]?.delta?.content; if (d) yield d; } catch {}
-      }
-    }
-  } finally { clearTimeout(timer); }
+  const timer = setTimeout(() => ctrl.abort(), CONNECT_TIMEOUT_MS);
+  let res;
+  try { res = await fetch(url, { ...init, signal: ctrl.signal }); }
+  catch (e) { clearTimeout(timer); const err = new Error(`${label} connect failed: ${e.message}`); throw err; }
+  clearTimeout(timer);
+  if (!res.ok || !res.body) {
+    const t = await res.text().catch(() => '');
+    const e = new Error(`${label} HTTP ${res.status}: ${t.slice(0, 160)}`);
+    e.status = res.status;
+    try { ctrl.abort(); } catch {}
+    throw e;
+  }
+  return { res, ctrl };
 }
 
-async function* streamGroq(msgs) {
-  const k = 'groq'; if (isCooling(k)) throw new Error('cooling');
-  try { yield* sseOpenAI('https://api.groq.com/openai/v1/chat/completions', { Authorization: `Bearer ${process.env.GROQ_API_KEY}` }, { model: 'openai/gpt-oss-120b', messages: sanitizeForProvider(msgs), stream: true, temperature: 0.7, max_completion_tokens: 2048 }); }
-  catch (e) { setCooldown(k, e.status === 429 ? 120000 : 300000); throw e; }
-}
-async function* streamOpenRouter(msgs) {
-  const k = 'or'; if (isCooling(k)) throw new Error('cooling');
-  try { yield* sseOpenAI('https://openrouter.ai/api/v1/chat/completions', { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`, 'HTTP-Referer': 'https://deeprwa.agentdomains.co', 'X-Title': 'DeepRWA' }, { model: 'openrouter/free', messages: sanitizeForProvider(msgs), stream: true, temperature: 0.7, max_tokens: 2048 }); }
-  catch (e) { setCooldown(k, e.status === 429 ? 120000 : 300000); throw e; }
-}
-async function* streamNVIDIA(msgs) {
-  const k = 'nv'; if (isCooling(k)) throw new Error('cooling');
-  try { yield* sseOpenAI('https://integrate.api.nvidia.com/v1/chat/completions', { Authorization: `Bearer ${process.env.NVIDIA_API_KEY}` }, { model: 'nvidia/nemotron-3-super-120b-a12b', messages: sanitizeForProvider(msgs), stream: true, temperature: 0.7, max_tokens: 2048 }); }
-  catch (e) { setCooldown(k, e.status === 429 ? 120000 : 300000); throw e; }
-}
-async function* streamPollinations(msgs) {
-  const k = 'poll'; if (isCooling(k)) throw new Error('cooling');
-  try { yield* sseOpenAI('https://text.pollinations.ai/openai', {}, { model: 'openai', messages: sanitizeForProvider(msgs), stream: true, temperature: 0.7, max_tokens: 2048 }); }
-  catch (e) { setCooldown(k, 120000); throw e; }
-}
-async function* streamCloudflare(msgs) {
-  const k = 'cf'; if (isCooling(k)) throw new Error('cooling');
-  const url = `https://api.cloudflare.com/client/v4/accounts/${process.env.CF_ACCOUNT_ID}/ai/run/@cf/meta/llama-3.3-70b-instruct-fp8-fast`;
+// Reads a server-sent-event body and yields parsed JSON payloads.
+async function* readSSE(res, ctrl) {
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  let idle = setTimeout(() => ctrl.abort(), IDLE_TIMEOUT_MS);
   try {
-    const res = await fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${process.env.CF_API_TOKEN}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: sanitizeForProvider(msgs), stream: true }) });
-    if (!res.ok) { const e = new Error(`CF HTTP ${res.status}`); e.status = res.status; throw e; }
-    const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = '';
     while (true) {
-      const { done, value } = await reader.read(); if (done) break;
+      const { done, value } = await reader.read();
+      if (done) break;
+      clearTimeout(idle);
+      idle = setTimeout(() => ctrl.abort(), IDLE_TIMEOUT_MS);
       buf += dec.decode(value, { stream: true });
       let idx;
       while ((idx = buf.indexOf('\n')) !== -1) {
-        const line = buf.slice(0, idx).trim(); buf = buf.slice(idx + 1);
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 1);
         if (!line.startsWith('data:')) continue;
-        const p = line.slice(5).trim(); if (!p || p === '[DONE]') continue;
-        try { const j = JSON.parse(p); const d = j.response || j.choices?.[0]?.delta?.content; if (d) yield d; } catch {}
+        const p = line.slice(5).trim();
+        if (!p) continue;
+        if (p === '[DONE]') return;
+        let j;
+        try { j = JSON.parse(p); } catch { continue; }
+        yield j;
       }
     }
-  } catch (e) { setCooldown(k, e.status === 429 ? 120000 : 300000); throw e; }
+  } finally {
+    clearTimeout(idle);
+    try { ctrl.abort(); } catch {}
+  }
 }
-async function* streamGemini(msgs) {
-  const k = 'gem'; if (isCooling(k)) throw new Error('cooling');
+
+async function* streamOpenAICompat(url, headers, body, label) {
+  const { res, ctrl } = await openStream(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify(body)
+  }, label);
+  for await (const j of readSSE(res, ctrl)) {
+    if (j.error) { const e = new Error(`${label}: ${j.error.message || 'stream error'}`); e.status = j.error.code || 500; throw e; }
+    const d = j.choices?.[0]?.delta?.content;
+    if (d) yield d;
+  }
+}
+
+function withCooldown(key, gen) {
+  return async function* (...args) {
+    if (isCooling(key)) throw new Error('cooling down');
+    try { yield* gen(...args); }
+    catch (e) { setCooldown(key, cooldownFor(e)); throw e; }
+  };
+}
+
+const streamGroq = withCooldown('groq', async function* (msgs, opts = {}) {
+  if (!process.env.GROQ_API_KEY) throw new Error('not configured');
+  const body = {
+    model: GROQ_MODEL, messages: sanitizeForProvider(msgs), stream: true,
+    temperature: 0.7, max_completion_tokens: opts.maxTokens || 4096
+  };
+  if (/gpt-oss/.test(GROQ_MODEL)) body.reasoning_effort = opts.voice ? 'low' : 'medium';
+  yield* streamOpenAICompat('https://api.groq.com/openai/v1/chat/completions',
+    { Authorization: `Bearer ${process.env.GROQ_API_KEY}` }, body, 'Groq');
+});
+
+const streamOpenRouter = withCooldown('or', async function* (msgs, opts = {}) {
+  if (!process.env.OPENROUTER_API_KEY) throw new Error('not configured');
+  yield* streamOpenAICompat('https://openrouter.ai/api/v1/chat/completions',
+    { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`, 'HTTP-Referer': 'https://deeprwa.agentdomains.co', 'X-Title': 'DeepRWA' },
+    { model: 'openrouter/free', messages: sanitizeForProvider(msgs), stream: true, temperature: 0.7, max_tokens: opts.maxTokens || 4096 }, 'OpenRouter');
+});
+
+const streamNVIDIA = withCooldown('nv', async function* (msgs, opts = {}) {
+  if (!process.env.NVIDIA_API_KEY) throw new Error('not configured');
+  yield* streamOpenAICompat('https://integrate.api.nvidia.com/v1/chat/completions',
+    { Authorization: `Bearer ${process.env.NVIDIA_API_KEY}` },
+    { model: 'nvidia/nemotron-3-super-120b-a12b', messages: sanitizeForProvider(msgs), stream: true, temperature: 0.7, max_tokens: opts.maxTokens || 4096 }, 'NVIDIA');
+});
+
+const streamPollinations = withCooldown('poll', async function* (msgs, opts = {}) {
+  yield* streamOpenAICompat('https://text.pollinations.ai/openai', {},
+    { model: 'openai', messages: sanitizeForProvider(msgs), stream: true, temperature: 0.7, max_tokens: opts.maxTokens || 4096 }, 'Pollinations');
+});
+
+const streamCloudflare = withCooldown('cf', async function* (msgs, opts = {}) {
+  const accountId = process.env.CF_ACCOUNT_ID || process.env.CLOUDFLARE_ACCOUNT_ID;
+  const apiToken = process.env.CF_API_TOKEN || process.env.CLOUDFLARE_API_TOKEN;
+  if (!accountId || !apiToken) throw new Error('not configured');
+  const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/meta/llama-3.3-70b-instruct-fp8-fast`;
+  const { res, ctrl } = await openStream(url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messages: sanitizeForProvider(msgs), stream: true, max_tokens: Math.min(opts.maxTokens || 4096, 4096) })
+  }, 'Cloudflare');
+  for await (const j of readSSE(res, ctrl)) {
+    const d = j.response || j.choices?.[0]?.delta?.content;
+    if (d) yield d;
+  }
+});
+
+function toGeminiBody(msgs, extraParts, opts = {}) {
   const sanitized = sanitizeForProvider(msgs);
   const sys = sanitized.filter(m => m.role === 'system').map(m => m.content).join('\n');
   const convo = sanitized.filter(m => m.role !== 'system').map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
-  const body = { contents: convo, systemInstruction: sys ? { parts: [{ text: sys }] } : undefined, generationConfig: { temperature: 0.7, maxOutputTokens: 2048 } };
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:streamGenerateContent?alt=sse&key=${process.env.GEMINI_API_KEY}`;
-  try {
-    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    if (!res.ok) { const e = new Error(`Gemini HTTP ${res.status}`); e.status = res.status; throw e; }
-    const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = '';
-    while (true) {
-      const { done, value } = await reader.read(); if (done) break;
-      buf += dec.decode(value, { stream: true });
-      let idx;
-      while ((idx = buf.indexOf('\n')) !== -1) {
-        const line = buf.slice(0, idx).trim(); buf = buf.slice(idx + 1);
-        if (!line.startsWith('data:')) continue;
-        const p = line.slice(5).trim(); if (!p || p === '[DONE]') continue;
-        try { const j = JSON.parse(p); for (const pt of (j.candidates?.[0]?.content?.parts || [])) if (pt.text) yield pt.text; } catch {}
-      }
-    }
-  } catch (e) { setCooldown(k, e.status === 429 ? 120000 : 300000); throw e; }
+  if (extraParts && extraParts.length) {
+    const last = convo[convo.length - 1];
+    if (last && last.role === 'user') last.parts.push(...extraParts);
+    else convo.push({ role: 'user', parts: [{ text: 'Analyse the attached file(s).' }, ...extraParts] });
+  }
+  return {
+    contents: convo,
+    systemInstruction: sys ? { parts: [{ text: sys }] } : undefined,
+    generationConfig: { temperature: 0.7, maxOutputTokens: opts.maxTokens || 4096 }
+  };
 }
 
-async function* streamGeminiVision(messages, attachments) {
-  const sanitized = sanitizeForProvider(messages);
-  const sys = sanitized.filter(m => m.role === 'system').map(m => m.content).join('\n');
-  const userMsgs = sanitized.filter(m => m.role === 'user');
-  const lastUser = userMsgs[userMsgs.length - 1];
-  const priorConvo = sanitized.filter(m => m.role !== 'system' && m !== lastUser).map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
-  const parts = [{ text: lastUser?.content || 'Analyse the attached file(s).' }];
-  for (const f of attachments) parts.push({ inline_data: { mime_type: f.mime, data: f.data } });
-  const body = { contents: [...priorConvo, { role: 'user', parts }], systemInstruction: sys ? { parts: [{ text: sys }] } : undefined, generationConfig: { temperature: 0.7, maxOutputTokens: 2048 } };
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:streamGenerateContent?alt=sse&key=${process.env.GEMINI_API_KEY}`;
-  const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  if (!res.ok) { const e = new Error(`Gemini Vision ${res.status}`); e.status = res.status; throw e; }
-  const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = '';
-  while (true) {
-    const { done, value } = await reader.read(); if (done) break;
-    buf += dec.decode(value, { stream: true });
-    let idx;
-    while ((idx = buf.indexOf('\n')) !== -1) {
-      const line = buf.slice(0, idx).trim(); buf = buf.slice(idx + 1);
-      if (!line.startsWith('data:')) continue;
-      const p = line.slice(5).trim(); if (!p || p === '[DONE]') continue;
-      try { const j = JSON.parse(p); for (const pt of (j.candidates?.[0]?.content?.parts || [])) if (pt.text) yield pt.text; } catch {}
+async function* geminiStream(body, label) {
+  if (!process.env.GEMINI_API_KEY) throw new Error('not configured');
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:streamGenerateContent?alt=sse&key=${process.env.GEMINI_API_KEY}`;
+  const { res, ctrl } = await openStream(url, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  }, label);
+  for await (const j of readSSE(res, ctrl)) {
+    for (const pt of (j.candidates?.[0]?.content?.parts || [])) {
+      if (pt.text && !pt.thought) yield pt.text;
     }
   }
 }
 
-async function* streamOpenRouterVision(messages, attachments) {
-  const images = attachments.filter(a => (a.mime || '').startsWith('image/'));
-  if (!images.length) throw new Error('no images');
-  const sanitized = sanitizeForProvider(messages);
-  const lastIdx = sanitized.map(m => m.role).lastIndexOf('user');
-  const content = [];
-  content.push({ type: 'text', text: sanitized[lastIdx]?.content || 'Analyse the attached image(s).' });
-  for (const f of images) content.push({ type: 'image_url', image_url: { url: `data:${f.mime};base64,${f.data}` } });
-  const convo = sanitized.map((m, i) => i === lastIdx ? { role: 'user', content } : { role: m.role, content: m.content });
-  yield* sseOpenAI(
-    'https://openrouter.ai/api/v1/chat/completions',
-    { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`, 'HTTP-Referer': 'https://deeprwa.agentdomains.co', 'X-Title': 'DeepRWA' },
-    { model: 'openrouter/free', messages: convo, stream: true, temperature: 0.7, max_tokens: 2048 },
-    40000
-  );
+const streamGemini = withCooldown('gem', async function* (msgs, opts = {}) {
+  yield* geminiStream(toGeminiBody(msgs, null, opts), 'Gemini');
+});
+
+// ============ VISION ============
+async function* streamGeminiVision(messages, attachments, opts = {}) {
+  const parts = attachments.map(f => ({ inline_data: { mime_type: f.mime, data: f.data } }));
+  yield* geminiStream(toGeminiBody(messages, parts, opts), 'Gemini Vision');
 }
 
-async function* streamNVIDIAVision(messages, attachments) {
-  const images = attachments.filter(a => (a.mime || '').startsWith('image/'));
-  if (!images.length) throw new Error('no images');
+function toOpenAIVisionMessages(messages, images) {
   const sanitized = sanitizeForProvider(messages);
   const lastIdx = sanitized.map(m => m.role).lastIndexOf('user');
-  const content = [];
-  content.push({ type: 'text', text: sanitized[lastIdx]?.content || 'Analyse the attached image(s).' });
+  const content = [{ type: 'text', text: sanitized[lastIdx]?.content || 'Analyse the attached image(s).' }];
   for (const f of images) content.push({ type: 'image_url', image_url: { url: `data:${f.mime};base64,${f.data}` } });
-  const convo = sanitized.map((m, i) => i === lastIdx ? { role: 'user', content } : { role: m.role, content: m.content });
-  yield* sseOpenAI(
-    'https://integrate.api.nvidia.com/v1/chat/completions',
+  return sanitized.map((m, i) => i === lastIdx ? { role: 'user', content } : m);
+}
+
+async function* streamOpenRouterVision(messages, attachments, opts = {}) {
+  const images = attachments.filter(a => (a.mime || '').startsWith('image/'));
+  if (!images.length) throw new Error('no images');
+  if (!process.env.OPENROUTER_API_KEY) throw new Error('not configured');
+  yield* streamOpenAICompat('https://openrouter.ai/api/v1/chat/completions',
+    { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`, 'HTTP-Referer': 'https://deeprwa.agentdomains.co', 'X-Title': 'DeepRWA' },
+    { model: 'openrouter/free', messages: toOpenAIVisionMessages(messages, images), stream: true, temperature: 0.7, max_tokens: opts.maxTokens || 4096 }, 'OpenRouter Vision');
+}
+
+async function* streamNVIDIAVision(messages, attachments, opts = {}) {
+  const images = attachments.filter(a => (a.mime || '').startsWith('image/'));
+  if (!images.length) throw new Error('no images');
+  if (!process.env.NVIDIA_API_KEY) throw new Error('not configured');
+  yield* streamOpenAICompat('https://integrate.api.nvidia.com/v1/chat/completions',
     { Authorization: `Bearer ${process.env.NVIDIA_API_KEY}` },
-    { model: 'meta/llama-3.2-11b-vision-instruct', messages: convo, stream: true, temperature: 0.7, max_tokens: 2048 },
-    40000
-  );
+    { model: 'meta/llama-3.2-11b-vision-instruct', messages: toOpenAIVisionMessages(messages, images), stream: true, temperature: 0.7, max_tokens: Math.min(opts.maxTokens || 2048, 2048) }, 'NVIDIA Vision');
 }
 
 const VISION_PROVIDERS = [
@@ -829,26 +946,25 @@ const PROVIDERS = [
   { name: 'Pollinations', fn: streamPollinations }
 ];
 
+// ============ PHANTOM FILTER ============
 const PHANTOM_PHRASES = new Set([
   'thank you for watching','thanks for watching','please subscribe','subscribe',
   'the end','a film by','film by','subtitles by','amara.org','amara org',
   'blank audio','music','silence','applause','laughter',
-  'you','the','a','an','ok','okay','yeah','yes','no','bye','hi','hello',
-  'hmm','mm hmm','uh','um','oh','ah','eh','wow','right','really','so','and','but','or'
+  'you','the','a','an','uh','um','hmm','mm hmm','oh','ah','eh'
 ]);
 function looksLikePhantom(text) {
   if (!text) return true;
   const t = String(text).trim();
   if (t.length < 2) return true;
   const lower = t.toLowerCase().replace(/[.,!?;:。、！？…♪"'"'`~]+/g, ' ').replace(/\s+/g, ' ').trim();
-  if (PHANTOM_PHRASES.has(lower)) return true;
-  const words = lower.split(/\s+/);
-  if (words.length === 1 && lower.length <= 3) return true;
+  if (!lower || PHANTOM_PHRASES.has(lower)) return true;
   if (/^[\[\(][^\]\)]{0,40}[\]\)]$/.test(t)) return true;
   if (!/[\p{L}\p{N}]/u.test(t)) return true;
   return false;
 }
 
+// ============ TITLE GENERATION ============
 function isGreetingOnly(msg) {
   const n = normalise(msg);
   if (!n) return false;
@@ -1063,10 +1179,12 @@ async function generateChatTitle(firstMessage) {
   return fallback;
 }
 
-app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '4.4.0', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
+// ============ ROUTES ============
+app.get('/api/config', (req, res) => res.json({ name: 'DeepRWA', version: '4.7.0', supabaseUrl: supabaseUrl || null, supabaseAnonKey: supabaseAnon || null }));
 app.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nSitemap: https://deeprwa.agentdomains.co/sitemap.xml\n`));
 app.get('/sitemap.xml', (req, res) => res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>https://deeprwa.agentdomains.co/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>\n</urlset>`));
 
+// ============ IMAGE PROVIDER DIAGNOSTICS ============
 app.get('/api/debug/image-providers', (req, res) => {
   const cf = !!(process.env.CF_ACCOUNT_ID || process.env.CLOUDFLARE_ACCOUNT_ID) && !!(process.env.CF_API_TOKEN || process.env.CLOUDFLARE_API_TOKEN);
   const providers = [];
@@ -1082,6 +1200,7 @@ app.get('/api/debug/image-providers', (req, res) => {
   });
 });
 
+// ============ SPEECH PROVIDERS DIAGNOSTICS ============
 app.get('/api/debug/stt-providers', (req, res) => {
   const providers = [];
   if (process.env.GROQ_API_KEY) providers.push({ id: 'groq', enabled: true, languages: '99 (Whisper-large-v3)', supports_kinyarwanda: false, context_prompt: true });
@@ -1092,6 +1211,7 @@ app.get('/api/debug/stt-providers', (req, res) => {
   res.json({ providers, hf_token_present: !!process.env.HF_TOKEN, intron_key_present: !!process.env.INTRON_API_KEY, vulavula_key_present: !!process.env.VULAVULA_API_KEY, whisper_lang_count: WHISPER_LANGS.size, sahara_lang_count: SAHARA_LANGS.size, vulavula_lang_count: VULAVULA_LANGS.size });
 });
 
+// AUTH: Signup
 app.post('/api/auth/signup', async (req, res) => {
   if (!supabaseConfigured) return res.status(503).json({ error: 'Auth not configured' });
   const { email, password, fullName } = req.body || {};
@@ -1314,6 +1434,7 @@ app.delete('/api/auth/account', requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
+// 2FA
 app.post('/api/auth/2fa/setup', requireAuth, async (req, res) => {
   const { data: profile } = await supabase.from('profiles').select('email, totp_enabled').eq('id', req.userId).maybeSingle();
   if (profile?.totp_enabled) return res.status(400).json({ error: '2FA already enabled' });
@@ -1340,6 +1461,7 @@ app.post('/api/auth/2fa/disable', requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
+// SESSIONS
 app.get('/api/auth/sessions', requireAuth, async (req, res) => {
   const clientId = req.headers['x-client-id'] || '';
   const { data } = await supabase.from('sessions').select('*').eq('user_id', req.userId).eq('revoked', false).order('last_active', { ascending: false });
@@ -1381,6 +1503,7 @@ app.delete('/api/auth/sessions-current', requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
+// FILE UPLOAD
 app.post('/api/upload', requireAuth, async (req, res) => {
   const { name, type, data } = req.body || {};
   if (!name || !type || !data) return res.status(400).json({ error: 'Missing file data' });
@@ -1396,6 +1519,7 @@ app.post('/api/upload', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// FILES LIST (basic)
 app.get('/api/files', requireAuth, async (req, res) => {
   try {
     const { data: convs } = await supabase.from('conversations').select('id').eq('user_id', req.userId);
@@ -1410,6 +1534,7 @@ app.get('/api/files', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message, files: [] }); }
 });
 
+// FILES LIST with IDs
 app.get('/api/files-with-ids', requireAuth, async (req, res) => {
   try {
     const { data: convs } = await supabase.from('conversations').select('id').eq('user_id', req.userId);
@@ -1444,29 +1569,42 @@ app.delete('/api/files/:messageId/:fileIndex', requireAuth, async (req, res) => 
   res.json({ success: true });
 });
 
+// TITLE
 app.post('/api/chat/title', async (req, res) => {
   const { message } = req.body || {};
   if (!message) return res.status(400).json({ error: 'message required' });
   res.json({ title: await generateChatTitle(message) });
 });
 
+// CHAT: guest
 app.post('/api/chat/guest', async (req, res) => {
-  const { messages, attachments } = req.body || {};
+  const { messages, attachments, voice } = req.body || {};
   if (!Array.isArray(messages) || !messages.length) return res.status(400).json({ error: 'messages required' });
-  await streamChatResponse(messages, res, null, attachments || []);
+  await streamChatResponse(res, { messages, conversationId: null, attachments: attachments || [], voice: !!voice });
 });
 
+// CHAT: authenticated
 app.post('/api/chat', requireAuth, async (req, res) => {
-  const { messages, conversationId, attachments } = req.body || {};
+  const { messages, conversationId, attachments, voice } = req.body || {};
   if (!Array.isArray(messages) || !messages.length) return res.status(400).json({ error: 'messages required' });
   let convId = conversationId;
   const firstUserText = messages.find(m => m.role === 'user')?.content || '';
   if (!convId) {
-    const title = await generateChatTitle(firstUserText);
-    const { data: conv, error } = await supabase.from('conversations').insert({ user_id: req.userId, title }).select().single();
+    // Create the conversation instantly (no waiting for an AI-generated title),
+    // then name it in the background.
+    const quickTitle = isGreetingOnly(firstUserText) ? greetingLabel(firstUserText) : 'New chat';
+    const { data: conv, error } = await supabase.from('conversations').insert({ user_id: req.userId, title: quickTitle }).select().single();
     if (error) return res.status(500).json({ error: error.message });
     convId = conv.id;
-    console.log(`[chat] new conv created: "${title}"`);
+    console.log(`[chat] new conv created: ${convId}`);
+    if (quickTitle === 'New chat' && firstUserText) {
+      generateChatTitle(firstUserText)
+        .then(t => {
+          if (!t || t === 'New chat') return;
+          return supabase.from('conversations').update({ title: t }).eq('id', convId).eq('title', 'New chat');
+        })
+        .catch(e => console.warn('[title] background failed:', e.message));
+    }
   }
   const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
   if (lastUserMsg) {
@@ -1480,118 +1618,163 @@ app.post('/api/chat', requireAuth, async (req, res) => {
     if (insErr) console.warn(`[chat] failed to save user msg:`, insErr.message);
   }
   res.setHeader('X-Conversation-Id', convId);
-  await streamChatResponse(messages, res, convId, attachments || []);
+  res.setHeader('Access-Control-Expose-Headers', 'X-Conversation-Id');
+  await streamChatResponse(res, { messages, conversationId: convId, attachments: attachments || [], voice: !!voice });
 });
 
-async function streamChatResponse(messages, res, conversationId, attachments) {
-  res.setHeader('Content-Type', 'text/event-stream');
+// Keep the most recent part of the conversation that fits the model's context.
+const MAX_HISTORY_CHARS = 60000;
+const MAX_SINGLE_MSG_CHARS = 24000;
+function prepareHistory(messages) {
+  const clean = (messages || [])
+    .filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim())
+    .map(m => ({ role: m.role, content: m.content.length > MAX_SINGLE_MSG_CHARS ? m.content.slice(0, MAX_SINGLE_MSG_CHARS) + '\n…[truncated]' : m.content }));
+  const out = [];
+  let total = 0;
+  for (let i = clean.length - 1; i >= 0; i--) {
+    const len = clean[i].content.length;
+    if (out.length && total + len > MAX_HISTORY_CHARS) break;
+    out.unshift(clean[i]);
+    total += len;
+  }
+  while (out.length && out[0].role !== 'user') out.shift();
+  // Merge accidental consecutive messages from the same role (some providers reject them).
+  const merged = [];
+  for (const m of out) {
+    const prev = merged[merged.length - 1];
+    if (prev && prev.role === m.role) prev.content += '\n\n' + m.content;
+    else merged.push({ ...m });
+  }
+  return merged;
+}
+
+// Streams from the first provider that answers. Falls back to the next one only
+// if a provider fails before producing any text.
+async function pipeProviders(list, invoke, send, isGone) {
+  for (const p of list) {
+    if (isGone()) return null;
+    let text = '';
+    try {
+      for await (const chunk of invoke(p)) {
+        if (isGone()) break;
+        if (!chunk) continue;
+        text += chunk;
+        send({ text: chunk });
+      }
+      if (text.trim()) { console.log(`✅ ${p.name} (${text.length} chars)`); return { text, provider: p.name }; }
+      if (isGone()) return text ? { text, provider: p.name, partial: true } : null;
+      console.warn(`[empty] ${p.name}`);
+    } catch (e) {
+      console.warn(`[fail] ${p.name}: ${e.message}`);
+      if (text.trim()) {
+        const note = '\n\n_(The answer was cut off by a connection problem. Ask me to continue if you need the rest.)_';
+        send({ text: note });
+        return { text: text + note, provider: p.name, partial: true };
+      }
+    }
+  }
+  return null;
+}
+
+async function streamChatResponse(res, { messages, conversationId, attachments, voice }) {
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders?.();
-  const send = (o) => res.write(`data: ${JSON.stringify(o)}\n\n`);
-  const done = () => { res.write('data: [DONE]\n\n'); res.end(); };
 
-  const lastUser = [...messages].reverse().find(m => m.role === 'user');
+  let clientGone = false;
+  res.on('close', () => { clientGone = true; });
+  const isGone = () => clientGone || res.writableEnded;
+  const send = (o) => { if (!isGone()) res.write(`data: ${JSON.stringify(o)}\n\n`); };
+  // Comment pings keep mobile networks / proxies from closing a quiet stream.
+  const ping = setInterval(() => { if (!isGone()) res.write(': ping\n\n'); }, 15000);
+  const done = () => {
+    clearInterval(ping);
+    if (!isGone()) { res.write('data: [DONE]\n\n'); res.end(); }
+  };
+  const saveAssistant = async (content, files) => {
+    if (!conversationId || !supabase || !content) return;
+    try {
+      const row = { conversation_id: conversationId, role: 'assistant', content };
+      if (files) row.files = files;
+      await supabase.from('messages').insert(row);
+      await supabase.from('conversations').update({ updated_at: new Date().toISOString() }).eq('id', conversationId);
+    } catch (e) { console.warn('save assistant msg failed:', e.message); }
+  };
+
+  const history = prepareHistory(messages);
+  const lastUser = [...history].reverse().find(m => m.role === 'user');
   const userText = lastUser?.content || '';
+  if (!history.length) { send({ text: 'Please type a message.' }); return done(); }
 
-  if ((!attachments || !attachments.length)) {
-    if (isIdentityQuestion(userText)) {
-      send({ text: IDENTITY_REPLY });
-      return done();
-    }
-    if (isGreeting(userText) && messages.length <= 2) {
-      send({ text: buildGreetingReply(userText) });
-      return done();
-    }
-
-    if (isImageGenerationRequest(userText)) {
-      try {
-        const intent = await classifyImageIntent(userText);
-        if (intent.action === 'generate' && intent.prompt) {
-          let result;
-          try { result = await generateImage(intent.prompt); }
-          catch (e) {
-            const errText = "I couldn't create that image right now. Please try again in a moment.";
-            console.warn('[image] generation failed:', e.message);
-            send({ text: errText });
-            if (conversationId && supabase) {
-              try { await supabase.from('messages').insert({ conversation_id: conversationId, role: 'assistant', content: errText }); } catch {}
-            }
-            return done();
-          }
-          const intro = "Here's the image you asked for:";
-          send({ text: intro });
-          send({ image: result.url, prompt: intent.prompt });
-          if (conversationId && supabase) {
-            try {
-              const filename = `generated-${Date.now()}.jpg`;
-              await supabase.from('messages').insert({
-                conversation_id: conversationId,
-                role: 'assistant',
-                content: intro,
-                files: [{ url: result.url, public_url: result.url, type: 'image/jpeg', name: filename, generated: true }]
-              });
-            } catch (e) { console.warn('save image msg failed:', e.message); }
-          }
-          return done();
-        }
-        if (intent.action === 'off_topic') {
-          const refusal = "I'm DeepRWA, specialised in Rwanda. I can create images related to Rwanda — landscapes, cities, cultural scenes, wildlife, notable places, and similar — but not unrelated subjects. If you'd like a Rwanda-related image, just describe what you need — for example, \"a maize field in Rwanda at sunrise\" or \"a mountain gorilla in Volcanoes National Park\".";
-          send({ text: refusal });
-          if (conversationId && supabase) {
-            try { await supabase.from('messages').insert({ conversation_id: conversationId, role: 'assistant', content: refusal }); } catch {}
-          }
-          return done();
-        }
-      } catch (e) {
-        console.warn('[image] flow error:', e.message);
+  // ----- Image generation -----
+  if ((!attachments || !attachments.length) && isImageGenerationRequest(userText)) {
+    try {
+      const intent = await classifyImageIntent(userText);
+      if (intent.action === 'blocked') {
+        const msg = "I can't create that kind of image, but I'm happy to make something else — describe a scene, person, place, product or idea you'd like to see.";
+        send({ text: msg }); done(); saveAssistant(msg); return;
       }
+      if (intent.action === 'clarify') {
+        const msg = 'Sure — what would you like the image to show? Describe the subject, setting and style (for example: "a sunrise over Lake Kivu, watercolour style").';
+        send({ text: msg }); done(); saveAssistant(msg); return;
+      }
+      if (intent.action === 'generate') {
+        let result;
+        try { result = await generateImage(intent.prompt); }
+        catch (e) {
+          console.warn('[image] generation failed:', e.message);
+          const errText = "I couldn't create that image right now. Please try again in a moment.";
+          send({ text: errText }); done(); saveAssistant(errText); return;
+        }
+        const intro = "Here's the image you asked for:";
+        send({ text: intro });
+        send({ image: result.url, prompt: intent.prompt });
+        done();
+        saveAssistant(intro, [{ url: result.url, public_url: result.url, type: 'image/jpeg', name: `generated-${Date.now()}.jpg`, generated: true }]);
+        return;
+      }
+    } catch (e) {
+      console.warn('[image] flow error:', e.message);
     }
   }
 
-  let fullText = '';
-  let handled = false;
+  // ----- Text / vision answer, streamed live -----
+  const opts = { voice: !!voice, maxTokens: voice ? 800 : 4096 };
+  const full = [{ role: 'system', content: buildSystemPrompt({ voice }) }, ...history];
+  let result = null;
 
   if (attachments && attachments.length) {
-    for (const vp of VISION_PROVIDERS) {
-      try {
-        const chunks = [];
-        for await (const chunk of vp.fn(messages, attachments)) chunks.push(chunk);
-        const t = chunks.join('');
-        if (t.trim()) { fullText = t; handled = true; console.log(`✅ ${vp.name} responded (${t.length} chars)`); break; }
-      } catch (e) { console.warn(`[fail] ${vp.name}: ${e.message}`); continue; }
-    }
+    result = await pipeProviders(VISION_PROVIDERS, p => p.fn(full, attachments, opts), send, isGone);
   }
 
-  if (!handled) {
-    let mod = messages;
+  if (!result && !isGone()) {
+    let mod = full;
     if (attachments && attachments.length) {
-      const names = attachments.map(a => a.name || a.mime).join(', ');
-      const note = `\n\n[${attachments.length} file(s) attached: ${names} — vision service unavailable]`;
+      const textFiles = attachments.filter(a => a.mime === 'text/plain');
+      let note = '';
+      for (const f of textFiles) {
+        try { note += `\n\n--- Attached file: ${f.name || 'file'} ---\n${Buffer.from(f.data, 'base64').toString('utf8').slice(0, 30000)}`; } catch {}
+      }
+      const others = attachments.filter(a => a.mime !== 'text/plain');
+      if (others.length) note += `\n\n[${others.length} file(s) attached: ${others.map(a => a.name || a.mime).join(', ')} — the file reader is temporarily unavailable, so tell the user you couldn't open them and answer what you can.]`;
       const lastIdx = mod.length - 1;
       if (mod[lastIdx]?.role === 'user') mod = mod.map((m, i) => i === lastIdx ? { ...m, content: m.content + note } : m);
     }
-    const sanitized = sanitizeForProvider(mod);
-    const full = [{ role: 'system', content: SYSTEM_PROMPT }, ...sanitized];
-    for (const p of PROVIDERS) {
-      try {
-        const chunks = [];
-        for await (const chunk of p.fn(full)) chunks.push(chunk);
-        const t = chunks.join('');
-        if (t.trim()) { fullText = t; handled = true; console.log(`✅ ${p.name} responded (${t.length} chars)`); break; }
-      } catch (e) { console.warn(`[fail] ${p.name}: ${e.message}`); continue; }
-    }
-    if (!handled) { send({ text: 'Sorry, all AI providers are temporarily unavailable. Please try again.' }); return done(); }
+    result = await pipeProviders(PROVIDERS, p => p.fn(mod, opts), send, isGone);
   }
 
-  send({ text: fullText });
-  if (conversationId && supabase) {
-    try { await supabase.from('messages').insert({ conversation_id: conversationId, role: 'assistant', content: fullText }); } catch (e) { console.warn('save assistant msg failed:', e.message); }
+  if (!result) {
+    if (!isGone()) send({ text: 'Sorry, the AI service is temporarily busy. Please try again in a moment.' });
+    return done();
   }
-  return done();
+
+  done();
+  await saveAssistant(result.text);
 }
 
+// CONVERSATIONS
 app.get('/api/conversations', requireAuth, async (req, res) => {
   const { data } = await supabase.from('conversations').select('*').eq('user_id', req.userId).order('updated_at', { ascending: false });
   res.json({ conversations: data || [] });
@@ -1628,6 +1811,7 @@ app.post('/api/chat/messages/:id/sync-versions', requireAuth, async (req, res) =
   res.json({ assistantMessageId: newMsg?.id });
 });
 
+// SHARE
 app.post('/api/share/guest', async (req, res) => {
   const { messages } = req.body || {};
   if (!Array.isArray(messages)) return res.status(400).json({ error: 'messages required' });
@@ -1649,6 +1833,7 @@ app.get('/api/share/:token', async (req, res) => {
 });
 app.get('/share/:token', (req, res) => res.sendFile(path.join(__dirname, 'public', 'share.html')));
 
+// STATIC
 const PUBLIC_DIR = path.join(__dirname, 'public');
 app.use(express.static(PUBLIC_DIR));
 app.get(/^\/(?!api|health|robots|sitemap|av\.png|share).*/, (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
