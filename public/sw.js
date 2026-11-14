@@ -1,10 +1,10 @@
-// DeepRWA Service Worker — rev.4.5.0
+// DeepRWA Service Worker — rev.4.7.0
 // Strategy:
 //   - HTML / CSS / JS: network-only, no cache. Ensures every deploy is picked up.
 //   - Static media (av.png, manifest): cache-first.
 //   - Bump CACHE_VERSION on every release to invalidate old caches.
 
-const CACHE_VERSION = 'deeprwa-v4.5.0';
+const CACHE_VERSION = 'deeprwa-v4.7.0';
 
 // These files are ALWAYS fetched from the network — never cached.
 const NEVER_CACHE = [
@@ -23,6 +23,8 @@ self.addEventListener('activate', (event) => {
       .then((keys) => Promise.all(keys.map(k => caches.delete(k))))
       .then(() => self.clients.claim())
       .then(() => {
+        // The page itself decides whether to reload (it only does so for real
+        // updates, never on a first visit).
         // Tell every open tab to reload so it picks up the fresh code.
         return self.clients.matchAll({ type: 'window' }).then((clients) => {
           clients.forEach((client) => {
