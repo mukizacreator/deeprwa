@@ -2954,13 +2954,13 @@ function openAuthModal(mode) {
 authModalClose.addEventListener('click', () => { authModal.classList.add('hidden'); clearAuthModalState(); });
 authModal.addEventListener('click', (e) => { if (e.target === authModal) { authModal.classList.add('hidden'); clearAuthModalState(); } });
 
-function renderLoginForm() {
+function renderLoginForm(prefillEmail) {
   saveAuthModalState({ form: 'login' });
   authModalBody.innerHTML = `
     <h3>Log in to DeepRWA</h3>
     <p class="modal-sub">Save your chats and access them anywhere.</p>
-    <input type="email" id="authEmail" placeholder="Email" class="modal-input" autocomplete="email" />
-    ${passwordFieldHTML('authPassword', 'Password')}
+    <input type="email" id="authEmail" placeholder="Email" class="modal-input" autocomplete="username email" value="${escapeHtml(typeof prefillEmail === 'string' ? prefillEmail : '')}" />
+    ${passwordFieldHTML('authPassword', 'Password', 'current-password')}
     <button class="btn-primary" id="authSubmit">Log in</button>
     <button class="link-btn" id="forgotLink">Forgot password?</button>
     <p class="modal-switch">Don't have an account? <a id="switchSignup">Sign up</a></p>`;
@@ -2968,7 +2968,7 @@ function renderLoginForm() {
   $('switchSignup').onclick = (e) => { e.preventDefault(); renderSignupForm(); };
   $('forgotLink').onclick = (e) => { e.preventDefault(); renderForgotStep1(); };
   $('authSubmit').onclick = async () => {
-    const email = $('authEmail').value.trim();
+    const email = $('authEmail').value.trim().toLowerCase();
     const password = $('authPassword').value;
     if (!email || !password) { toast('Enter email and password', 'error'); return; }
     const btn = $('authSubmit'); setBtnLoading(btn, 'Logging in…');
@@ -3148,10 +3148,13 @@ function renderForgotStep2() {
 }
 
 function renderForgotStep3() {
-  saveAuthModalState({ form: 'forgot-step3', grantedToken: state.authModal.forgot.grantedToken });
+  saveAuthModalState({ form: 'forgot-step3', grantedToken: state.authModal.forgot.grantedToken, email: state.authModal.forgot.email });
+  // The hidden username field lets phone/browser password managers save the
+  // NEW password for this email (otherwise they keep auto-filling the old one).
   authModalBody.innerHTML = `
     <h3>Set new password</h3>
     <p class="modal-sub">Choose a new password different from your current one.</p>
+    <input type="email" name="username" autocomplete="username" value="${escapeHtml(state.authModal.forgot.email || '')}" readonly hidden />
     ${passwordFieldHTML('fpNew', 'New password (min 8, letters + numbers)', 'new-password')}
     ${passwordFieldHTML('fpConfirm', 'Confirm new password', 'new-password')}
     <button class="btn-primary" id="fpReset">Reset password</button>`;
@@ -3160,14 +3163,27 @@ function renderForgotStep3() {
     const newPassword = $('fpNew').value;
     const confirm = $('fpConfirm').value;
     if (newPassword.length < 8) { toast('Password must be at least 8 characters', 'error'); return; }
+    if (!/[a-zA-Z]/.test(newPassword) || !/\d/.test(newPassword)) { toast('Password must contain letters and numbers', 'error'); return; }
     if (newPassword !== confirm) { toast('Passwords do not match', 'error'); return; }
     const btn = $('fpReset'); setBtnLoading(btn, 'Resetting password…');
     try {
-      const res = await fetch('/api/auth/reset-password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ grantedToken: state.authModal.forgot.grantedToken, newPassword }) });
-      const data = await res.json();
+      const res = await fetch('/api/auth/reset-password', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Client-Id': CLIENT_ID }, body: JSON.stringify({ grantedToken: state.authModal.forgot.grantedToken, newPassword }) });
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) { resetBtn(btn); toast(data.error || 'Failed', 'error'); return; }
+      // Tell the browser's password manager about the new password.
+      try {
+        if (window.PasswordCredential && navigator.credentials && data.email) {
+          await navigator.credentials.store(new PasswordCredential({ id: data.email, password: newPassword }));
+        }
+      } catch {}
+      state.authModal.forgot = { email: null, pendingToken: null, grantedToken: null };
+      if (data.accessToken) {
+        await handleLoginSuccess(data);
+        toast('Password reset — you are logged in.', 'success');
+        return;
+      }
       toast('Password reset. Log in with your new password.', 'success');
-      renderLoginForm();
+      renderLoginForm(data.email || '');
     } catch { resetBtn(btn); toast('Network error', 'error'); }
   };
 }
@@ -3182,7 +3198,7 @@ function restoreAuthModalState() {
     else if (saved.form === '2fa') { authModal.classList.remove('hidden'); render2FALoginForm(saved.twofaToken); }
     else if (saved.form === 'forgot-step1') { authModal.classList.remove('hidden'); renderForgotStep1(); }
     else if (saved.form === 'forgot-step2') { state.authModal.forgot.email = saved.email; state.authModal.forgot.pendingToken = saved.pendingToken; authModal.classList.remove('hidden'); renderForgotStep2(); }
-    else if (saved.form === 'forgot-step3') { state.authModal.forgot.grantedToken = saved.grantedToken; authModal.classList.remove('hidden'); renderForgotStep3(); }
+    else if (saved.form === 'forgot-step3') { state.authModal.forgot.grantedToken = saved.grantedToken; state.authModal.forgot.email = saved.email || null; authModal.classList.remove('hidden'); renderForgotStep3(); }
     else if (saved.form === 'action-verify') {
       if (!state.user) { clearAuthModalState(); return; }
       state._pendingAction = saved.pendingAction;
