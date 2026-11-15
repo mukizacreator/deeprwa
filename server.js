@@ -1,4 +1,4 @@
-// DeepRWA — Complete backend (rev.4.7.1)
+// DeepRWA — Complete backend (rev.4.7.0)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -160,54 +160,16 @@ async function isEmailTakenByOther(email, uid) { const u = await findUserByEmail
 // ============ AUTH HELPERS ============
 function getUserId(req) { const a = req.headers.authorization; if (!a?.startsWith('Bearer ')) return null; try { return jwt.verify(a.slice(7), JWT_SECRET).sub; } catch { return null; } }
 async function requireAuth(req, res, next) { const u = getUserId(req); if (!u) return res.status(401).json({ error: 'Auth required' }); req.userId = u; next(); }
-// Checks an email + password against Supabase Auth and says WHY it failed.
-// Before, every failure (rate limit, unconfirmed email, outage, wrong password)
-// was reported as "Invalid email or password", which hid the real problem.
-const authSleep = (ms) => new Promise(r => setTimeout(r, ms));
-async function passwordGrant(email, password) {
-  if (!supabaseUrl || !supabaseAnon) return { ok: false, reason: 'not-configured' };
-  const em = String(email || '').toLowerCase().trim();
-  if (!em || !password) return { ok: false, reason: 'invalid' };
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const res = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=password`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'apikey': supabaseAnon, 'Authorization': `Bearer ${supabaseAnon}` },
-        body: JSON.stringify({ email: em, password })
-      });
-      if (res.ok) {
-        const j = await res.json().catch(() => ({}));
-        if (j.user) return { ok: true, user: j.user };
-        return { ok: false, reason: 'unavailable', message: 'empty auth response' };
-      }
-      const body = await res.json().catch(() => ({}));
-      const message = body.error_description || body.msg || body.message || body.error || `HTTP ${res.status}`;
-      const code = body.error_code || body.code || '';
-      if (res.status === 429 || res.status >= 500) {
-        console.warn(`[auth] password check ${res.status} for ${em}: ${message}`);
-        if (attempt === 0) { await authSleep(900); continue; }
-        return { ok: false, reason: res.status === 429 ? 'rate-limited' : 'unavailable', message };
-      }
-      if (code === 'email_not_confirmed' || /not\s+confirmed/i.test(message)) return { ok: false, reason: 'unconfirmed', message };
-      if (code === 'user_banned' || /banned/i.test(message)) return { ok: false, reason: 'banned', message };
-      return { ok: false, reason: 'invalid', message };
-    } catch (e) {
-      console.warn(`[auth] password check network error: ${e.message}`);
-      if (attempt === 0) { await authSleep(600); continue; }
-      return { ok: false, reason: 'unavailable', message: e.message };
-    }
-  }
-  return { ok: false, reason: 'unavailable' };
-}
 async function verifyPassword(email, password) {
-  const r = await passwordGrant(email, password);
-  return r.ok ? r.user : null;
-}
-function authFailureResponse(res, r) {
-  if (r.reason === 'rate-limited') return res.status(429).json({ error: 'Too many login attempts right now. Please wait a minute and try again.' });
-  if (r.reason === 'unavailable' || r.reason === 'not-configured') return res.status(503).json({ error: 'Login service is temporarily unavailable. Please try again shortly.' });
-  if (r.reason === 'banned') return res.status(403).json({ error: 'This account is suspended. Please contact support.' });
-  return res.status(401).json({ error: 'Invalid email or password' });
+  if (!supabaseUrl || !supabaseAnon) return null;
+  try {
+    const res = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=password`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'apikey': supabaseAnon },
+      body: JSON.stringify({ email, password })
+    });
+    if (!res.ok) return null;
+    return (await res.json()).user || null;
+  } catch { return null; }
 }
 
 // ============ SESSIONS ============
@@ -1315,21 +1277,8 @@ app.post('/api/auth/login', async (req, res) => {
   const { email, password } = req.body || {};
   if (!isValidEmail(email)) return res.status(400).json({ error: 'Invalid email' });
   if (!password) return res.status(400).json({ error: 'Password required' });
-  const emailLower = email.toLowerCase().trim();
-  let check = await passwordGrant(emailLower, password);
-  // An account whose email is marked unconfirmed can't log in with a password.
-  // Every DeepRWA account verified its email with a code, so confirm it and retry.
-  if (!check.ok && check.reason === 'unconfirmed') {
-    try {
-      const u = await findUserByEmail(emailLower);
-      if (u) { await supabase.auth.admin.updateUserById(u.id, { email_confirm: true }); check = await passwordGrant(emailLower, password); }
-    } catch (e) { console.warn('[auth] auto-confirm failed:', e.message); }
-  }
-  if (!check.ok) {
-    console.warn(`[auth] login failed for ${emailLower}: ${check.reason}${check.message ? ' — ' + check.message : ''}`);
-    return authFailureResponse(res, check);
-  }
-  const user = check.user;
+  const user = await verifyPassword(email, password);
+  if (!user) return res.status(401).json({ error: 'Invalid email or password' });
   const { data: profile } = await supabase.from('profiles').select('totp_enabled').eq('id', user.id).maybeSingle();
   const code = genCode();
   const pendingToken = signPending({ type: 'login', userId: user.id, email: user.email, code, needs2fa: profile?.totp_enabled || false }, 900);
@@ -1418,44 +1367,12 @@ app.post('/api/auth/reset-password', async (req, res) => {
   const { grantedToken, newPassword } = req.body || {};
   if (!pwIsStrong(newPassword)) return res.status(400).json({ error: 'Password must be at least 8 chars with letters and numbers' });
   const g = verifyPending(grantedToken);
-  if (!g || g.type !== 'forgot-password-granted') return res.status(400).json({ error: 'Your reset session expired. Please request a new code.' });
-
-  // Re-read the account so we update exactly the account that owns this email.
-  let account = null;
-  try {
-    const { data } = await supabase.auth.admin.getUserById(g.userId);
-    account = data?.user || null;
-  } catch {}
-  if (!account || String(account.email || '').toLowerCase() !== String(g.email || '').toLowerCase()) {
-    account = await findUserByEmail(g.email);
-  }
-  if (!account) return res.status(404).json({ error: 'No account found with this email' });
-  const email = account.email.toLowerCase();
-
-  const same = await passwordGrant(email, newPassword);
-  if (same.ok) return res.status(400).json({ error: 'New password must be different from the current one' });
-
-  // Save the new password and make sure the account is confirmed so it can log in.
-  const { error } = await supabase.auth.admin.updateUserById(account.id, { password: newPassword, email_confirm: true });
-  if (error) {
-    console.warn(`[auth] reset-password update failed for ${email}: ${error.message}`);
-    return res.status(400).json({ error: error.message || 'Could not save the new password' });
-  }
-
-  // Prove the new password really works before telling the user it was reset.
-  let check = await passwordGrant(email, newPassword);
-  if (!check.ok && check.reason === 'invalid') { await authSleep(1200); check = await passwordGrant(email, newPassword); }
-  if (!check.ok && check.reason === 'invalid') {
-    console.error(`[auth] reset-password: new password not accepted for ${email}: ${check.message || ''}`);
-    return res.status(500).json({ error: 'The new password could not be saved. Please try again.' });
-  }
-
-  // Log the user straight in (unless 2FA is on — then they log in normally).
-  const { data: profile } = await supabase.from('profiles').select('totp_enabled, display_name').eq('id', account.id).maybeSingle();
-  if (profile?.totp_enabled) return res.json({ success: true, email });
-  await trackSession(account.id, req);
-  const accessToken = jwt.sign({ sub: account.id, email }, JWT_SECRET, { expiresIn: '30d' });
-  res.json({ success: true, email, accessToken, user: { id: account.id, email, display_name: profile?.display_name || null } });
+  if (!g || g.type !== 'forgot-password-granted') return res.status(400).json({ error: 'Session expired' });
+  const same = await verifyPassword(g.email, newPassword);
+  if (same) return res.status(400).json({ error: 'New password must be different from the current one' });
+  const { error } = await supabase.auth.admin.updateUserById(g.userId, { password: newPassword });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
 });
 
 app.post('/api/auth/send-action-code', requireAuth, async (req, res) => {
@@ -1505,10 +1422,9 @@ app.post('/api/auth/change-password', requireAuth, async (req, res) => {
   const g = verifyPending(grantedToken);
   if (!g || g.type !== 'granted' || g.action !== 'change-password' || g.userId !== req.userId) return res.status(400).json({ error: 'Session expired' });
   const { data: profile } = await supabase.from('profiles').select('email').eq('id', req.userId).maybeSingle();
-  const cur = await passwordGrant(profile?.email, currentPassword);
-  if (!cur.ok) return cur.reason === 'invalid' ? res.status(401).json({ error: 'Current password is incorrect' }) : authFailureResponse(res, cur);
+  if (!await verifyPassword(profile?.email, currentPassword)) return res.status(401).json({ error: 'Current password is incorrect' });
   if (await verifyPassword(profile?.email, newPassword)) return res.status(400).json({ error: 'New password must be different' });
-  const { error } = await supabase.auth.admin.updateUserById(req.userId, { password: newPassword, email_confirm: true });
+  const { error } = await supabase.auth.admin.updateUserById(req.userId, { password: newPassword });
   if (error) return res.status(500).json({ error: error.message });
   res.json({ success: true });
 });
