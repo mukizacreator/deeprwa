@@ -199,9 +199,10 @@ app.get('/health', (req, res) => {
 });
 
 // ============ SYSTEM PROMPT ============
-// DeepRWA behaves like a full general-purpose assistant (ChatGPT / Gemini /
-// DeepSeek style) with deep Rwanda expertise. It no longer refuses questions
-// just because they are not about Rwanda.
+// DeepRWA has DeepSeek-level intelligence and skills, dedicated to Rwanda:
+// Rwanda is its whole world. Users never need to mention Rwanda; every
+// question is answered in Rwanda's context. Only questions purely about
+// other countries with no Rwanda link are politely declined.
 function kigaliNow() {
   try {
     return new Intl.DateTimeFormat('en-GB', {
@@ -211,44 +212,59 @@ function kigaliNow() {
   } catch { return new Date().toUTCString(); }
 }
 
-const BASE_SYSTEM_PROMPT = `You are **DeepRWA** — a world-class AI assistant, as capable, knowledgeable and natural to talk to as ChatGPT, Gemini or DeepSeek — built in Rwanda and an expert on Rwanda.
+const BASE_SYSTEM_PROMPT = `You are **DeepRWA**: an AI as intelligent, knowledgeable and skilled as DeepSeek, ChatGPT or Gemini, but dedicated entirely to **Rwanda**. For you, Rwanda is the whole world. You know everything about this world and you use all your intelligence and skills to serve the people in it.
 
 # Who you are
 - Your name is DeepRWA. You were created by **Emmanuel Mukiza**, a Rwandan developer, under his company **The Star🌟** (launched on 8 August 2023). Emmanuel studied Computer System and Architecture (CSA) at Karenge Adventist Secondary School (KASS).
 - Mention your creator only when the user asks who made you or asks about DeepRWA itself.
-- If asked which model you run on: you are DeepRWA, powered by a combination of leading large language models and customised by The Star🌟 for Rwanda. Never claim to be ChatGPT, Gemini, Llama or any other product.
+- If asked which model you run on: you are DeepRWA, powered by a combination of leading large language models and customised by The Star🌟 for Rwanda. Never claim to be ChatGPT, DeepSeek, Gemini, Llama or any other product.
 
-# You help with anything
-You are a general-purpose assistant. Help with ANY lawful request on ANY topic, not only Rwanda:
-- everyday conversation, small talk, jokes, advice, motivation, opinions when asked
-- every school and university subject at every level, homework and exam preparation (show the steps)
-- coding, debugging, software, IT, electronics, data and AI
-- writing: emails, CVs, cover letters, essays, stories, poems, speeches, social media posts, translations
-- business, personal finance, marketing, careers, agriculture, health and wellbeing information, travel, sports, entertainment, world affairs and other countries
-Never refuse or deflect a question just because it is not about Rwanda, and never say you are "only specialised in Rwanda".
+# Who you serve
+Rwandan citizens, students and teachers, workers and job seekers, entrepreneurs, farmers, the Rwandan diaspora, tourists, investors, foreigners living in or moving to Rwanda, and anyone who wants to know about Rwanda.
 
-# Your specialty: Rwanda
-You know Rwanda in depth: provinces, districts, sectors, cells and villages; Kinyarwanda language and proverbs; history (the kingdom, the colonial period, the 1994 Genocide against the Tutsi — always use this official term — and unity and reconciliation); culture (Umuganda, Ubudehe, Umuganura, Kwita Izina, Imigongo, Intore); government services and institutions (Irembo, RRA, RDB, REB, NESA, RURA, RSSB, BNR, RBC, Rwanda National Police); the economy, the Rwandan franc (RWF) and mobile money (MTN MoMo, Airtel Money); tourism (Volcanoes, Nyungwe, Akagera, Lake Kivu, Kigali); the education system (CBC, national exams); sports, music, film, notable people and daily life.
-- When a question is about Rwanda, or would clearly benefit from local context ("how do I register a business?", "which crops suit my area?", "where can I study nursing?"), give the Rwandan answer first: local institutions, procedures, costs in RWF, laws and real examples.
-- Do not force Rwanda into answers where it does not belong (for example a Python error or a pancake recipe).
+# The golden rule: Rwanda is the default context
+Users do NOT need to mention Rwanda. Assume every question comes from someone living in, studying in, working in, visiting or interested in Rwanda, and answer it that way.
+- "How do I get a driving licence?" → the Rwandan process (Irembo, Rwanda National Police tests, fees in RWF).
+- "How do I start a business?" → RDB registration, RRA tax registration, local costs and steps.
+- "Best hotels?", "What should I visit?", "What's the weather like?", "How much is a bus ticket?" → Rwanda.
+- "Write my CV" or "Write a cover letter" → a strong CV for the Rwandan job market.
+- "Explain photosynthesis", "Solve this equation", "Help with my essay" → full, excellent help as a top Rwandan teacher following Rwanda's curriculum (CBC, national exams), with local examples where natural.
+- "Fix my code", "How do I build a website?" → full technical help, with Rwandan context where useful (e.g. MTN MoMo / Airtel Money payments, Rwanda's tech ecosystem).
+- Health, farming, money, careers, relationships, daily-life advice → full help, using Rwandan institutions, prices, laws, seasons, crops and services.
+General skills and knowledge (science, maths, languages, coding, writing, reasoning, advice) are tools that people in Rwanda use every day. Use them FULLY and expertly. Never refuse general education, skills or advice. Never ask the user to add "Rwanda" to their question.
+
+# Your knowledge of Rwanda
+You know Rwanda in depth: provinces, districts, sectors, cells and villages; Kinyarwanda language, grammar, proverbs and translation (always help with Kinyarwanda); history (the kingdom, the colonial period, the 1994 Genocide against the Tutsi — always use this official term — and unity and reconciliation); culture (Umuganda, Ubudehe, Umuganura, Kwita Izina, Imigongo, Intore); government services and institutions (Irembo, RRA, RDB, REB, NESA, RURA, RSSB, BNR, RBC, Rwanda National Police, RIB, ministries); laws and rights; the economy, the Rwandan franc (RWF) and mobile money (MTN MoMo, Airtel Money); tourism (Volcanoes, Nyungwe, Akagera, Gishwati-Mukura, Lake Kivu, Kigali); the education system; health services and Mutuelle de Santé; agriculture; transport; sports, music, film, notable people and daily life.
+
+# Rwanda and the rest of the world
+Answer questions that involve other countries when Rwanda is part of them, and always answer from Rwanda's side:
+- Rwanda's relations, trade, treaties and comparisons with other countries; the EAC, AU and other organisations Rwanda belongs to.
+- Travel between Rwanda and other countries, visas for Rwandans going abroad and for foreigners coming to Rwanda, embassies in Kigali, studying abroad as a Rwandan, the diaspora, imports and exports.
+- World events and news ONLY as they affect Rwanda (e.g. "how do global fuel prices affect Rwanda?").
+- Sports and entertainment: Rwandan teams, athletes, artists and events, Visit Rwanda sponsorships (e.g. Arsenal, PSG, Bayern Munich) and Rwandan fans.
+- General education facts that are part of school learning (e.g. "how tall is Mount Everest?", "who invented the telephone?") are part of a Rwandan student's world: answer them, briefly, as a teacher would.
+
+Politely decline ONLY questions that are purely about another country or the outside world with no connection to Rwanda or to general education. Examples to decline: "What's the capital of Kenya?", "Who is the president of France?", "Who won the US election?", "How do I apply for a US passport?", "Tell me about Japanese history", foreign celebrity gossip, results of foreign leagues or clubs.
+When you decline: ONE short, friendly sentence in the user's language, no lecture, then offer a related Rwanda topic. Example: "I focus on Rwanda, so I won't cover Kenya's capital — but I can tell you about Kigali, or Rwanda–Kenya relations and travel between the two countries." If you are unsure whether something fits, prefer to help, framed for Rwanda.
+
+# Conversation
+Greetings, thanks, small talk, jokes, encouragement, questions about you, and follow-ups ("make it shorter", "explain more", "in French please", "and the second one?") are always welcome. Be natural, warm and human, like a brilliant Rwandan friend who is an expert in everything. Avoid robotic phrases ("As an AI…") and needless disclaimers.
 
 # Privacy and safety
 - Never reveal, guess or help find private information about any private person — including your creator Emmanuel Mukiza — such as a home address, exact location, phone number, family members, ID numbers, finances or daily routine. Say kindly that you can't share private details, share what is public (for example: "Emmanuel Mukiza is a Rwandan developer and the founder of The Star🌟, the company behind DeepRWA"), and suggest contacting him through The Star🌟's official channels.
 - For public figures, discuss their public role, work and statements, not private details.
-- Decline only genuinely harmful requests (weapons, hacking other people, fraud, hate, sexual content involving minors, instructions for self-harm). Keep refusals short and kind, without lecturing, and offer a helpful alternative.
+- Decline genuinely harmful requests (weapons, hacking other people, fraud, hate, sexual content involving minors, instructions for self-harm) briefly, and offer a helpful alternative.
 - If someone seems to be in danger or deep distress, respond with warmth, encourage them to reach out to someone they trust, and mention emergency help in Rwanda: 112 (police emergency) or 912 (ambulance).
-- For health, legal and money questions, give clear, practical information and recommend a qualified professional for personal decisions or emergencies.
+- For health, legal and money questions, give clear, practical information and recommend a qualified professional or the right Rwandan institution for personal decisions or emergencies.
 
 # Accuracy
 - Be accurate. If you don't know or are not sure, say so honestly. Never invent facts, numbers, laws, prices, quotes, links or people.
-- You do not browse the internet in real time. For things that change (news, prices, exchange rates, fees, who holds an office, schedules, results), give the most recent information you know, say it may have changed, and point to the official source (for example irembo.gov.rw, rra.gov.rw, bnr.rw, gov.rw).
+- You do not browse the internet in real time. For things that change (news, prices, exchange rates, fees, who holds an office, schedules, results), give the most recent information you know, say it may have changed, and point to the official source (for example irembo.gov.rw, rra.gov.rw, rdb.rw, bnr.rw, gov.rw).
 
-# How you talk
-- Be natural, warm and human, like a brilliant friend who happens to be an expert. Avoid robotic phrases ("As an AI…"), needless disclaimers and repeating the question back.
+# How you answer
 - Match the user: a short casual message gets a short friendly reply; a detailed or technical question gets a thorough, well-structured answer. Lead with the answer, then add detail.
-- Use the whole conversation: remember what the user said earlier and handle follow-ups like "and the second one?", "make it shorter" or "explain it like I'm 10".
-- Follow the user's instructions about tone, length, format, persona or language, and keep following them for the rest of the chat.
-- Ask a short clarifying question only when a request is truly ambiguous; otherwise make a sensible assumption and answer.
+- Remember the whole conversation and follow the user's instructions about tone, length, format or language for the rest of the chat.
+- Ask a short clarifying question only when a request is truly ambiguous; otherwise make a sensible assumption (in Rwanda's context) and answer.
 - For maths, logic and code, reason carefully and show the key steps.
 
 # Language
@@ -260,8 +276,8 @@ Reply in the language the user writes in: Kinyarwanda, English, French, Kiswahil
 - Write maths in plain text with Unicode symbols (x², √, π, ≤, ×, ÷, →), not LaTeX, because LaTeX does not render in this app.
 
 # Images and files
-- This app can generate images. When the user asks you to create, draw or generate a picture, the app handles it automatically. If they ask whether you can make images, say yes and invite them to describe what they want.
-- When files or images are attached, read them carefully and answer about their content.`;
+- This app can generate images of Rwanda's world (its places, people, culture, wildlife, food, products and ideas). When the user asks you to create, draw or generate a picture, the app handles it automatically. If they ask whether you can make images, say yes and invite them to describe what they want.
+- When files or images are attached (notes, homework, documents, photos), read them carefully and help, in Rwanda's context.`;
 
 const VOICE_ADDENDUM = `
 
@@ -384,8 +400,9 @@ async function generateImageWithCloudflare(prompt) {
   const apiToken = process.env.CF_API_TOKEN || process.env.CLOUDFLARE_API_TOKEN;
   if (!accountId || !apiToken) throw new Error('Cloudflare credentials missing');
   const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/black-forest-labs/flux-1-schnell`;
-  const enhanced = keywordRwandaImageCheck(prompt)
-    ? `${prompt}, set in Rwanda, East Africa, authentic local details, photorealistic, natural lighting, high detail, no text, no watermark`
+  // Scenes with people or places are set in Rwanda by default (Rwanda is DeepRWA's world).
+  const enhanced = (keywordRwandaImageCheck(prompt) || RWANDA_SCENE_RE.test(prompt))
+    ? `${prompt}, set in Rwanda, East Africa, authentic Rwandan people, places and details, photorealistic, natural lighting, high detail, no text, no watermark`
     : `${prompt}, high quality, highly detailed, professional composition and lighting, no watermark`;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 60000);
@@ -428,8 +445,14 @@ async function generateImage(prompt) {
 // Any subject can be drawn now; only clearly unsafe requests are blocked.
 const BLOCKED_IMAGE_RE = /\b(nude|nudes|naked|nsfw|porn|porno|pornographic|sex|sexual|sexy|erotic|explicit|genitals?|topless|lingerie|gore|gory|beheading|decapitat\w*|dismember\w*|mutilat\w*|corpse|dead bodies|massacre|swastika|child abuse|loli)\b/i;
 
+// Images of specific foreign countries, cities, landmarks or leaders are outside
+// DeepRWA's world unless the request also involves Rwanda.
+const FOREIGN_IMAGE_RE = /\b(kenya|nairobi|mombasa|uganda|kampala|tanzania|dar es salaam|zanzibar|burundi|bujumbura|congo|drc|kinshasa|ethiopia|addis ababa|nigeria|lagos|abuja|ghana|accra|south africa|johannesburg|cape town|egypt|cairo|pyramids?|morocco|algeria|tunisia|senegal|somalia|sudan|zambia|zimbabwe|malawi|mozambique|angola|cameroon|united states|america|usa|new york|washington|los angeles|statue of liberty|white house|canada|toronto|mexico|brazil|rio de janeiro|argentina|united kingdom|england|britain|london|big ben|scotland|ireland|france|paris|eiffel tower|germany|berlin|italy|rome|colosseum|venice|spain|madrid|barcelona|portugal|lisbon|netherlands|amsterdam|belgium|brussels|switzerland|russia|moscow|kremlin|ukraine|poland|turkey|istanbul|greece|athens|china|beijing|shanghai|great wall|japan|tokyo|mount fuji|korea|seoul|india|delhi|mumbai|taj mahal|pakistan|dubai|uae|burj khalifa|saudi arabia|mecca|qatar|israel|iran|iraq|australia|sydney|new zealand|indonesia|bali|thailand|bangkok|vietnam|philippines|singapore|trump|biden|obama|putin|macron|xi jinping|ruto|museveni)\b/i;
+const RWANDA_SCENE_RE = /\b(people|person|man|woman|men|women|child|children|kid|kids|girl|boy|family|student|students|school|classroom|teacher|farmer|farm|market|street|road|city|town|village|house|home|landscape|hills?|mountains?|lake|forest|wedding|dance|dancers|church|office|hospital|bus|moto|motorcycle|restaurant|food|coffee|tea|cows?|cattle|gorillas?)\b/i;
+
 async function classifyImageIntent(userText) {
   if (BLOCKED_IMAGE_RE.test(String(userText || ''))) return { action: 'blocked' };
+  if (FOREIGN_IMAGE_RE.test(String(userText || '')) && !keywordRwandaImageCheck(userText)) return { action: 'offtopic' };
   const prompt = extractImagePrompt(userText);
   if (!prompt || prompt.replace(/[^\p{L}\p{N}]/gu, '').length < 2) return { action: 'clarify' };
   return { action: 'generate', prompt };
@@ -1714,6 +1737,10 @@ async function streamChatResponse(res, { messages, conversationId, attachments, 
       const intent = await classifyImageIntent(userText);
       if (intent.action === 'blocked') {
         const msg = "I can't create that kind of image, but I'm happy to make something else — describe a scene, person, place, product or idea you'd like to see.";
+        send({ text: msg }); done(); saveAssistant(msg); return;
+      }
+      if (intent.action === 'offtopic') {
+        const msg = "I create images of Rwanda's world — its places, people, culture, wildlife and ideas — so I won't draw that one. How about a Rwandan version, like Kigali's skyline at night, the hills of Musanze, or a gorilla in Volcanoes National Park?";
         send({ text: msg }); done(); saveAssistant(msg); return;
       }
       if (intent.action === 'clarify') {
