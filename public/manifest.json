@@ -2,7 +2,7 @@
   "id": "/",
   "name": "DeepRWA — Your AI Assistant from Rwanda",
   "short_name": "DeepRWA",
-  "description": "A smart AI assistant for everything — made in Rwanda and an expert on Rwanda. Chat, write, learn and talk by voice in any language.",
+  "description": "The smart AI assistant for everything Rwanda — services, studies, work, travel, culture and daily life. Chat, write, learn and talk by voice in any language.",
   "start_url": "/?source=pwa",
   "scope": "/",
   "display": "standalone",
