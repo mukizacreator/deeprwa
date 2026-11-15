@@ -2209,7 +2209,7 @@ function renderWelcome() {
     <div class="welcome">
       <img src="/av.png" alt="DeepRWA" class="welcome-logo" />
       <h1 class="brand-name brand-name-lg"><span class="b-deep">Deep</span><span class="b-r">R</span><span class="b-w">W</span><span class="b-a">A</span></h1>
-      <p>Your AI assistant for <strong>anything</strong> — and the expert on <strong>Rwanda</strong>. Ask, write, learn or talk, in any language.</p>
+      <p>The smart AI for everything <strong>Rwanda</strong> — services, studies, work, travel, culture and daily life. Ask, write, learn or talk, in any language.</p>
       <div class="chips">
         <button class="chip" data-q="Tell me about the history of Rwanda">Rwanda history</button>
         <button class="chip" data-q="Plan a 3-day trip in Rwanda for a first-time visitor">Plan a trip</button>
